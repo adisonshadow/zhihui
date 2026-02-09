@@ -1,0 +1,80 @@
+/* 参考 Biezhi2/web AppHeader.css，dark 主题 */
+.yiman-header {
+  background-color: rgba(101, 101, 101, 0.25);
+  width: fit-content;
+  margin: 15px auto;
+  border-radius: 24px;
+  padding: 0 28px;
+}
+
+.yiman-header-inner {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  min-height: 48px;
+}
+
+.yiman-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 8px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.85);
+  transition: color 0.2s;
+}
+
+.yiman-header-brand:hover {
+  color: #1777ff;
+}
+
+.yiman-header-logo {
+  font-size: 24px;
+  height: 38px;
+  width: 38px;
+}
+
+.yiman-header-title {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.yiman-header-menu {
+  display: flex;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 0;
+}
+
+.yiman-header-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  height: 48px;
+  color: rgba(255, 255, 255, 0.65);
+  text-decoration: none;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.yiman-header-link:hover {
+  color: #fff;
+}
+
+.yiman-header-link.active {
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.yiman-header-icon {
+  display: flex;
+  align-items: center;
+  font-size: 16px;
+}
+
+.yiman-header-label {
+  font-size: 16px;
+  white-space: nowrap;
+}

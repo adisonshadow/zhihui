@@ -1,0 +1,17 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.yiman.app
+productName: 芝绘
+files:
+  - filter:
+      - dist
+      - dist-electron
+mac:
+  category: public.app-category.entertainment
+  target:
+    - dmg
+win:
+  target:
+    - nsis
+electronVersion: 40.1.0

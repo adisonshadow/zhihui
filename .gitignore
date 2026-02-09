@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-electron
+*.local
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
