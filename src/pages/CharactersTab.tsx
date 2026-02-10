@@ -1,5 +1,5 @@
 /**
- * 人物设计页：人物列表 CRUD、名称/形象/备注、默认 TTS 参数（见功能文档 4.2、开发计划 2.6）
+ * 人物设计页：人物列表 CRUD、名称/形象/备注、默认 TTS 参数、角度与骨骼绑定（见功能文档 4.2、开发计划 2.6，docs/06-人物骨骼贴图功能设计.md）
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import {
@@ -15,8 +15,11 @@ import {
   InputNumber,
   Splitter,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, UploadOutlined, PictureOutlined, RobotOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, UploadOutlined, PictureOutlined, RobotOutlined, ApartmentOutlined } from '@ant-design/icons';
 import type { ProjectInfo } from '@/hooks/useProject';
+import { parseCharacterAngles, serializeCharacterAngles } from '@/types/skeleton';
+import type { CharacterAngle } from '@/types/skeleton';
+import { SkeletonBindingPanel } from '@/components/character/SkeletonBindingPanel';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -28,6 +31,7 @@ interface CharacterRow {
   note: string | null;
   tts_voice: string | null;
   tts_speed: number | null;
+  angles: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,14 +56,16 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [assets, setAssets] = useState<AssetRow[]>([]);
+  const [skeletonPanelOpen, setSkeletonPanelOpen] = useState(false);
+  const [skeletonPanelAngle, setSkeletonPanelAngle] = useState<CharacterAngle | null>(null);
   const projectDir = project.project_dir;
 
   const loadCharacters = useCallback(async () => {
     if (!window.yiman?.project?.getCharacters) return;
     setLoading(true);
     try {
-      const list = await window.yiman.project.getCharacters(projectDir);
-      setCharacters(list as CharacterRow[]);
+      const list = (await window.yiman.project.getCharacters(projectDir)) as CharacterRow[];
+      setCharacters(list);
       if (!selectedId && list.length > 0) setSelectedId(list[0].id);
       if (selectedId && !list.some((c) => c.id === selectedId)) setSelectedId(list[0]?.id ?? null);
     } catch {
@@ -163,6 +169,43 @@ export default function CharactersTab({ project }: CharactersTabProps) {
     } else message.error(res?.error || '绑定失败');
   };
 
+  const angles = selected ? parseCharacterAngles(selected.angles ?? null) : [];
+
+  const openSkeletonPanel = (angle: CharacterAngle) => {
+    setSkeletonPanelAngle(angle);
+    setSkeletonPanelOpen(true);
+  };
+
+  const handleSkeletonSave = async (updatedAngle: CharacterAngle) => {
+    if (!selectedId || !skeletonPanelAngle) return;
+    const nextAngles = angles.map((a) => (a.id === updatedAngle.id ? updatedAngle : a));
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      angles: serializeCharacterAngles(nextAngles),
+    });
+    if (res?.ok) {
+      loadCharacters();
+    } else {
+      message.error(res?.error || '保存失败');
+    }
+  };
+
+  const handleAddAngle = async () => {
+    if (!selectedId) return;
+    const newId = `angle_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const newAngle: CharacterAngle = { id: newId, name: `角度 ${angles.length + 1}` };
+    const nextAngles = [...angles, newAngle];
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      angles: serializeCharacterAngles(nextAngles),
+    });
+    if (res?.ok) {
+      loadCharacters();
+      setSkeletonPanelAngle(newAngle);
+      setSkeletonPanelOpen(true);
+    } else {
+      message.error(res?.error || '添加角度失败');
+    }
+  };
+
   return (
     <div style={{ height: '100%', minHeight: 400 }}>
       <Splitter style={{ height: '100%' }} orientation="horizontal">
@@ -239,6 +282,37 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                   </Space>
                 </Form.Item>
 
+                <Form.Item label="角度与骨骼">
+                  <Space direction="vertical" style={{ width: '100%' }} size="small">
+                    {angles.map((angle) => (
+                      <div
+                        key={angle.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '6px 8px',
+                          background: 'rgba(255,255,255,0.04)',
+                          borderRadius: 6,
+                        }}
+                      >
+                        <span style={{ fontWeight: 500 }}>{angle.name}</span>
+                        <Button
+                          type="default"
+                          size="small"
+                          icon={<ApartmentOutlined />}
+                          onClick={() => openSkeletonPanel(angle)}
+                        >
+                          骨骼设置
+                        </Button>
+                      </div>
+                    ))}
+                    <Button type="dashed" size="small" block onClick={handleAddAngle}>
+                      添加角度
+                    </Button>
+                  </Space>
+                </Form.Item>
+
                 <Form.Item name="note" label="备注">
                   <TextArea rows={3} placeholder="人物设定、备注等" />
                 </Form.Item>
@@ -299,6 +373,21 @@ export default function CharactersTab({ project }: CharactersTabProps) {
           )}
         </div>
       </Modal>
+
+      {skeletonPanelAngle && (
+        <SkeletonBindingPanel
+          open={skeletonPanelOpen}
+          onClose={() => { setSkeletonPanelOpen(false); setSkeletonPanelAngle(null); }}
+          projectDir={projectDir}
+          characterId={selectedId!}
+          angle={skeletonPanelAngle}
+          onSave={handleSkeletonSave}
+          getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+          getAssets={(dir) => window.yiman?.project?.getAssets?.(dir) ?? Promise.resolve([])}
+          saveAssetFromFile={async (dir, filePath, type) => (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type)) ?? { ok: false }}
+          openFileDialog={() => window.yiman?.dialog?.openFile?.() ?? Promise.resolve(undefined)}
+        />
+      )}
     </div>
   );
 }

@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Tabs, Result, Spin, Space, Typography } from 'antd';
+import { Button, Tabs, Result, Spin, Space, Typography, Tooltip } from 'antd';
 import { ArrowLeftOutlined, FileTextOutlined, UserOutlined, SettingOutlined, VideoCameraOutlined, FolderOutlined, CommentOutlined, MenuOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useProject } from '@/hooks/useProject';
 import OutlineTab from './OutlineTab';
@@ -181,20 +181,22 @@ const ProjectEditor: React.FC = () => {
             <Button type="text" icon={<PlayCircleOutlined />}>
               全集
             </Button>
-            <Button
-              color={showNav ? 'default' : 'cyan'}
-              variant="text"
-              icon={<MenuOutlined />}
-              onClick={() => setShowNav(!showNav)}
-            >
-            </Button>
-            <Button
-              color={showChat ? 'default' : 'light'}
-              variant="text"
-              icon={<CommentOutlined />}
-              onClick={() => setShowChat(!showChat)}
-            >
-            </Button>
+            <Tooltip title="剧集场景">
+              <Button
+                type="text"
+                style={{ opacity: showNav ? 1 : 0.7 }}
+                icon={<MenuOutlined />}
+                onClick={() => setShowNav(!showNav)}
+              />
+            </Tooltip>
+            <Tooltip title="AI Chat">
+              <Button
+                type="text"
+                icon={<CommentOutlined />}
+                style={{ opacity: showChat ? 1 : 0.7 }}
+                onClick={() => setShowChat(!showChat)}
+              />
+            </Tooltip>
           </>
         )}
         <Button

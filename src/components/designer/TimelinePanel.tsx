@@ -4,7 +4,7 @@
  * 使用 @dnd-kit 实现素材条 drag/drop，主轨道 horizontal sortable
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Typography, Checkbox, Select, Slider, Splitter, App } from 'antd';
+import { Button, Typography, Checkbox, Select, Slider, Splitter, App, Space } from 'antd';
 import { LockOutlined, UnlockOutlined, ArrowUpOutlined, ArrowDownOutlined, ZoomOutOutlined, ZoomInOutlined, UndoOutlined, RedoOutlined, ExportOutlined } from '@ant-design/icons';
 import {
   DndContext,
@@ -946,74 +946,80 @@ export function TimelinePanel({
   return (
     <div className="timeline-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', minWidth: 0 }}>
       {/* 行1：timeline-header 固定高度 */}
-      <div className="timeline-header" style={{ flexShrink: 0, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <Button type="text" icon={<UndoOutlined />} disabled title="撤销" />
-        <Button type="text" icon={<RedoOutlined />} disabled title="重做" />
-        {onExportClick && (
-          <Button type="default" icon={<ExportOutlined />} onClick={onExportClick}>
-            导出视频
-          </Button>
-        )}
-        <Text style={{ fontSize: 12, minWidth: 88 }}>当前时间 <strong>{currentTime.toFixed(1)}</strong> / <strong>{sceneTotalTime.toFixed(1)}</strong> s</Text>
-        {/* 时间线精度放缩：参考图样式，左缩小图标 + 滑块 + 右放大图标 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 180 }}>
-          <Button
-            type="text"
-            size="small"
-            icon={<ZoomOutOutlined />}
-            onClick={() => setTimeZoom((z) => Math.max(10, z * 0.8))}
-            style={{
-              width: 28,
-              height: 28,
-              padding: 0,
-              color: 'rgba(255,255,255,0.85)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-            title="缩小"
-          />
-          <Slider
-            min={10}
-            max={200}
-            value={timeZoom}
-            onChange={(v) => setTimeZoom(typeof v === 'number' ? v : v[0])}
-            style={{ flex: 1, minWidth: 80, margin: 0 }}
-            styles={{
-              track: { background: 'rgba(255,255,255,0.35)' },
-              // rail: { background: 'rgba(255,255,255,0.12)' },
-              // handle: {
-              //   width: 10,
-              //   height: 18,
-              //   borderRadius: 5,
-              //   border: 'none',
-              //   background: '#fff',
-              //   boxShadow: 'none',
-              // },
-            }}
-            tooltip={{ formatter: (v) => `${v} px/s` }}
-          />
-          <Button
-            type="text"
-            size="small"
-            icon={<ZoomInOutlined />}
-            onClick={() => setTimeZoom((z) => Math.min(200, z * 1.25))}
-            style={{
-              width: 28,
-              height: 28,
-              padding: 0,
-              color: 'rgba(255,255,255,0.85)',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-            title="放大"
-          />
-        </div>
-        <Button type={compact ? 'primary' : 'default'} size="small" onClick={() => setCompact(!compact)}>紧凑</Button>
-        {selectedBlockId && (
-          <Text type="secondary" style={{ fontSize: 12 }}>Delete 删除素材条 · 关键帧在右侧功能面板创建</Text>
-        )}
+      <div className="timeline-header" style={{ flexShrink: 0, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <Space>
+          <Button type="text" icon={<UndoOutlined />} disabled title="撤销" />
+          <Button type="text" icon={<RedoOutlined />} disabled title="重做" />
+          <Text style={{ fontSize: 12, minWidth: 88 }}>当前时间 <strong>{currentTime.toFixed(1)}</strong> / <strong>{sceneTotalTime.toFixed(1)}</strong> s</Text>
+          {selectedBlockId && (
+            <Text type="secondary" style={{ fontSize: 12 }}>Delete 删除素材条 · 关键帧在右侧功能面板创建</Text>
+          )}
+        </Space>
+        <Space>
+          {onExportClick && (
+            <Button color="default" variant='filled' size="small" icon={<ExportOutlined />} onClick={onExportClick}>
+              导出
+            </Button>
+          )}
+        
+          {/* 时间线精度放缩：参考图样式，左缩小图标 + 滑块 + 右放大图标 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Button
+              type="text"
+              size="small"
+              icon={<ZoomOutOutlined />}
+              onClick={() => setTimeZoom((z) => Math.max(10, z * 0.8))}
+              style={{
+                width: 28,
+                height: 28,
+                padding: 0,
+                color: 'rgba(255,255,255,0.85)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              title="缩小"
+            />
+            <Slider
+              min={10}
+              max={200}
+              value={timeZoom}
+              onChange={(v) => setTimeZoom(typeof v === 'number' ? v : v[0])}
+              style={{ width: 60, margin: 0 }}
+              styles={{
+                track: { background: 'rgba(255,255,255,0.35)' },
+                // rail: { background: 'rgba(255,255,255,0.12)' },
+                // handle: {
+                //   width: 10,
+                //   height: 18,
+                //   borderRadius: 5,
+                //   border: 'none',
+                //   background: '#fff',
+                //   boxShadow: 'none',
+                // },
+              }}
+              tooltip={{ formatter: (v) => `${v} px/s` }}
+            />
+            <Button
+              type="text"
+              size="small"
+              icon={<ZoomInOutlined />}
+              onClick={() => setTimeZoom((z) => Math.min(200, z * 1.25))}
+              style={{
+                width: 28,
+                height: 28,
+                padding: 0,
+                color: 'rgba(255,255,255,0.85)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              title="放大"
+            />
+          </div>
+          {/* <Button type={compact ? 'primary' : 'default'} size="small" onClick={() => setCompact(!compact)}>紧凑</Button> */}
+          
+        </Space>
       </div>
       <DndContext
         sensors={sensors}

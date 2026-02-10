@@ -64,6 +64,8 @@ export interface CharacterRow {
   note: string | null;
   tts_voice: string | null;
   tts_speed: number | null;
+  /** JSON 数组：人物角度列表，见 docs/06-人物骨骼贴图功能设计.md。每项 { id, name, image_path?, skeleton? } */
+  angles: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -128,6 +130,7 @@ export function initProjectDb(
         note TEXT,
         tts_voice TEXT,
         tts_speed REAL,
+        angles TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -984,21 +987,30 @@ export function deleteKeyframe(projectDir: string, id: string): { ok: boolean; e
 }
 
 // ---------- characters ----------
+function ensureCharactersAnglesColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(characters)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'angles')) {
+    db.prepare('ALTER TABLE characters ADD COLUMN angles TEXT').run();
+  }
+}
+
 export function getCharacters(projectDir: string): CharacterRow[] {
   const db = getDb(projectDir);
+  ensureCharactersAnglesColumn(db);
   return db.prepare('SELECT * FROM characters ORDER BY created_at ASC').all() as CharacterRow[];
 }
 
 export function createCharacter(
   projectDir: string,
-  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null }
+  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
+    ensureCharactersAnglesColumn(db);
     db.prepare(
-      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       data.id,
       data.name ?? '',
@@ -1006,6 +1018,7 @@ export function createCharacter(
       data.note ?? null,
       data.tts_voice ?? null,
       data.tts_speed ?? null,
+      data.angles ?? null,
       now,
       now
     );
@@ -1018,21 +1031,23 @@ export function createCharacter(
 export function updateCharacter(
   projectDir: string,
   id: string,
-  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed'>>
+  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed' | 'angles'>>
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
+    ensureCharactersAnglesColumn(db);
     const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CharacterRow | undefined;
     if (!row) return { ok: false, error: '人物不存在' };
     db.prepare(
-      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, updated_at = ? WHERE id = ?`
+      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.name ?? row.name,
       data.image_path !== undefined ? data.image_path : row.image_path,
       data.note !== undefined ? data.note : row.note,
       data.tts_voice !== undefined ? data.tts_voice : row.tts_voice,
       data.tts_speed !== undefined ? data.tts_speed : row.tts_speed,
+      data.angles !== undefined ? data.angles : row.angles ?? null,
       now,
       id
     );

@@ -9,7 +9,10 @@ declare global {
         delete: (id: string, deleteOnDisk: boolean) => Promise<{ ok: boolean; error?: string }>;
         import: (projectDir: string) => Promise<{ ok: boolean; id?: string; error?: string }>;
       };
-      dialog: { openDirectory: () => Promise<string | null> };
+      dialog: {
+        openDirectory: () => Promise<string | null>;
+        openFile: (options?: { filters?: { name: string; extensions: string[] }[] }) => Promise<string | undefined>;
+      };
       shell: {
         showItemInFolder: (fullPath: string) => Promise<string>;
         openPath: (path: string) => Promise<string>;
@@ -30,6 +33,9 @@ declare global {
         createCharacter: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         updateCharacter: (projectDir: string, id: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         deleteCharacter: (projectDir: string, id: string) => Promise<{ ok: boolean; error?: string }>;
+        getAssets: (projectDir: string, type?: string) => Promise<{ id: string; path: string; type: string }[]>;
+        getAssetDataUrl: (projectDir: string, relativePath: string) => Promise<string | null>;
+        saveAssetFromFile: (projectDir: string, sourcePath: string, type?: string, options?: unknown) => Promise<{ ok: boolean; path?: string; error?: string }>;
         getAiConfig: (projectDir: string) => Promise<unknown>;
         saveAiConfig: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
       };
