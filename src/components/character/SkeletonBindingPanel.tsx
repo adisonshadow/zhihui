@@ -16,6 +16,7 @@ import type { CharacterAngle, SkeletonBinding, SkeletonPreset, SkeletonPresetKin
 import { SKELETON_PRESETS, getPresetByKind } from '@/types/skeleton';
 import {
   getHumanAngleType,
+  getRestPose,
   sampleHumanMotion,
   type HumanMotionType,
 } from '@/types/skeletonMotions';
@@ -36,9 +37,95 @@ export interface SkeletonBindingPanelProps {
   openFileDialog: () => Promise<string | undefined>;
 }
 
-/** 将归一化坐标 [0,1] 转为容器内百分比 */
+/** 将归一化坐标 [0,1] 转为容器内像素 */
 function normToPx(norm: number, size: number): number {
-  return Math.round(norm * size);
+  return norm * size;
+}
+
+/**
+ * 人物预设的蒙皮网格：每个三角形由 3 个顶点组成（见 docs/06 方案 C）。
+ * 顶点为骨骼节点 id，或 "mid:A:B" 表示 A、B 两节点的中点（用于细化网格，减轻单块拉伸）。
+ */
+const HUMAN_MESH_TRIANGLES: [string, string, string][] = [
+  // 头颈
+  ['head', 'mid:head:neck', 'shoulder_l'],
+  ['head', 'mid:head:neck', 'shoulder_r'],
+  ['mid:head:neck', 'neck', 'shoulder_l'],
+  ['mid:head:neck', 'neck', 'shoulder_r'],
+  // 上躯干
+  ['neck', 'mid:neck:spine', 'shoulder_l'],
+  ['neck', 'mid:neck:spine', 'shoulder_r'],
+  ['mid:neck:spine', 'spine', 'shoulder_l'],
+  ['mid:neck:spine', 'spine', 'shoulder_r'],
+  // 左臂（上臂、前臂）
+  ['spine', 'mid:shoulder_l:elbow_l', 'shoulder_l'],
+  ['spine', 'mid:shoulder_l:elbow_l', 'elbow_l'],
+  ['mid:shoulder_l:elbow_l', 'elbow_l', 'wrist_l'],
+  ['shoulder_l', 'elbow_l', 'wrist_l'],
+  // 右臂
+  ['spine', 'mid:shoulder_r:elbow_r', 'shoulder_r'],
+  ['spine', 'mid:shoulder_r:elbow_r', 'elbow_r'],
+  ['mid:shoulder_r:elbow_r', 'elbow_r', 'wrist_r'],
+  ['shoulder_r', 'elbow_r', 'wrist_r'],
+  // 躯干下、髋
+  ['spine', 'mid:spine:hip', 'hip_l'],
+  ['spine', 'mid:spine:hip', 'hip_r'],
+  ['mid:spine:hip', 'hip', 'hip_l'],
+  ['mid:spine:hip', 'hip', 'hip_r'],
+  // 左腿
+  ['hip', 'mid:hip_l:knee_l', 'hip_l'],
+  ['hip', 'mid:hip_l:knee_l', 'knee_l'],
+  ['mid:hip_l:knee_l', 'knee_l', 'ankle_l'],
+  ['hip_l', 'knee_l', 'ankle_l'],
+  // 右腿
+  ['hip', 'mid:hip_r:knee_r', 'hip_r'],
+  ['hip', 'mid:hip_r:knee_r', 'knee_r'],
+  ['mid:hip_r:knee_r', 'knee_r', 'ankle_r'],
+  ['hip_r', 'knee_r', 'ankle_r'],
+];
+
+/** 解析顶点 id：支持 "mid:A:B" 表示 A、B 两节点的中点 */
+function getMeshVertexPosition(
+  vertexId: string,
+  getPos: (nodeId: string) => [number, number],
+  bindMap: Map<string, [number, number]> | null
+): [number, number] {
+  if (vertexId.startsWith('mid:')) {
+    const parts = vertexId.slice(4).split(':');
+    const a = parts[0];
+    const b = parts[1];
+    if (!a || !b) return [0.5, 0.5];
+    const pa = bindMap ? (bindMap.get(a) ?? getPos(a)) : getPos(a);
+    const pb = bindMap ? (bindMap.get(b) ?? getPos(b)) : getPos(b);
+    return [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2];
+  }
+  return bindMap ? (bindMap.get(vertexId) ?? getPos(vertexId)) : getPos(vertexId);
+}
+
+/** 由 3 对点求仿射变换矩阵，用于 setTransform(a,b,c,d,e,f)：x'=a*x+c*y+e, y'=b*x+d*y+f */
+function getAffineFromTri(
+  s0: [number, number],
+  s1: [number, number],
+  s2: [number, number],
+  d0: [number, number],
+  d1: [number, number],
+  d2: [number, number]
+): { a: number; b: number; c: number; d: number; e: number; f: number } {
+  const [sx0, sy0] = s0;
+  const [sx1, sy1] = s1;
+  const [sx2, sy2] = s2;
+  const [dx0, dy0] = d0;
+  const [dx1, dy1] = d1;
+  const [dx2, dy2] = d2;
+  const det = sx0 * (sy1 - sy2) - sy0 * (sx1 - sx2) + (sx1 * sy2 - sx2 * sy1);
+  if (Math.abs(det) < 1e-10) return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  const a = (dx0 * (sy1 - sy2) - dx1 * (sy0 - sy2) + dx2 * (sy0 - sy1)) / det;
+  const b = (dy0 * (sy1 - sy2) - dy1 * (sy0 - sy2) + dy2 * (sy0 - sy1)) / det;
+  const c = (dx0 * (sx2 - sx1) - dx1 * (sx2 - sx0) + dx2 * (sx1 - sx0)) / det;
+  const d = (dy0 * (sx2 - sx1) - dy1 * (sx2 - sx0) + dy2 * (sx1 - sx0)) / det;
+  const e = dx0 - a * sx0 - c * sy0;
+  const f = dy0 - b * sx0 - d * sy0;
+  return { a, b, c, d, e, f };
 }
 
 export function SkeletonBindingPanel({
@@ -65,8 +152,9 @@ export function SkeletonBindingPanel({
   /** 预览骨骼动画：走路 / 跳跃，null 表示未预览 */
   const [previewMotion, setPreviewMotion] = useState<HumanMotionType | null>(null);
   const savedNodesBeforePreview = useRef<{ id: string; position: [number, number] }[]>([]);
-  const previewTimeRef = useRef(0);
   const rafRef = useRef<number>(0);
+  /** 预览时人物图片随骨骼根节点（髋）的位移，归一化 [dx, dy] */
+  const [imageTranslate, setImageTranslate] = useState<[number, number]>([0, 0]);
 
   const preset = getPresetByKind(presetKind);
   const angleType = getHumanAngleType(angle.name);
@@ -76,6 +164,7 @@ export function SkeletonBindingPanel({
     setPresetKind(initialAngle.skeleton?.presetKind ?? 'human');
   }, [initialAngle, open]);
 
+  // 优先使用数据库中已保存的骨骼绑定作为默认（见 docs/06）
   useEffect(() => {
     if (!open) return;
     const p = getPresetByKind(presetKind);
@@ -147,12 +236,12 @@ export function SkeletonBindingPanel({
 
   const startPreview = useCallback((motion: HumanMotionType) => {
     savedNodesBeforePreview.current = nodes.map((n) => ({ id: n.id, position: [...n.position] }));
-    previewTimeRef.current = 0;
     setPreviewMotion(motion);
   }, [nodes]);
 
   const stopPreview = useCallback(() => {
     setPreviewMotion(null);
+    setImageTranslate([0, 0]);
     if (savedNodesBeforePreview.current.length > 0) {
       setNodes(savedNodesBeforePreview.current);
     }
@@ -160,15 +249,25 @@ export function SkeletonBindingPanel({
 
   useEffect(() => {
     if (!previewMotion || presetKind !== 'human') return;
+    const bindPose = savedNodesBeforePreview.current;
+    const bindMap = new Map(bindPose.map((n) => [n.id, n.position]));
+    const restPose = getRestPose(angleType);
     const start = performance.now();
     const tick = () => {
       const t = (performance.now() - start) / 1000;
-      const pose = sampleHumanMotion(angleType, previewMotion, t);
-      const nextNodes = preset.nodes.map((n) => ({
-        id: n.id,
-        position: (pose[n.id] ?? n.defaultPosition) as [number, number],
-      }));
+      const motionPose = sampleHumanMotion(angleType, previewMotion, t);
+      const nextNodes = preset.nodes.map((n) => {
+        const bind = bindMap.get(n.id) ?? n.defaultPosition;
+        const rest = restPose[n.id] ?? n.defaultPosition;
+        const motion = motionPose[n.id] ?? rest;
+        const dx = motion[0] - rest[0];
+        const dy = motion[1] - rest[1];
+        return { id: n.id, position: [bind[0] + dx, bind[1] + dy] as [number, number] };
+      });
       setNodes(nextNodes);
+      const restHip = restPose['hip'] ?? [0.5, 0.52];
+      const motionHip = motionPose['hip'] ?? restHip;
+      setImageTranslate([motionHip[0] - restHip[0], motionHip[1] - restHip[1]]);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -178,7 +277,10 @@ export function SkeletonBindingPanel({
   }, [previewMotion, presetKind, angleType, preset.nodes]);
 
   useEffect(() => {
-    if (!open) setPreviewMotion(null);
+    if (!open) {
+      setPreviewMotion(null);
+      setImageTranslate([0, 0]);
+    }
   }, [open]);
 
   return (
@@ -268,6 +370,8 @@ export function SkeletonBindingPanel({
               draggingId={draggingId}
               onDraggingChange={setDraggingId}
               isPreviewing={previewMotion != null}
+              imageTranslate={imageTranslate}
+              bindPoseForSkinning={previewMotion ? savedNodesBeforePreview.current : undefined}
             />
           </div>
         </Space>
@@ -320,18 +424,89 @@ interface SkeletonCanvasProps {
   draggingId: string | null;
   onDraggingChange: (id: string | null) => void;
   isPreviewing?: boolean;
+  /** 预览时人物图随骨骼根节点位移，归一化 [dx, dy]（非 Canvas 蒙皮时使用） */
+  imageTranslate?: [number, number];
+  /** 预览时传入绑定姿态，用于 Canvas 2D 骨骼蒙皮（仅人物预设） */
+  bindPoseForSkinning?: { id: string; position: [number, number] }[];
 }
 
 const CANVAS_SIZE = 400;
 
-function SkeletonCanvas({ imageDataUrl, preset, nodes, onNodesChange, draggingId, onDraggingChange, isPreviewing }: SkeletonCanvasProps) {
+function SkeletonCanvas({
+  imageDataUrl,
+  preset,
+  nodes,
+  onNodesChange,
+  draggingId,
+  onDraggingChange,
+  isPreviewing,
+  imageTranslate = [0, 0],
+  bindPoseForSkinning,
+}: SkeletonCanvasProps) {
   const [containerRef, setContainerRef] = useState<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    if (!imageDataUrl) {
+      setImageElement(null);
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => setImageElement(img);
+    img.onerror = () => setImageElement(null);
+    img.src = imageDataUrl;
+    return () => { img.src = ''; };
+  }, [imageDataUrl]);
 
   const nodeMap = new Map(nodes.map((n) => [n.id, n.position]));
 
   const getPosition = (nodeId: string): [number, number] => {
     return nodeMap.get(nodeId) ?? preset.nodes.find((n) => n.id === nodeId)?.defaultPosition ?? [0.5, 0.5];
   };
+
+  const useCanvasSkinning =
+    isPreviewing &&
+    preset.kind === 'human' &&
+    imageElement &&
+    bindPoseForSkinning &&
+    bindPoseForSkinning.length > 0;
+
+  useEffect(() => {
+    if (!useCanvasSkinning || !canvasRef.current || !imageElement || !bindPoseForSkinning?.length) return;
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+    const bindMap = new Map(bindPoseForSkinning.map((n) => [n.id, n.position]));
+    const imgW = imageElement.naturalWidth || 1;
+    const imgH = imageElement.naturalHeight || 1;
+    ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+    for (const [id1, id2, id3] of HUMAN_MESH_TRIANGLES) {
+      const b1 = getMeshVertexPosition(id1, getPosition, bindMap);
+      const b2 = getMeshVertexPosition(id2, getPosition, bindMap);
+      const b3 = getMeshVertexPosition(id3, getPosition, bindMap);
+      const d1 = getMeshVertexPosition(id1, getPosition, null);
+      const d2 = getMeshVertexPosition(id2, getPosition, null);
+      const d3 = getMeshVertexPosition(id3, getPosition, null);
+      const s0: [number, number] = [b1[0] * imgW, b1[1] * imgH];
+      const s1: [number, number] = [b2[0] * imgW, b2[1] * imgH];
+      const s2: [number, number] = [b3[0] * imgW, b3[1] * imgH];
+      const dest0: [number, number] = [d1[0] * CANVAS_SIZE, d1[1] * CANVAS_SIZE];
+      const dest1: [number, number] = [d2[0] * CANVAS_SIZE, d2[1] * CANVAS_SIZE];
+      const dest2: [number, number] = [d3[0] * CANVAS_SIZE, d3[1] * CANVAS_SIZE];
+      const T = getAffineFromTri(s0, s1, s2, dest0, dest1, dest2);
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(dest0[0], dest0[1]);
+      ctx.lineTo(dest1[0], dest1[1]);
+      ctx.lineTo(dest2[0], dest2[1]);
+      ctx.closePath();
+      ctx.clip();
+      ctx.setTransform(T.a, T.b, T.c, T.d, T.e, T.f);
+      ctx.drawImage(imageElement, 0, 0, imgW, imgH);
+      ctx.restore();
+    }
+  }, [useCanvasSkinning, nodes, bindPoseForSkinning, imageElement, preset.kind]);
 
   const handlePointerDown = (e: React.PointerEvent, nodeId: string) => {
     if (isPreviewing) return;
@@ -372,7 +547,21 @@ function SkeletonCanvas({ imageDataUrl, preset, nodes, onNodesChange, draggingId
         overflow: 'hidden',
       }}
     >
-      {imageDataUrl && (
+      {useCanvasSkinning ? (
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_SIZE}
+          height={CANVAS_SIZE}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+          }}
+        />
+      ) : imageDataUrl ? (
         <img
           src={imageDataUrl}
           alt=""
@@ -384,9 +573,11 @@ function SkeletonCanvas({ imageDataUrl, preset, nodes, onNodesChange, draggingId
             height: '100%',
             objectFit: 'contain',
             pointerEvents: 'none',
+            transform: `translate(${imageTranslate[0] * 100}%, ${imageTranslate[1] * 100}%)`,
+            transition: 'none',
           }}
         />
-      )}
+      ) : null}
       <svg
         width="100%"
         height="100%"

@@ -1,4 +1,5 @@
-@import "tailwindcss";
+/* 临时排除 Tailwind：若移除后页面正常，则问题在 Tailwind v4 */
+/* @import "tailwindcss"; */
 
 * {
   margin: 0;

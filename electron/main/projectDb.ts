@@ -66,6 +66,8 @@ export interface CharacterRow {
   tts_speed: number | null;
   /** JSON 数组：人物角度列表，见 docs/06-人物骨骼贴图功能设计.md。每项 { id, name, image_path?, skeleton? } */
   angles: string | null;
+  /** JSON 数组：精灵动作图列表。每项 { id, name?, image_path, frame_count?, chroma_key? } */
+  sprite_sheets: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -131,6 +133,7 @@ export function initProjectDb(
         tts_voice TEXT,
         tts_speed REAL,
         angles TEXT,
+        sprite_sheets TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -993,24 +996,32 @@ function ensureCharactersAnglesColumn(db: Database.Database): void {
     db.prepare('ALTER TABLE characters ADD COLUMN angles TEXT').run();
   }
 }
+function ensureCharactersSpriteSheetsColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(characters)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'sprite_sheets')) {
+    db.prepare('ALTER TABLE characters ADD COLUMN sprite_sheets TEXT').run();
+  }
+}
 
 export function getCharacters(projectDir: string): CharacterRow[] {
   const db = getDb(projectDir);
   ensureCharactersAnglesColumn(db);
+  ensureCharactersSpriteSheetsColumn(db);
   return db.prepare('SELECT * FROM characters ORDER BY created_at ASC').all() as CharacterRow[];
 }
 
 export function createCharacter(
   projectDir: string,
-  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null }
+  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null; sprite_sheets?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     ensureCharactersAnglesColumn(db);
+    ensureCharactersSpriteSheetsColumn(db);
     db.prepare(
-      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       data.id,
       data.name ?? '',
@@ -1019,6 +1030,7 @@ export function createCharacter(
       data.tts_voice ?? null,
       data.tts_speed ?? null,
       data.angles ?? null,
+      data.sprite_sheets ?? null,
       now,
       now
     );
@@ -1031,16 +1043,17 @@ export function createCharacter(
 export function updateCharacter(
   projectDir: string,
   id: string,
-  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed' | 'angles'>>
+  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed' | 'angles' | 'sprite_sheets'>>
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     ensureCharactersAnglesColumn(db);
+    ensureCharactersSpriteSheetsColumn(db);
     const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CharacterRow | undefined;
     if (!row) return { ok: false, error: '人物不存在' };
     db.prepare(
-      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, updated_at = ? WHERE id = ?`
+      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, sprite_sheets = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.name ?? row.name,
       data.image_path !== undefined ? data.image_path : row.image_path,
@@ -1048,6 +1061,7 @@ export function updateCharacter(
       data.tts_voice !== undefined ? data.tts_voice : row.tts_voice,
       data.tts_speed !== undefined ? data.tts_speed : row.tts_speed,
       data.angles !== undefined ? data.angles : row.angles ?? null,
+      data.sprite_sheets !== undefined ? data.sprite_sheets : row.sprite_sheets ?? null,
       now,
       id
     );
@@ -1183,10 +1197,12 @@ export function deleteAsset(projectDir: string, id: string): { ok: boolean; erro
   }
 }
 
-/** 读取项目内资源文件为 base64 data URL，供渲染进程显示（见开发计划 2.6） */
+/** 读取项目内资源文件为 base64 data URL，供渲染进程显示（见开发计划 2.6）。支持绝对路径（如 ONNX 抠图临时文件） */
 export function getAssetDataUrl(projectDir: string, relativePath: string): string | null {
   try {
-    const fullPath = path.join(path.normalize(projectDir), relativePath);
+    const fullPath = path.isAbsolute(relativePath)
+      ? path.normalize(relativePath)
+      : path.join(path.normalize(projectDir), relativePath);
     if (!fs.existsSync(fullPath)) return null;
     const buf = fs.readFileSync(fullPath);
     const ext = path.extname(relativePath).toLowerCase();

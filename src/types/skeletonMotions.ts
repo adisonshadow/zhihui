@@ -255,3 +255,8 @@ export function sampleHumanMotion(
 function restPoseForAngle(angleType: HumanAngleType): Record<string, [number, number]> {
   return angleType === 'front' ? REST_POSE_FRONT : REST_POSE_SIDE;
 }
+
+/** 导出：获取预设 T 姿态（用于在用户绑定空间内叠加动作增量） */
+export function getRestPose(angleType: HumanAngleType): Record<string, [number, number]> {
+  return copyPose(restPoseForAngle(angleType));
+}

@@ -105,6 +105,20 @@ const api = {
       ipcRenderer.invoke('app:project:deleteAsset', projectDir, id),
     getAssetDataUrl: (projectDir: string, relativePath: string) =>
       ipcRenderer.invoke('app:project:getAssetDataUrl', projectDir, relativePath),
+    getSpriteBackgroundColor: (projectDir: string, relativePath: string) =>
+      ipcRenderer.invoke('app:project:getSpriteBackgroundColor', projectDir, relativePath),
+    getSpriteFrames: (
+      projectDir: string,
+      relativePath: string,
+      background: { r: number; g: number; b: number; a: number } | null,
+      options?: { backgroundThreshold?: number; minGapPixels?: number }
+    ) => ipcRenderer.invoke('app:project:getSpriteFrames', projectDir, relativePath, background, options),
+    processSpriteWithOnnx: (
+      projectDir: string,
+      relativePath: string,
+      options?: { frameCount?: number; cellSize?: number; spacing?: number }
+    ) =>
+      ipcRenderer.invoke('app:project:processSpriteWithOnnx', projectDir, relativePath, options),
     getPackages: (projectDir: string) => ipcRenderer.invoke('app:project:getPackages', projectDir),
     getExportsPath: (projectDir: string) => ipcRenderer.invoke('app:project:getExportsPath', projectDir),
     /** 导出视频（见开发计划 2.13）；onProgress 可选，用于进度回调 */

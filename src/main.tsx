@@ -2,12 +2,38 @@
  * 芝绘 - 渲染进程入口（见技术文档 2、开发计划 2.1）
  * Ant Design 仅 dark 主题，参考 Biezhi2/web/main.tsx
  */
-import React from 'react';
+import React, { Component, ErrorInfo } from 'react';
 import ReactDOM from 'react-dom/client';
 import { App as AntdApp, ConfigProvider, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import App from './App';
 import './index.css';
+
+/** 开发时捕获渲染错误，避免白屏无提示 */
+class ErrorBoundary extends Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[ErrorBoundary]', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 24, color: '#fff', fontFamily: 'monospace', whiteSpace: 'pre-wrap' }}>
+          <h2>渲染错误</h2>
+          <pre>{this.state.error.message}</pre>
+          <pre>{this.state.error.stack}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const customTheme = {
   "components": {
@@ -81,18 +107,25 @@ const customTheme = {
     },
 };
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        algorithm: theme.darkAlgorithm,
-        ...customTheme,
-      }}
-    >
-      <AntdApp>
-        <App />
-      </AntdApp>
-    </ConfigProvider>
-  </React.StrictMode>
-);
+const root = document.getElementById('root');
+if (!root) {
+  document.body.innerHTML = '<div style="padding:24px;color:red">#root 未找到</div>';
+} else {
+  ReactDOM.createRoot(root).render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        <ConfigProvider
+          locale={zhCN}
+          theme={{
+            algorithm: theme.darkAlgorithm,
+            ...customTheme,
+          }}
+        >
+          <AntdApp>
+            <App />
+          </AntdApp>
+        </ConfigProvider>
+      </ErrorBoundary>
+    </React.StrictMode>
+  );
+}

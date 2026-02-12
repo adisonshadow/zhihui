@@ -1,17 +1,25 @@
 import { rmSync } from 'node:fs';
 import path from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig, build } from 'vite';
 import react from '@vitejs/plugin-react';
 import electron from 'vite-plugin-electron/simple';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => {
-  rmSync('dist-electron', { recursive: true, force: true });
+  try {
+    rmSync('dist-electron', { recursive: true, force: true });
+  } catch {
+    /* 目录可能被占用，忽略 */
+  }
 
   const isBuild = command === 'build';
   const sourcemap = !isBuild || !!process.env.VSCODE_DEBUG;
 
   return {
+    server: {
+      port: 5173,
+      host: '127.0.0.1', // 显式绑定，避免 localhost 解析问题
+    },
     resolve: {
       alias: {
         '@': path.join(__dirname, 'src'),
@@ -30,12 +38,22 @@ export default defineConfig(({ command }) => {
             }
           },
           vite: {
+            plugins: [
+              {
+                name: 'build-ai-server',
+                async closeBundle() {
+                  await build({ configFile: 'vite.ai-server.config.ts' }).catch((e) =>
+                    console.warn('[build-ai-server]', e)
+                  );
+                },
+              },
+            ],
             build: {
               sourcemap,
               minify: isBuild,
               outDir: 'dist-electron/main',
               rollupOptions: {
-                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg'],
+                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'node:http', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg'],
               },
             },
           },

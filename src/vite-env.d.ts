@@ -35,6 +35,18 @@ declare global {
         deleteCharacter: (projectDir: string, id: string) => Promise<{ ok: boolean; error?: string }>;
         getAssets: (projectDir: string, type?: string) => Promise<{ id: string; path: string; type: string }[]>;
         getAssetDataUrl: (projectDir: string, relativePath: string) => Promise<string | null>;
+        getSpriteBackgroundColor: (projectDir: string, relativePath: string) => Promise<{ r: number; g: number; b: number; a: number } | null>;
+        getSpriteFrames: (
+          projectDir: string,
+          relativePath: string,
+          background: { r: number; g: number; b: number; a: number } | null,
+          options?: { backgroundThreshold?: number; minGapPixels?: number }
+        ) => Promise<{ raw: { x: number; y: number; width: number; height: number }[]; normalized: { x: number; y: number; width: number; height: number }[] }>;
+        processSpriteWithOnnx: (
+          projectDir: string,
+          relativePath: string,
+          options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2'; u2netpAlphaMatting?: boolean; debugDir?: string }
+        ) => Promise<{ ok: boolean; path?: string; frames?: { x: number; y: number; width: number; height: number }[]; cover_path?: string; error?: string }>;
         saveAssetFromFile: (projectDir: string, sourcePath: string, type?: string, options?: unknown) => Promise<{ ok: boolean; path?: string; error?: string }>;
         getAiConfig: (projectDir: string) => Promise<unknown>;
         saveAiConfig: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;

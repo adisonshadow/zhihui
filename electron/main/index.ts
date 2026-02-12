@@ -1,10 +1,12 @@
 /**
  * 芝绘 - Electron 主进程入口
  * 见技术文档 7、开发计划 2.1
+ * AI 模型服务（MVANet、BiRefNet）以独立 HTTP 子进程运行，隔离内存压力
  */
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { initAppDb, getProjects, createProject, deleteProject, importProject } from './db';
 import { loadAISettings, saveAISettings, type AISettings } from './settings';
@@ -52,10 +54,18 @@ import {
 } from './projectDb';
 import { getPackages } from './projectPackages';
 import { exportSceneVideo } from './exportService';
+import { getSpriteBackgroundColor, getSpriteFrames } from './spriteService';
+import { processSpriteWithOnnx } from './spriteOnnxService';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 开发环境关闭硬件加速，避免 GPU 进程崩溃导致 MachPortRendezvous 等错误
+// AI 模型服务独立进程模式：仅启动 HTTP API，不启动主窗口（回退路径，Node 版优先）
+const isAiModelServer = process.argv.includes('--ai-model-server');
+if (isAiModelServer) {
+  const { startServer } = await import('../ai-model-service/server.js');
+  await startServer();
+  // 服务保持运行，不退出
+} else {
 if (process.env.NODE_ENV !== 'production') {
   app.disableHardwareAcceleration();
 }
@@ -81,27 +91,84 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+    // 开发时自动打开 DevTools，便于查看白屏原因（控制台错误、网络等）
+    if (isDev) mainWindow?.webContents.openDevTools();
   });
 
   // 开发时使用 Vite 提供的 dev server URL（见 vite-plugin-electron）
-  if (isDev && process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  if (isDev && devUrl) {
+    mainWindow.loadURL(devUrl);
   } else {
+    if (isDev && !devUrl) {
+      console.error('[Electron] VITE_DEV_SERVER_URL 未设置，无法加载开发页面');
+    }
     mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
   }
+
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error('[Electron] 页面加载失败:', { code, desc, url });
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
 
+let aiModelServerProcess: ReturnType<typeof spawn> | null = null;
+const AIMODEL_PORT = 19815;
+
 app.whenReady().then(async () => {
   await initAppDb();
+  // 启动 AI 模型服务子进程（纯 Node 优先，无 Electron/Dock 图标；否则回退到 Electron 子进程）
+  const serverScript = path.join(__dirname, '../ai-server/index.js');
+  const useNodeServer = fs.existsSync(serverScript);
+  const spawnCwd = path.join(__dirname, '../../'); // 项目根，便于 node 解析 node_modules
+  aiModelServerProcess = useNodeServer
+    ? spawn('node', [serverScript], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, AIMODEL_PORT: String(AIMODEL_PORT) },
+        cwd: spawnCwd,
+      })
+    : spawn(process.execPath, [path.join(__dirname, 'index.js'), '--ai-model-server'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, AIMODEL_PORT: String(AIMODEL_PORT) },
+      });
+  aiModelServerProcess.stdout?.on('data', (c) => {
+    const s = c.toString().trim();
+    if (s.startsWith('{')) {
+      try {
+        const j = JSON.parse(s);
+        if (j.ready) console.log('[AI Model Service] 就绪，端口', j.port);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+  // 等待服务就绪（最多 10 秒）
+  const { pingMattingService } = await import('../ai-model-service/client.js');
+  for (let i = 0; i < 50; i++) {
+    if (await pingMattingService()) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  aiModelServerProcess.on('error', (e) => console.error('[AI Model Service] 启动失败:', e));
+  aiModelServerProcess.on('exit', (code) => {
+    if (code !== 0 && code !== null) console.warn('[AI Model Service] 子进程退出:', code);
+    aiModelServerProcess = null;
+  });
+
   createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  if (aiModelServerProcess) {
+    aiModelServerProcess.kill();
+    aiModelServerProcess = null;
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -231,6 +298,60 @@ ipcMain.handle('app:project:getAssetDataUrl', (_, projectDir: string, relativePa
 );
 ipcMain.handle('app:project:getPackages', (_, projectDir: string) => getPackages(projectDir));
 ipcMain.handle('app:project:getExportsPath', (_, projectDir: string) => getExportsPath(projectDir));
+ipcMain.handle('app:project:getSpriteBackgroundColor', (_, projectDir: string, relativePath: string) =>
+  getSpriteBackgroundColor(projectDir, relativePath)
+);
+ipcMain.handle(
+  'app:project:getSpriteFrames',
+  (
+    _,
+    projectDir: string,
+    relativePath: string,
+    background: { r: number; g: number; b: number; a: number } | null,
+    options?: { backgroundThreshold?: number; minGapPixels?: number }
+  ) => getSpriteFrames(projectDir, relativePath, background, options)
+);
+
+ipcMain.handle(
+  'app:project:processSpriteWithOnnx',
+  async (
+    _,
+    projectDir: string,
+    relativePath: string,
+    options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2'; u2netpAlphaMatting?: boolean }
+  ) => {
+    const res = await processSpriteWithOnnx(projectDir, relativePath, options);
+    if (!res.ok || !res.path || !res.frames) return res;
+    try {
+      const saveRes = saveAssetFromFile(projectDir, res.path, 'character');
+      try {
+        fs.unlinkSync(res.path);
+      } catch {
+        /* ignore temp cleanup */
+      }
+      if (!saveRes.ok || !saveRes.path) {
+        return { ok: false, error: saveRes.error ?? '保存失败' };
+      }
+      let cover_path: string | undefined;
+      if (res.coverPath) {
+        try {
+          const coverRes = saveAssetFromFile(projectDir, res.coverPath, 'character');
+          try {
+            fs.unlinkSync(res.coverPath);
+          } catch {
+            /* ignore */
+          }
+          if (coverRes.ok && coverRes.path) cover_path = coverRes.path;
+        } catch {
+          /* 封面保存失败不影响主流程 */
+        }
+      }
+      return { ok: true, path: saveRes.path, frames: res.frames, cover_path };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+);
 
 // 视频导出（见开发计划 2.13）；进度通过 event.sender 推送
 ipcMain.handle(
@@ -247,3 +368,4 @@ ipcMain.handle(
     return exportSceneVideo(projectDir, sceneId, options, onProgress);
   }
 );
+}

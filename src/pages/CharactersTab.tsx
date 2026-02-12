@@ -20,6 +20,7 @@ import type { ProjectInfo } from '@/hooks/useProject';
 import { parseCharacterAngles, serializeCharacterAngles } from '@/types/skeleton';
 import type { CharacterAngle } from '@/types/skeleton';
 import { SkeletonBindingPanel } from '@/components/character/SkeletonBindingPanel';
+import { SpriteSheetPanel, type SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -32,8 +33,23 @@ interface CharacterRow {
   tts_voice: string | null;
   tts_speed: number | null;
   angles: string | null;
+  sprite_sheets: string | null;
   created_at: string;
   updated_at: string;
+}
+
+function parseSpriteSheets(json: string | null): SpriteSheetItem[] {
+  if (!json || json.trim() === '') return [];
+  try {
+    const arr = JSON.parse(json) as SpriteSheetItem[];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeSpriteSheets(list: SpriteSheetItem[]): string {
+  return JSON.stringify(list);
 }
 
 interface AssetRow {
@@ -58,6 +74,8 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   const [assets, setAssets] = useState<AssetRow[]>([]);
   const [skeletonPanelOpen, setSkeletonPanelOpen] = useState(false);
   const [skeletonPanelAngle, setSkeletonPanelAngle] = useState<CharacterAngle | null>(null);
+  const [spriteSheetPanelOpen, setSpriteSheetPanelOpen] = useState(false);
+  const [spriteSheetPanelItem, setSpriteSheetPanelItem] = useState<SpriteSheetItem | null>(null);
   const projectDir = project.project_dir;
 
   const loadCharacters = useCallback(async () => {
@@ -170,6 +188,44 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   };
 
   const angles = selected ? parseCharacterAngles(selected.angles ?? null) : [];
+  const spriteSheets = selected ? parseSpriteSheets(selected.sprite_sheets ?? null) : [];
+
+  const openSpriteSheetPanel = (item: SpriteSheetItem | null) => {
+    setSpriteSheetPanelItem(item);
+    setSpriteSheetPanelOpen(true);
+  };
+
+  const handleSpriteSheetSave = async (updated: SpriteSheetItem) => {
+    if (!selectedId) return;
+    const next = spriteSheets.some((s) => s.id === updated.id)
+      ? spriteSheets.map((s) => (s.id === updated.id ? updated : s))
+      : [...spriteSheets, updated];
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      sprite_sheets: serializeSpriteSheets(next),
+    });
+    if (res?.ok) {
+      loadCharacters();
+    } else {
+      message.error(res?.error || '保存失败');
+    }
+  };
+
+  const handleAddSpriteSheet = async () => {
+    if (!selectedId) return;
+    const newId = `sprite_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const newItem: SpriteSheetItem = { id: newId, name: '精灵动作', image_path: '' };
+    const next = [...spriteSheets, newItem];
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      sprite_sheets: serializeSpriteSheets(next),
+    });
+    if (res?.ok) {
+      loadCharacters();
+      setSpriteSheetPanelItem(newItem);
+      setSpriteSheetPanelOpen(true);
+    } else {
+      message.error(res?.error || '添加失败');
+    }
+  };
 
   const openSkeletonPanel = (angle: CharacterAngle) => {
     setSkeletonPanelAngle(angle);
@@ -282,6 +338,35 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                   </Space>
                 </Form.Item>
 
+                <Form.Item label="精灵动作图">
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                    {spriteSheets.map((s) => (
+                      <SpriteSheetCard
+                        key={s.id}
+                        projectDir={projectDir}
+                        item={s}
+                        onEdit={() => openSpriteSheetPanel(s)}
+                      />
+                    ))}
+                    <div
+                      style={{
+                        width: 140,
+                        minHeight: 180,
+                        borderRadius: 12,
+                        background: 'rgba(255,255,255,0.04)',
+                        border: '1px dashed rgba(255,255,255,0.2)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                      }}
+                      onClick={handleAddSpriteSheet}
+                    >
+                      <Text type="secondary">新建</Text>
+                    </div>
+                  </div>
+                </Form.Item>
+
                 <Form.Item label="角度与骨骼">
                   <Space direction="vertical" style={{ width: '100%' }} size="small">
                     {angles.map((angle) => (
@@ -388,6 +473,25 @@ export default function CharactersTab({ project }: CharactersTabProps) {
           openFileDialog={() => window.yiman?.dialog?.openFile?.() ?? Promise.resolve(undefined)}
         />
       )}
+
+      {spriteSheetPanelOpen && (
+        <SpriteSheetPanel
+          open={spriteSheetPanelOpen}
+          onClose={() => { setSpriteSheetPanelOpen(false); setSpriteSheetPanelItem(null); }}
+          projectDir={projectDir}
+          characterId={selectedId!}
+          item={spriteSheetPanelItem}
+          onSave={handleSpriteSheetSave}
+          getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+          getAssets={(dir) => window.yiman?.project?.getAssets?.(dir) ?? Promise.resolve([])}
+          saveAssetFromFile={async (dir, filePath, type) => (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type)) ?? { ok: false }}
+          openFileDialog={() => window.yiman?.dialog?.openFile?.() ?? Promise.resolve(undefined)}
+          getSpriteBackgroundColor={(dir, rel) => window.yiman?.project?.getSpriteBackgroundColor?.(dir, rel) ?? Promise.resolve(null)}
+          getSpriteFrames={(dir, rel, bg, opt) => window.yiman?.project?.getSpriteFrames?.(dir, rel, bg, opt) ?? Promise.resolve({ raw: [], normalized: [] })}
+          processSpriteWithOnnx={(dir, rel, opt) => window.yiman?.project?.processSpriteWithOnnx?.(dir, rel, opt) ?? Promise.resolve({ ok: false, error: '未就绪' })}
+          openDirectoryDialog={() => window.yiman?.dialog?.openDirectory?.() ?? Promise.resolve(null)}
+        />
+      )}
     </div>
   );
 }
@@ -400,6 +504,66 @@ function AssetThumb({ projectDir, path }: { projectDir: string; path: string }) 
   return (
     <div style={{ width: 80, height: 80, background: 'rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {dataUrl ? <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Text type="secondary">加载中</Text>}
+    </div>
+  );
+}
+
+function SpriteSheetCard({
+  projectDir,
+  item,
+  onEdit,
+}: {
+  projectDir: string;
+  item: SpriteSheetItem;
+  onEdit: () => void;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const imgPath = item.cover_path || item.image_path;
+  useEffect(() => {
+    if (!imgPath) {
+      setDataUrl(null);
+      return;
+    }
+    window.yiman?.project?.getAssetDataUrl(projectDir, imgPath).then(setDataUrl);
+  }, [projectDir, imgPath]);
+
+  return (
+    <div
+      style={{
+        width: 140,
+        borderRadius: 12,
+        background: 'rgba(255,255,255,0.06)',
+        overflow: 'hidden',
+        cursor: 'pointer',
+      }}
+      onClick={onEdit}
+    >
+      <div
+        style={{
+          width: '100%',
+          aspectRatio: 3 / 4,
+          background: 'rgba(0,0,0,0.2)',
+          borderRadius: '12px 12px 0 0',
+          overflow: 'hidden',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {dataUrl ? (
+          <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        ) : (
+          <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
+        )}
+      </div>
+      <div style={{ padding: '8px 10px' }}>
+        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {item.name || '未命名'}
+        </div>
+        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>
+          {item.frame_count ? `${item.frame_count} 帧` : item.image_path ? '未抠图' : '未导入'}
+        </div>
+      </div>
     </div>
   );
 }
