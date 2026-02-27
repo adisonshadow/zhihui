@@ -1,10 +1,14 @@
 /**
  * 精灵动作图编辑面板：导入精灵图、ONNX RVM 抠图、预览动画
  * 注：原 spriteService（sharp 背景色+帧识别）已暂时停用，改为使用 onnxruntime-node RVM 模型抠图并重新排列
+ * 支持 AI 抠图（火山引擎）：配置了 aiMattingConfigs 时在模型列表中显示，选择后走云端
  */
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Drawer, Button, Space, Typography, App, Input, InputNumber, Modal, Checkbox, Select, Slider } from 'antd';
-import { UploadOutlined, PictureOutlined, ExpandOutlined } from '@ant-design/icons';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Drawer, Button, Space, Typography, App, Modal, Slider } from 'antd';
+import { UploadOutlined, PictureOutlined, ExpandOutlined, ScissorOutlined } from '@ant-design/icons';
+import { MattingSettingsPanel } from './MattingSettingsPanel';
+import { EditableTitle } from '@/components/antd-plus/EditableTitle';
+import { CHECKERBOARD_BACKGROUND } from '@/styles/checkerboardBackground';
 
 const { Text } = Typography;
 
@@ -27,10 +31,12 @@ export interface SpriteSheetItem {
   background_color?: { r: number; g: number; b: number; a: number };
   /** 由 sharp 自动识别的帧矩形，保存后复用 */
   frames?: SpriteFrameRect[];
-  /** 上次使用的抠图模型，保存后再次打开时恢复 */
-  matting_model?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2';
+  /** 上次使用的抠图模型，保存后再次打开时恢复；本地模型或 AI 抠图配置 id */
+  matting_model?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2' | string;
   /** 精灵图预览播放速度（帧/秒），可保存 */
   playback_fps?: number;
+  /** 是否需要抠图：false 表示已抠好，仅识别帧 */
+  need_matting?: boolean;
 }
 
 export interface SpriteSheetPanelProps {
@@ -43,7 +49,13 @@ export interface SpriteSheetPanelProps {
   getAssetDataUrl: (projectDir: string, path: string) => Promise<string | null>;
   getAssets: (projectDir: string) => Promise<{ id: string; path: string; type: string }[]>;
   saveAssetFromFile: (projectDir: string, filePath: string, type: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  saveAssetFromBase64?: (projectDir: string, base64Data: string, ext?: string, type?: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   openFileDialog: () => Promise<string | undefined>;
+  matteImageAndSave?: (
+    projectDir: string,
+    path: string,
+    options?: { mattingModel?: string; downsampleRatio?: number }
+  ) => Promise<{ ok: boolean; path?: string; error?: string }>;
   /** 已停用：原 spriteService sharp 背景色检测 */
   getSpriteBackgroundColor?: (projectDir: string, relativePath: string) => Promise<{ r: number; g: number; b: number; a: number } | null>;
   /** 已停用：原 spriteService sharp 帧识别，改用 processSpriteWithOnnx */
@@ -51,20 +63,27 @@ export interface SpriteSheetPanelProps {
     projectDir: string,
     relativePath: string,
     background: { r: number; g: number; b: number; a: number } | null,
-    options?: { backgroundThreshold?: number; minGapPixels?: number }
+    options?: { backgroundThreshold?: number; minGapPixels?: number; useTransparentBackground?: boolean }
   ) => Promise<{ raw: SpriteFrameRect[]; normalized: SpriteFrameRect[] }>;
   /** ONNX 抠图并重新排列为透明、等宽高、等间距的精灵图，支持 RVM 与 BiRefNet */
   processSpriteWithOnnx?: (
     projectDir: string,
     relativePath: string,
-    options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2'; u2netpAlphaMatting?: boolean; debugDir?: string }
+    options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: string; u2netpAlphaMatting?: boolean; debugDir?: string }
   ) => Promise<{ ok: boolean; path?: string; frames?: SpriteFrameRect[]; cover_path?: string; error?: string }>;
   /** 选择目录（用于调试输出） */
   openDirectoryDialog?: () => Promise<string | null>;
+  /** 从精灵图提取第一帧并保存为封面（无需抠图时使用） */
+  extractSpriteCover?: (
+    projectDir: string,
+    relativePath: string,
+    frame: SpriteFrameRect
+  ) => Promise<{ ok: boolean; path?: string; error?: string }>;
 }
 
-const PREVIEW_SIZE = 200;
+const PREVIEW_SIZE = 300;
 const DEFAULT_FRAME_COUNT = 8;
+
 const DEFAULT_PLAYBACK_FPS = 8;
 const CHROMA_THRESHOLD = 120;
 
@@ -95,11 +114,14 @@ export function SpriteSheetPanel({
   getAssetDataUrl,
   getAssets,
   saveAssetFromFile,
+  saveAssetFromBase64,
   openFileDialog,
+  matteImageAndSave,
   getSpriteBackgroundColor: _getSpriteBackgroundColor,
+  processSpriteWithOnnx: _processSpriteWithOnnx,
+  openDirectoryDialog: _openDirectoryDialog,
   getSpriteFrames: _getSpriteFrames,
-  processSpriteWithOnnx,
-  openDirectoryDialog,
+  extractSpriteCover,
 }: SpriteSheetPanelProps) {
   const { message } = App.useApp();
   const [item, setItem] = useState<SpriteSheetItem | null>(initialItem);
@@ -114,20 +136,18 @@ export function SpriteSheetPanel({
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [assets, setAssets] = useState<{ id: string; path: string; type: string }[]>([]);
   const [saving, setSaving] = useState(false);
-  const [onnxProcessing, setOnnxProcessing] = useState(false);
-  const [downsampleRatio, setDownsampleRatio] = useState(0.5);
-  const [forceRvm, setForceRvm] = useState(false);
-  const [mattingModel, setMattingModel] = useState<'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2'>('rvm');
+  const [recognizeFramesLoading, setRecognizeFramesLoading] = useState(false);
   const [playbackFps, setPlaybackFps] = useState(DEFAULT_PLAYBACK_FPS);
-  const [u2netpAlphaMatting, setU2netpAlphaMatting] = useState(false);
-  /** 调试输出：启用时抠图后保存中间结果到 debugDir/test/ */
-  const [debugMatting, setDebugMatting] = useState(false);
-  const [debugDir, setDebugDir] = useState<string | null>(null);
+  const [mattingPanelOpen, setMattingPanelOpen] = useState(false);
   /** 用于 ONNX 抠图的原始图路径（本地上传/素材库选择的资源），不随 ONNX 结果覆盖 */
   const [sourceImagePathForOnnx, setSourceImagePathForOnnx] = useState<string | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameIndexRef = useRef(0);
   const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!open) setMattingPanelOpen(false);
+  }, [open]);
 
   useEffect(() => {
     setItem(initialItem);
@@ -138,7 +158,6 @@ export function SpriteSheetPanel({
       setFrames(initialItem.frames ?? []);
       setRawFrames([]);
       setSourceImagePathForOnnx(initialItem.image_path);
-      setMattingModel(initialItem.matting_model ?? 'rvm');
       setPlaybackFps(initialItem.playback_fps ?? DEFAULT_PLAYBACK_FPS);
     } else {
       setFrameCount(DEFAULT_FRAME_COUNT);
@@ -147,7 +166,6 @@ export function SpriteSheetPanel({
       setFrames([]);
       setRawFrames([]);
       setSourceImagePathForOnnx(null);
-      setMattingModel('rvm');
       setPlaybackFps(DEFAULT_PLAYBACK_FPS);
     }
   }, [initialItem, open]);
@@ -204,49 +222,12 @@ export function SpriteSheetPanel({
     getAssets(projectDir).then(setAssets);
   }, [projectDir, getAssets]);
 
-  const handleSelectDebugDir = useCallback(async () => {
-    if (!openDirectoryDialog) return;
-    const dir = await openDirectoryDialog();
-    if (dir) {
-      setDebugDir(dir);
-      setDebugMatting(true);
-      message.success(`调试输出将保存到 ${dir}/test`);
-    }
-  }, [openDirectoryDialog, message]);
-
-  const handleOnnxMatting = useCallback(async () => {
-    const inputPath = sourceImagePathForOnnx ?? item?.image_path;
-    if (!inputPath || !processSpriteWithOnnx) return;
-    setOnnxProcessing(true);
-    try {
-      const res = await processSpriteWithOnnx(projectDir, inputPath, {
-        frameCount,
-        spacing: 4,
-        downsampleRatio,
-        forceRvm,
-        mattingModel,
-        u2netpAlphaMatting: mattingModel === 'u2netp' ? u2netpAlphaMatting : undefined,
-        debugDir: debugMatting && debugDir ? debugDir : undefined,
-      });
-      if (!res.ok) {
-        message.error(res.error || 'ONNX 抠图失败');
-        return;
-      }
-      if (res.path && res.frames && item) {
-        setItem((i) =>
-          i
-            ? {
-                ...i,
-                image_path: res.path!,
-                frame_count: res.frames!.length,
-                cover_path: res.cover_path ?? i.cover_path,
-              }
-            : i
-        );
-        setFrames(res.frames);
-        setRawFrames([]);
-        setChromaEnabled(false);
-        const url = await getAssetDataUrl(projectDir, res.path);
+  const handleMattingPathChange = useCallback(
+    (itemId: string, newPath: string) => {
+      if (!item || item.id !== itemId) return;
+      setItem((i) => (i ? { ...i, image_path: newPath } : i));
+      setSourceImagePathForOnnx(newPath);
+      getAssetDataUrl(projectDir, newPath).then((url) => {
         setImageDataUrl(url ?? null);
         if (url) {
           const img = new Image();
@@ -255,12 +236,53 @@ export function SpriteSheetPanel({
           img.onerror = () => setImageElement(null);
           img.src = url;
         }
-        message.success('ONNX 抠图完成');
+      });
+    },
+    [projectDir, item, getAssetDataUrl]
+  );
+
+  const handleRecognizeFrames = useCallback(async () => {
+    const imgPath = sourceImagePathForOnnx ?? item?.image_path;
+    if (!imgPath || !_getSpriteFrames) return;
+    setRecognizeFramesLoading(true);
+    try {
+      const res = await _getSpriteFrames(projectDir, imgPath, null, {
+        useTransparentBackground: true,
+        minGapPixels: 6,
+      });
+      if (res.normalized.length > 0) {
+        setFrames(res.normalized);
+        setRawFrames(res.raw);
+        setFrameCount(res.normalized.length);
+        setChromaEnabled(false);
+        let cover_path: string | undefined;
+        try {
+          if (extractSpriteCover && res.normalized.length >= 1) {
+            const coverRes = await extractSpriteCover(projectDir, imgPath, res.normalized[0]!);
+            if (coverRes.ok && coverRes.path) {
+              cover_path = coverRes.path;
+            } else if (coverRes.error) {
+              message.warning(`封面保存失败：${coverRes.error}`);
+            }
+          } else if (!extractSpriteCover) {
+            message.warning('未配置封面提取，请更新应用');
+          }
+        } catch (e) {
+          message.warning(`封面保存失败：${e instanceof Error ? e.message : '未知错误'}`);
+        }
+        setItem((i) =>
+          i ? { ...i, frame_count: res.normalized.length, cover_path: cover_path ?? i.cover_path } : i
+        );
+        message.success(`已识别 ${res.normalized.length} 帧`);
+      } else {
+        message.warning('未识别到有效帧，请确认图片为透明背景的精灵图');
       }
+    } catch {
+      message.error('识别帧失败');
     } finally {
-      setOnnxProcessing(false);
+      setRecognizeFramesLoading(false);
     }
-  }, [projectDir, item, sourceImagePathForOnnx, frameCount, downsampleRatio, forceRvm, mattingModel, u2netpAlphaMatting, debugMatting, debugDir, processSpriteWithOnnx, getAssetDataUrl, message]);
+  }, [projectDir, item, sourceImagePathForOnnx, _getSpriteFrames, extractSpriteCover, message]);
 
   const handlePickAsset = useCallback(
     async (path: string) => {
@@ -292,7 +314,6 @@ export function SpriteSheetPanel({
       chroma_key: chromaEnabled ? '#00ff00' : undefined,
       background_color: backgroundColor ?? undefined,
       frames: frames.length > 0 ? frames : undefined,
-      matting_model: mattingModel,
       playback_fps: playbackFps,
     };
     setSaving(true);
@@ -300,22 +321,22 @@ export function SpriteSheetPanel({
     setSaving(false);
     message.success('已保存');
     onClose();
-  }, [item, frameCount, chromaEnabled, backgroundColor, frames, mattingModel, playbackFps, onSave, onClose, message]);
+  }, [item, frameCount, chromaEnabled, backgroundColor, frames, playbackFps, onSave, onClose, message]);
 
   const effectiveFrames = frames.length > 0 ? frames : null;
   const frameCountForDraw = effectiveFrames ? effectiveFrames.length : Math.max(1, frameCount);
 
   const drawPreviewFrame = useCallback(
-    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, frameIdx: number) => {
+    (ctx: CanvasRenderingContext2D, img: HTMLImageElement, frameIdx: number, size: number = PREVIEW_SIZE) => {
       const rect = effectiveFrames?.[frameIdx];
       const fw = rect ? rect.width : img.naturalWidth / Math.max(1, frameCount);
       const fh = rect ? rect.height : img.naturalHeight;
       const sx = rect ? rect.x : frameIdx * fw;
       const sy = rect ? rect.y : 0;
-      const scale = Math.min(PREVIEW_SIZE / fw, PREVIEW_SIZE / fh, 1);
+      const scale = Math.min(size / fw, size / fh, 1);
       const dw = fw * scale;
       const dh = fh * scale;
-      ctx.clearRect(0, 0, PREVIEW_SIZE, PREVIEW_SIZE);
+      ctx.clearRect(0, 0, size, size);
       if (chromaEnabled && (backgroundColor || !effectiveFrames)) {
         const off = document.createElement('canvas');
         off.width = fw;
@@ -332,29 +353,31 @@ export function SpriteSheetPanel({
           CHROMA_THRESHOLD
         );
         octx.putImageData(id, 0, 0);
-        ctx.drawImage(off, 0, 0, fw, fh, (PREVIEW_SIZE - dw) / 2, (PREVIEW_SIZE - dh) / 2, dw, dh);
+        ctx.drawImage(off, 0, 0, fw, fh, (size - dw) / 2, (size - dh) / 2, dw, dh);
       } else {
-        ctx.drawImage(
-          img,
-          sx,
-          sy,
-          fw,
-          fh,
-          (PREVIEW_SIZE - dw) / 2,
-          (PREVIEW_SIZE - dh) / 2,
-          dw,
-          dh
-        );
+        ctx.drawImage(img, sx, sy, fw, fh, (size - dw) / 2, (size - dh) / 2, dw, dh);
       }
     },
     [frameCount, chromaEnabled, backgroundColor, effectiveFrames]
   );
 
   useEffect(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas || !open) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(PREVIEW_SIZE * dpr);
+    canvas.height = Math.floor(PREVIEW_SIZE * dpr);
+    canvas.style.width = `${PREVIEW_SIZE}px`;
+    canvas.style.height = `${PREVIEW_SIZE}px`;
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }, [open, imageElement]);
+
+  useEffect(() => {
     if (!open || !imageElement || !previewCanvasRef.current) return;
     const ctx = previewCanvasRef.current.getContext('2d');
     if (!ctx) return;
-    drawPreviewFrame(ctx, imageElement, 0);
+    drawPreviewFrame(ctx, imageElement, 0, PREVIEW_SIZE);
   }, [open, imageElement, frameCount, chromaEnabled, drawPreviewFrame]);
 
   useEffect(() => {
@@ -369,7 +392,7 @@ export function SpriteSheetPanel({
       if (now - last >= interval) {
         last = now;
         frameIndexRef.current = (frameIndexRef.current + 1) % count;
-        drawPreviewFrame(ctx, imageElement, frameIndexRef.current);
+        drawPreviewFrame(ctx, imageElement, frameIndexRef.current, PREVIEW_SIZE);
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -380,7 +403,18 @@ export function SpriteSheetPanel({
   return (
     <>
       <Drawer
-        title={item ? `编辑精灵图：${item.name || item.id}` : '新建精灵图'}
+        title={
+          item ? (
+            <EditableTitle
+              value={item.name ?? ''}
+              onChange={(v) => setItem((i) => (i ? { ...i, name: v || undefined } : i))}
+              placeholder="精灵动作"
+              prefix="编辑精灵图："
+            />
+          ) : (
+            '新建精灵图'
+          )
+        }
         placement="right"
         size={480}
         open={open}
@@ -403,18 +437,7 @@ export function SpriteSheetPanel({
         {!item ? (
           <Text type="secondary">请先保存新建项后再编辑。</Text>
         ) : (
-          <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            <div>
-              <Text strong style={{ display: 'block', marginBottom: 8 }}>
-                名称
-              </Text>
-              <Input
-                placeholder="如：待机、行走、攻击"
-                value={item.name ?? ''}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setItem((i) => (i ? { ...i, name: e.target.value || undefined } : i))}
-                style={{ width: 260 }}
-              />
-            </div>
+          <Space orientation="vertical" style={{ width: '100%' }} size="middle">
             <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>
                 精灵图
@@ -430,66 +453,6 @@ export function SpriteSheetPanel({
             </div>
 
             <div>
-              <Space wrap align="center" style={{ marginBottom: 8 }}>
-                <Text strong>抠图模型</Text>
-                <Select
-                  value={mattingModel}
-                  onChange={(v) => setMattingModel(v)}
-                  style={{ width: 170 }}
-                  options={[
-                    { value: 'rvm', label: 'RVM（极低精度）' },
-                    { value: 'birefnet', label: 'BiRefNet（中精度）' },
-                    { value: 'mvanet', label: 'MVANet（中精度）' },
-                    { value: 'u2netp', label: 'U2NetP（低精度）' },
-                    { value: 'rmbg2', label: 'RMBG-2（高精度）' },
-                  ]}
-                />
-                {mattingModel === 'u2netp' && (
-                  <Checkbox checked={u2netpAlphaMatting} onChange={(e) => setU2netpAlphaMatting(e.target.checked)}>
-                    Alpha Matting（边缘细化）
-                  </Checkbox>
-                )}
-                <Space wrap style={{ marginTop: 4 }}>
-                  {/* <Checkbox checked={debugMatting} onChange={(e) => setDebugMatting(e.target.checked)}>
-                    调试输出
-                  </Checkbox> */}
-                  {debugMatting && (
-                    <Button size="small" onClick={handleSelectDebugDir}>
-                      选择目录（将创建 test/）
-                    </Button>
-                  )}
-                  {debugDir && debugMatting && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>{debugDir}/test</Text>
-                  )}
-                </Space>
-                {mattingModel === 'rvm' && (
-                  <>
-                    <Text strong>下采样比</Text>
-                    <InputNumber
-                      min={0.125}
-                      max={1}
-                      step={0.125}
-                      value={downsampleRatio}
-                      onChange={(v) => setDownsampleRatio(v ?? 0.5)}
-                      style={{ width: 90 }}
-                    />
-                    <Checkbox checked={forceRvm} onChange={(e) => setForceRvm(e.target.checked)}>
-                      强制 RVM（有背景色时默认 Chroma Key，下采样比无效）
-                    </Checkbox>
-                  </>
-                )}
-                <Button
-                  type="primary"
-                  onClick={handleOnnxMatting}
-                  loading={onnxProcessing}
-                  disabled={!item?.image_path || !processSpriteWithOnnx || onnxProcessing}
-                >
-                  抠图
-                </Button>
-              </Space>
-            </div>
-
-            <div>
               <Text strong style={{ display: 'block', marginBottom: 8 }}>
                 预览
                 {effectiveFrames && (
@@ -498,34 +461,52 @@ export function SpriteSheetPanel({
                   </Text>
                 )}
               </Text>
-              <div style={{ marginBottom: 8 }}>
-                <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>播放速度</Text>
-                <Slider
-                  min={2}
-                  max={24}
-                  step={1}
-                  value={playbackFps}
-                  onChange={(v) => setPlaybackFps(typeof v === 'number' ? v : v[0] ?? DEFAULT_PLAYBACK_FPS)}
-                  tooltip={{ formatter: (v) => `${v} 帧/秒` }}
-                />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
+                <Space align="center" style={{ flex: 1, minWidth: 160 }}>
+                  <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>播放速度</Text>
+                  <Slider
+                    min={2}
+                    max={24}
+                    step={1}
+                    value={playbackFps}
+                    onChange={(v) => setPlaybackFps(typeof v === 'number' ? v : v[0] ?? DEFAULT_PLAYBACK_FPS)}
+                    tooltip={{ formatter: (v) => `${v} 帧/秒` }}
+                    style={{ flex: 1, minWidth: 80 }}
+                  />
+                </Space>
+                <Space>
+                  <Button
+                    icon={<ScissorOutlined />}
+                    onClick={() => setMattingPanelOpen(true)}
+                    disabled={!item?.image_path || !(matteImageAndSave || saveAssetFromBase64)}
+                  >
+                    抠图
+                  </Button>
+                  <Button
+                    type="primary"
+                    onClick={handleRecognizeFrames}
+                    loading={recognizeFramesLoading}
+                    disabled={!item?.image_path || !_getSpriteFrames || recognizeFramesLoading}
+                  >
+                    识别帧
+                  </Button>
+                </Space>
               </div>
               <div
                 style={{
                   width: '100%',
                   aspectRatio: 1,
-                  background: 'rgba(0,0,0,0.3)',
                   borderRadius: 8,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
+                  ...CHECKERBOARD_BACKGROUND,
                 }}
               >
                 {imageElement ? (
                   <canvas
                     ref={previewCanvasRef}
-                    width={PREVIEW_SIZE}
-                    height={PREVIEW_SIZE}
-                    style={{ display: 'block', width: '100%', height: '100%' }}
+                    style={{ display: 'block', width: PREVIEW_SIZE, height: PREVIEW_SIZE, maxWidth: '100%' }}
                   />
                 ) : (
                   <Text type="secondary">请先导入精灵图</Text>
@@ -605,6 +586,22 @@ export function SpriteSheetPanel({
           </Space>
         )}
       </Drawer>
+
+      {mattingPanelOpen &&
+        item?.image_path &&
+        (matteImageAndSave || saveAssetFromBase64) && (
+          <MattingSettingsPanel
+            open={mattingPanelOpen}
+            onClose={() => setMattingPanelOpen(false)}
+            itemId={item.id}
+            projectDir={projectDir}
+            imagePath={item.image_path}
+            getAssetDataUrl={getAssetDataUrl}
+            saveAssetFromBase64={saveAssetFromBase64 ?? (() => Promise.resolve({ ok: false, error: '未就绪' }))}
+            matteImageAndSave={matteImageAndSave ?? (async () => ({ ok: false, error: '未就绪' }))}
+            onPathChange={handleMattingPathChange}
+          />
+        )}
 
       {assetPickerOpen && (
         <Drawer

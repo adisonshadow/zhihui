@@ -1,6 +1,6 @@
 /**
  * 关键帧补间：位置/平面旋转/3D旋转/缩放 使用一个 Transform 组合，模糊/透明度/色彩单独插值（见功能文档 6.8）
- * 关键帧按属性独立；补间时按时间在相邻关键帧之间线性插值，输出用于渲染区的一致的变换与效果值。
+ * 关键帧按属性独立；补间时按时间在相邻关键帧之间线性插值，输出用于画布的一致的变换与效果值。
  */
 
 export type KeyframeProperty = 'pos' | 'scale' | 'rotation' | 'blur' | 'opacity' | 'color';
@@ -237,7 +237,7 @@ export function getInterpolatedEffects(
 
 /**
  * 由插值后的变换生成 CSS transform 字符串（一个 Transform Matrix 的等价：translate + scale + rotate + rotateX + rotateY）
- * 使用 2D/3D 组合，便于渲染区应用。
+ * 使用 2D/3D 组合，便于画布应用。
  */
 export function buildTransformCSS(
   t: InterpolatedTransform,

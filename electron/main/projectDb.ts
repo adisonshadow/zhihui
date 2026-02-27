@@ -53,6 +53,8 @@ export interface EpisodeRow {
   summary: string;
   script_text: string;
   character_refs?: string;
+  /** JSON：结构化剧本 { dramaTags, scenes }，见 docs/短漫剧剧本元素说明.md 15，暂不含节拍 */
+  script_structured?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -68,6 +70,8 @@ export interface CharacterRow {
   angles: string | null;
   /** JSON 数组：精灵动作图列表。每项 { id, name?, image_path, frame_count?, chroma_key? } */
   sprite_sheets: string | null;
+  /** JSON 数组：元件组列表。每项 { id, name, states: [{ id, tags: string[], items: CanvasItem[] }] } */
+  component_groups: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -188,6 +192,8 @@ export function initProjectDb(
         type TEXT NOT NULL,
         is_favorite INTEGER NOT NULL DEFAULT 0,
         description TEXT,
+        cover_path TEXT,
+        tags TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -285,7 +291,7 @@ export function createEpisode(
 export function updateEpisode(
   projectDir: string,
   id: string,
-  data: Partial<Pick<EpisodeRow, 'title' | 'sort_order' | 'summary' | 'script_text' | 'character_refs'>>
+  data: Partial<Pick<EpisodeRow, 'title' | 'sort_order' | 'summary' | 'script_text' | 'character_refs' | 'script_structured'>>
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
@@ -298,14 +304,23 @@ export function updateEpisode(
     if (!hasCharRefs) {
       db.prepare("ALTER TABLE episodes ADD COLUMN character_refs TEXT NOT NULL DEFAULT '[]'").run();
     }
+    const hasScriptStructured = columns.some((c) => c.name === 'script_structured');
+    if (!hasScriptStructured) {
+      db.prepare('ALTER TABLE episodes ADD COLUMN script_structured TEXT').run();
+    }
+    const scriptStructured =
+      (data as { script_structured?: string | null }).script_structured !== undefined
+        ? (data as { script_structured?: string | null }).script_structured
+        : (row as { script_structured?: string | null }).script_structured;
     db.prepare(
-      `UPDATE episodes SET title = ?, sort_order = ?, summary = ?, script_text = ?, character_refs = ?, updated_at = ? WHERE id = ?`
+      `UPDATE episodes SET title = ?, sort_order = ?, summary = ?, script_text = ?, character_refs = ?, script_structured = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.title ?? row.title,
       data.sort_order ?? row.sort_order,
       data.summary ?? row.summary,
       data.script_text ?? row.script_text,
       charRefs,
+      scriptStructured ?? null,
       now,
       id
     );
@@ -551,6 +566,10 @@ export interface TimelineBlockRow {
   lock_aspect?: number;
   blur?: number;
   opacity?: number;
+  /** 精灵图播放速度（帧/秒），仅精灵类素材使用 */
+  playback_fps?: number;
+  /** 精灵图播放次数，duration = (frame_count/fps)*count，仅精灵类素材使用 */
+  playback_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -574,6 +593,12 @@ function ensureTimelineBlocksTransformColumns(projectDir: string): void {
   }
   if (!columns.includes('opacity')) {
     db.prepare('ALTER TABLE timeline_blocks ADD COLUMN opacity REAL NOT NULL DEFAULT 1').run();
+  }
+  if (!columns.includes('playback_fps')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN playback_fps REAL').run();
+  }
+  if (!columns.includes('playback_count')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN playback_count INTEGER').run();
   }
 }
 
@@ -647,7 +672,7 @@ export function createTimelineBlock(
 export function updateTimelineBlock(
   projectDir: string,
   id: string,
-  data: Partial<Pick<TimelineBlockRow, 'layer_id' | 'asset_id' | 'start_time' | 'end_time' | 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'lock_aspect' | 'blur' | 'opacity'>>
+  data: Partial<Pick<TimelineBlockRow, 'layer_id' | 'asset_id' | 'start_time' | 'end_time' | 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'lock_aspect' | 'blur' | 'opacity' | 'playback_fps' | 'playback_count'>>
 ): { ok: boolean; error?: string } {
   try {
     ensureTimelineBlocksTransformColumns(projectDir);
@@ -660,40 +685,41 @@ export function updateTimelineBlock(
     const lockAspect = data.lock_aspect !== undefined ? data.lock_aspect : ((row as { lock_aspect?: number }).lock_aspect ?? 1);
     const blur = data.blur !== undefined ? data.blur : ((row as { blur?: number }).blur ?? 0);
     const opacity = data.opacity !== undefined ? data.opacity : ((row as { opacity?: number }).opacity ?? 1);
+    const playbackFps = data.playback_fps !== undefined ? data.playback_fps : ((row as { playback_fps?: number }).playback_fps ?? null);
+    const playbackCount = data.playback_count !== undefined ? data.playback_count : ((row as { playback_count?: number }).playback_count ?? null);
+    const cols = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+    const hasPlaybackCount = cols.includes('playback_count');
     db.prepare(
-      `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, updated_at = ? WHERE id = ?`
+      hasPlaybackCount
+        ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, updated_at = ? WHERE id = ?`
+        : `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, updated_at = ? WHERE id = ?`
     ).run(
-      layer_id,
-      data.asset_id !== undefined ? data.asset_id : row.asset_id,
-      newStart,
-      data.end_time !== undefined ? data.end_time : row.end_time,
-      data.pos_x !== undefined ? data.pos_x : (row.pos_x ?? 0.5),
-      data.pos_y !== undefined ? data.pos_y : (row.pos_y ?? 0.5),
-      data.scale_x !== undefined ? data.scale_x : (row.scale_x ?? 1),
-      data.scale_y !== undefined ? data.scale_y : (row.scale_y ?? 1),
-      data.rotation !== undefined ? data.rotation : (row.rotation ?? 0),
-      lockAspect,
-      blur,
-      opacity,
-      now,
-      id
+      ...(hasPlaybackCount
+        ? [layer_id, data.asset_id !== undefined ? data.asset_id : row.asset_id, newStart, data.end_time !== undefined ? data.end_time : row.end_time, data.pos_x !== undefined ? data.pos_x : (row.pos_x ?? 0.5), data.pos_y !== undefined ? data.pos_y : (row.pos_y ?? 0.5), data.scale_x !== undefined ? data.scale_x : (row.scale_x ?? 1), data.scale_y !== undefined ? data.scale_y : (row.scale_y ?? 1), data.rotation !== undefined ? data.rotation : (row.rotation ?? 0), lockAspect, blur, opacity, playbackFps, playbackCount, now, id]
+        : [layer_id, data.asset_id !== undefined ? data.asset_id : row.asset_id, newStart, data.end_time !== undefined ? data.end_time : row.end_time, data.pos_x !== undefined ? data.pos_x : (row.pos_x ?? 0.5), data.pos_y !== undefined ? data.pos_y : (row.pos_y ?? 0.5), data.scale_x !== undefined ? data.scale_x : (row.scale_x ?? 1), data.scale_y !== undefined ? data.scale_y : (row.scale_y ?? 1), data.rotation !== undefined ? data.rotation : (row.rotation ?? 0), lockAspect, blur, opacity, playbackFps, now, id])
     );
     const startDelta = newStart - row.start_time;
     if (Math.abs(startDelta) >= 1e-9) shiftKeyframesForBlock(projectDir, id, startDelta);
+    const layerRow = db.prepare('SELECT scene_id FROM layers WHERE id = ? AND is_main = 1').get(row.layer_id) as { scene_id: string } | undefined;
+    if (layerRow && (data.layer_id !== undefined || data.start_time !== undefined || data.end_time !== undefined)) compactMainTrack(projectDir, layerRow.scene_id);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-/** 删除素材条（见功能文档 6.7、开发计划 2.11）；先删该块下关键帧再删块 */
+/** 删除素材条（见功能文档 6.7、开发计划 2.11）；先删该块下关键帧再删块；若为主轨道则 compact */
 export function deleteTimelineBlock(projectDir: string, id: string): { ok: boolean; error?: string } {
   try {
     ensureTimelineBlocksTransformColumns(projectDir);
     ensureKeyframesTable(projectDir);
     const db = getDb(projectDir);
+    const block = db.prepare('SELECT layer_id FROM timeline_blocks WHERE id = ?').get(id) as { layer_id: string } | undefined;
+    const sceneRow = block ? (db.prepare('SELECT scene_id FROM layers WHERE id = ? AND is_main = 1').get(block.layer_id) as { scene_id: string } | undefined) : undefined;
+    const sceneId = sceneRow?.scene_id;
     db.prepare('DELETE FROM keyframes WHERE block_id = ?').run(id);
     db.prepare('DELETE FROM timeline_blocks WHERE id = ?').run(id);
+    if (sceneId) compactMainTrack(projectDir, sceneId);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -752,7 +778,7 @@ export function insertBlockAtMainTrack(
         now
       );
     })();
-
+    compactMainTrack(projectDir, sceneId);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -788,10 +814,70 @@ export function moveBlockToMainTrack(projectDir: string, sceneId: string, blockI
       db.prepare('UPDATE timeline_blocks SET layer_id = ?, start_time = ?, end_time = ?, updated_at = ? WHERE id = ?').run(mainLayerId, at, at + duration, now, blockId);
       shiftKeyframesForBlock(projectDir, blockId, at - block.start_time);
     })();
+    compactMainTrack(projectDir, sceneId);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * 主轨道无间隔重排：按 blockOrder 顺序（未提供则按 start_time）重新分配 start_time/end_time，
+ * 关键帧随素材平移。添加、删除、移出、移入、交换等操作后调用（见功能文档 6.7）
+ */
+export function compactMainTrack(
+  projectDir: string,
+  sceneId: string,
+  blockOrder?: string[]
+): { ok: boolean; error?: string } {
+  try {
+    ensureTimelineBlocksTransformColumns(projectDir);
+    ensureKeyframesExtraColumns(projectDir);
+    const db = getDb(projectDir);
+    const mainLayerId = getMainLayerId(projectDir, sceneId);
+    if (!mainLayerId) return { ok: true };
+
+    const now = new Date().toISOString();
+    let order: string[];
+    if (blockOrder && blockOrder.length > 0) {
+      order = blockOrder;
+    } else {
+      const rows = db
+        .prepare('SELECT id FROM timeline_blocks WHERE layer_id = ? ORDER BY start_time ASC')
+        .all(mainLayerId) as { id: string }[];
+      order = rows.map((r) => r.id);
+    }
+    if (order.length === 0) return { ok: true };
+
+    const placeholders = order.map(() => '?').join(',');
+    const rows = db
+      .prepare(`SELECT id, start_time, end_time FROM timeline_blocks WHERE id IN (${placeholders})`)
+      .all(...order) as { id: string; start_time: number; end_time: number }[];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    db.transaction(() => {
+      let t = 0;
+      for (const id of order) {
+        const row = byId.get(id);
+        if (!row) continue;
+        const dur = Math.max(0.5, row.end_time - row.start_time);
+        const newStart = t;
+        const newEnd = t + dur;
+        const delta = newStart - row.start_time;
+        db.prepare('UPDATE timeline_blocks SET layer_id = ?, start_time = ?, end_time = ?, updated_at = ? WHERE id = ?').run(mainLayerId, newStart, newEnd, now, id);
+        if (Math.abs(delta) >= 1e-9) shiftKeyframesForBlock(projectDir, id, delta);
+        t = newEnd;
+      }
+    })();
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 主轨道重排（按指定顺序调用 compactMainTrack） */
+export function reorderMainTrack(projectDir: string, sceneId: string, blockIds: string[]): { ok: boolean; error?: string } {
+  return compactMainTrack(projectDir, sceneId, blockIds);
 }
 
 /** 调整素材条 end_time 并级联后移后续素材（见功能文档 6.7，仅主轨道）；被后移的素材条其关键帧同步平移 */
@@ -812,6 +898,8 @@ export function resizeTimelineBlockWithCascade(projectDir: string, blockId: stri
     db.prepare('UPDATE timeline_blocks SET end_time = ?, updated_at = ? WHERE id = ?').run(newEnd, now, blockId);
     db.prepare('UPDATE timeline_blocks SET start_time = start_time + ?, end_time = end_time + ?, updated_at = ? WHERE layer_id = ? AND start_time >= ? AND id != ?').run(delta, delta, now, row.layer_id, row.end_time, blockId);
     for (const { id } of toShiftIds) shiftKeyframesForBlock(projectDir, id, delta);
+    const layerRow = db.prepare('SELECT scene_id FROM layers WHERE id = ? AND is_main = 1').get(row.layer_id) as { scene_id: string } | undefined;
+    if (layerRow) compactMainTrack(projectDir, layerRow.scene_id);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -1002,26 +1090,34 @@ function ensureCharactersSpriteSheetsColumn(db: Database.Database): void {
     db.prepare('ALTER TABLE characters ADD COLUMN sprite_sheets TEXT').run();
   }
 }
+function ensureCharactersComponentGroupsColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(characters)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'component_groups')) {
+    db.prepare('ALTER TABLE characters ADD COLUMN component_groups TEXT').run();
+  }
+}
 
 export function getCharacters(projectDir: string): CharacterRow[] {
   const db = getDb(projectDir);
   ensureCharactersAnglesColumn(db);
   ensureCharactersSpriteSheetsColumn(db);
+  ensureCharactersComponentGroupsColumn(db);
   return db.prepare('SELECT * FROM characters ORDER BY created_at ASC').all() as CharacterRow[];
 }
 
 export function createCharacter(
   projectDir: string,
-  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null; sprite_sheets?: string | null }
+  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null; sprite_sheets?: string | null; component_groups?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     ensureCharactersAnglesColumn(db);
     ensureCharactersSpriteSheetsColumn(db);
+    ensureCharactersComponentGroupsColumn(db);
     db.prepare(
-      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       data.id,
       data.name ?? '',
@@ -1031,6 +1127,7 @@ export function createCharacter(
       data.tts_speed ?? null,
       data.angles ?? null,
       data.sprite_sheets ?? null,
+      data.component_groups ?? null,
       now,
       now
     );
@@ -1043,17 +1140,18 @@ export function createCharacter(
 export function updateCharacter(
   projectDir: string,
   id: string,
-  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed' | 'angles' | 'sprite_sheets'>>
+  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed' | 'angles' | 'sprite_sheets' | 'component_groups'>>
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     ensureCharactersAnglesColumn(db);
     ensureCharactersSpriteSheetsColumn(db);
+    ensureCharactersComponentGroupsColumn(db);
     const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CharacterRow | undefined;
     if (!row) return { ok: false, error: '人物不存在' };
     db.prepare(
-      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, sprite_sheets = ?, updated_at = ? WHERE id = ?`
+      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, sprite_sheets = ?, component_groups = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.name ?? row.name,
       data.image_path !== undefined ? data.image_path : row.image_path,
@@ -1062,6 +1160,7 @@ export function updateCharacter(
       data.tts_speed !== undefined ? data.tts_speed : row.tts_speed,
       data.angles !== undefined ? data.angles : row.angles ?? null,
       data.sprite_sheets !== undefined ? data.sprite_sheets : row.sprite_sheets ?? null,
+      data.component_groups !== undefined ? data.component_groups : row.component_groups ?? null,
       now,
       id
     );
@@ -1071,8 +1170,28 @@ export function updateCharacter(
   }
 }
 
+/** 项目级未绑定人物的精灵图存储：使用虚拟 character 的 sprite_sheets */
+export const STANDALONE_SPRITES_CHARACTER_ID = '__standalone_sprites__';
+
+export function getOrCreateStandaloneSpritesCharacter(projectDir: string): CharacterRow {
+  const db = getDb(projectDir);
+  ensureCharactersSpriteSheetsColumn(db);
+  ensureCharactersComponentGroupsColumn(db);
+  let row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_SPRITES_CHARACTER_ID) as CharacterRow | undefined;
+  if (!row) {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(STANDALONE_SPRITES_CHARACTER_ID, '(项目精灵图)', null, null, null, null, null, '[]', null, now, now);
+    row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_SPRITES_CHARACTER_ID) as CharacterRow;
+  }
+  return row;
+}
+
 export function deleteCharacter(projectDir: string, id: string): { ok: boolean; error?: string } {
   try {
+    if (id === STANDALONE_SPRITES_CHARACTER_ID) return { ok: false, error: '不可删除项目精灵图容器' };
     getDb(projectDir).prepare('DELETE FROM characters WHERE id = ?').run(id);
     return { ok: true };
   } catch (e: unknown) {
@@ -1115,12 +1234,30 @@ export interface AssetRow {
   type: string;
   is_favorite: number;
   description: string | null;
+  cover_path?: string | null;
+  tags?: string | null;
   created_at: string;
   updated_at: string;
 }
 
+function ensureAssetsCoverPathColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(assets_index)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'cover_path')) {
+    db.prepare('ALTER TABLE assets_index ADD COLUMN cover_path TEXT').run();
+  }
+}
+
+function ensureAssetsTagsColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(assets_index)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'tags')) {
+    db.prepare('ALTER TABLE assets_index ADD COLUMN tags TEXT').run();
+  }
+}
+
 export function getAssets(projectDir: string, type?: string): AssetRow[] {
   const db = getDb(projectDir);
+  ensureAssetsCoverPathColumn(db);
+  ensureAssetsTagsColumn(db);
   if (type) {
     return db.prepare('SELECT * FROM assets_index WHERE type = ? ORDER BY created_at ASC').all(type) as AssetRow[];
   }
@@ -1129,7 +1266,39 @@ export function getAssets(projectDir: string, type?: string): AssetRow[] {
 
 export function getAssetById(projectDir: string, id: string): AssetRow | null {
   const db = getDb(projectDir);
+  ensureAssetsCoverPathColumn(db);
+  ensureAssetsTagsColumn(db);
   return db.prepare('SELECT * FROM assets_index WHERE id = ?').get(id) as AssetRow | null;
+}
+
+/** 从 base64 数据保存到项目 assets（供渲染进程即时透明抠图等） */
+export function saveAssetFromBase64(
+  projectDir: string,
+  base64Data: string,
+  ext: string = '.png',
+  type: string = 'character'
+): { ok: boolean; path?: string; id?: string; error?: string } {
+  try {
+    const normalized = path.normalize(projectDir);
+    const assetsDir = path.join(normalized, DIR_ASSETS);
+    if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
+    const id = crypto.randomUUID();
+    const fileName = id + (ext.startsWith('.') ? ext : '.' + ext);
+    const destPath = path.join(assetsDir, fileName);
+    const buf = Buffer.from(base64Data, 'base64');
+    fs.writeFileSync(destPath, buf);
+    const relativePath = DIR_ASSETS + '/' + fileName;
+    const now = new Date().toISOString();
+    const db = getDb(projectDir);
+    ensureAssetsCoverPathColumn(db);
+    ensureAssetsTagsColumn(db);
+    db.prepare(
+      `INSERT INTO assets_index (id, path, type, is_favorite, description, cover_path, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, relativePath, type, 0, null, null, null, now, now);
+    return { ok: true, path: relativePath, id };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** 从本地文件复制到项目 assets 并写入 assets_index（见开发计划 2.6/2.8 本地上传） */
@@ -1151,33 +1320,42 @@ export function saveAssetFromFile(
     const relativePath = DIR_ASSETS + '/' + fileName;
     const now = new Date().toISOString();
     const db = getDb(projectDir);
+    ensureAssetsCoverPathColumn(db);
+    ensureAssetsTagsColumn(db);
     const isFav = options?.is_favorite ?? 0;
     const desc = options?.description ?? null;
+    const tags = (options as { tags?: string | null })?.tags ?? null;
     db.prepare(
-      `INSERT INTO assets_index (id, path, type, is_favorite, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, relativePath, type, isFav, desc, now, now);
+      `INSERT INTO assets_index (id, path, type, is_favorite, description, cover_path, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, relativePath, type, isFav, desc, null, tags, now, now);
     return { ok: true, path: relativePath, id };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-/** 更新素材索引（描述、常用标记）（见开发计划 2.8） */
+/** 更新素材索引（描述、常用标记、封面路径、标签）（见开发计划 2.8） */
 export function updateAsset(
   projectDir: string,
   id: string,
-  data: { description?: string | null; is_favorite?: number }
+  data: { description?: string | null; is_favorite?: number; cover_path?: string | null; tags?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
+    ensureAssetsCoverPathColumn(db);
+    ensureAssetsTagsColumn(db);
     const row = db.prepare('SELECT * FROM assets_index WHERE id = ?').get(id) as AssetRow | undefined;
     if (!row) return { ok: false, error: '素材不存在' };
+    const coverPath = data.cover_path !== undefined ? data.cover_path : (row as AssetRow).cover_path ?? null;
+    const tags = data.tags !== undefined ? data.tags : (row as AssetRow).tags ?? null;
     db.prepare(
-      `UPDATE assets_index SET description = ?, is_favorite = ?, updated_at = ? WHERE id = ?`
+      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.description !== undefined ? data.description : row.description,
       data.is_favorite !== undefined ? data.is_favorite : row.is_favorite,
+      coverPath,
+      tags,
       now,
       id
     );
@@ -1206,7 +1384,16 @@ export function getAssetDataUrl(projectDir: string, relativePath: string): strin
     if (!fs.existsSync(fullPath)) return null;
     const buf = fs.readFileSync(fullPath);
     const ext = path.extname(relativePath).toLowerCase();
-    const mime = ext === '.png' ? 'image/png' : ext === '.gif' ? 'image/gif' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    const mime =
+      ext === '.png' ? 'image/png'
+      : ext === '.gif' ? 'image/gif'
+      : ext === '.webp' ? 'image/webp'
+      : ext === '.mp4' ? 'video/mp4'
+      : ext === '.webm' ? 'video/webm'
+      : ext === '.mov' ? 'video/quicktime'
+      : ext === '.mp3' ? 'audio/mpeg'
+      : ext === '.wav' ? 'audio/wav'
+      : 'image/jpeg';
     return `data:${mime};base64,${buf.toString('base64')}`;
   } catch {
     return null;

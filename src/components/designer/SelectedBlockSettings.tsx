@@ -3,12 +3,13 @@
  * 关键帧按属性独立：位置/缩放/旋转各自独立；设置自动保存，无保存按钮
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Form, Input, InputNumber, Button, Typography, Space, Switch, Slider, App } from 'antd';
+import { Form, Input, InputNumber, Button, Typography, Space, Switch, Slider, App, Radio } from 'antd';
 import type { FormInstance } from 'antd';
 import type { ProjectInfo } from '@/hooks/useProject';
 import { KeyframeButton } from './KeyframeButton';
 import { useKeyframeCRUD, type KeyframeProperty, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
 import { getInterpolatedTransform, getInterpolatedEffects } from '@/utils/keyframeTween';
+import { ASSET_CATEGORIES } from '@/constants/assetCategories';
 
 const { Text } = Typography;
 
@@ -26,6 +27,8 @@ interface BlockRow {
   lock_aspect?: number;
   blur?: number;
   opacity?: number;
+  playback_fps?: number;
+  playback_count?: number;
 }
 
 interface AssetRow {
@@ -34,6 +37,8 @@ interface AssetRow {
   type: string;
   description: string | null;
 }
+
+export type BlockSettingsTab = 'base' | 'sprite';
 
 interface SelectedBlockSettingsProps {
   project: ProjectInfo;
@@ -44,6 +49,12 @@ interface SelectedBlockSettingsProps {
   onJumpToTime?: (t: number) => void;
   /** 乐观更新 blur/opacity，画布立即反映 */
   onBlockUpdate?: (blockId: string, data: Partial<{ blur: number; opacity: number }>) => void;
+  /** 选中素材时是否为精灵图（用于 header 切换基础设置/精灵图设置）；frameCount 用于精灵图时长计算 */
+  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number }) => void;
+  /** 当前设置 tab（基础设置 | 精灵图设置），由父组件控制 */
+  settingsTab?: BlockSettingsTab;
+  /** 是否为精灵图（精灵图基础设置无播放时间、素材条不可 resize） */
+  isSpriteBlock?: boolean;
 }
 
 const KF_TOLERANCE = 0.02;
@@ -96,7 +107,7 @@ function ScaleControl({
   );
 }
 
-export function SelectedBlockSettings({ project, blockId, currentTime, refreshKey, onUpdate, onJumpToTime, onBlockUpdate }: SelectedBlockSettingsProps) {
+export function SelectedBlockSettings({ project, blockId, currentTime, refreshKey, onUpdate, onJumpToTime, onBlockUpdate, onBlockInfo, settingsTab = 'base', isSpriteBlock = false }: SelectedBlockSettingsProps) {
   const { message } = App.useApp();
   const projectDir = project.project_dir;
   const { createKeyframe, updateKeyframe, deleteKeyframe, getKeyframes } = useKeyframeCRUD(projectDir);
@@ -109,6 +120,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
   const [addingKf, setAddingKf] = useState(false);
   const [duration, setDuration] = useState(0);
   const [lockAspect, setLockAspect] = useState(true);
+  const [spriteFrameCount, setSpriteFrameCount] = useState(8);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 防止时间轴移动时 form.setFieldsValue 触发 onValuesChange 导致误保存 */
   const isSyncingFromTimelineRef = useRef(false);
@@ -137,15 +149,37 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
       const start = b.start_time ?? 0;
       const end = b.end_time ?? start + 5;
       setDuration(Math.max(0, end - start));
+      let a: AssetRow | null = null;
       if (b.asset_id && window.yiman?.project?.getAssetById) {
-        const a = (await window.yiman.project.getAssetById(projectDir, b.asset_id)) as AssetRow | null;
+        a = (await window.yiman.project.getAssetById(projectDir, b.asset_id)) as AssetRow | null;
         setAsset(a);
       } else setAsset(null);
+      if (onBlockInfo) {
+        let isSprite = false;
+        let frameCount = 8;
+        if (a?.path && window.yiman?.project?.getCharacters) {
+          const chars = (await window.yiman.project.getCharacters(projectDir)) as { sprite_sheets?: string | null }[];
+          for (const c of chars) {
+            try {
+              const arr = c.sprite_sheets ? (JSON.parse(c.sprite_sheets) as { image_path?: string; frame_count?: number; frames?: unknown[] }[]) : [];
+              const match = Array.isArray(arr) ? arr.find((s) => s.image_path === a!.path) : null;
+              if (match) {
+                isSprite = true;
+                frameCount = (match.frame_count ?? (match.frames?.length ?? 0)) || 8;
+                break;
+              }
+            } catch { /* ignore */ }
+          }
+        }
+        onBlockInfo({ isSprite, frameCount });
+        if (isSprite) setSpriteFrameCount(frameCount);
+      }
     } else {
       setAsset(null);
       setDuration(0);
+      onBlockInfo?.({ isSprite: false });
     }
-  }, [blockId, projectDir, getKeyframes]);
+  }, [blockId, projectDir, getKeyframes, onBlockInfo]);
 
   useEffect(() => {
     loadBlock();
@@ -294,6 +328,26 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     } else message.error(res?.error || '删除失败');
   };
 
+  /** 精灵图：根据播放速度、播放次数、帧数计算 duration 并更新 end_time；必须在早期 return 前声明（hooks 规则） */
+  const updateSpriteDuration = useCallback(
+    async (fps: number, count: number) => {
+      if (!blockId || !block || !window.yiman?.project?.updateTimelineBlock || spriteFrameCount <= 0) return;
+      const duration = (spriteFrameCount / fps) * count;
+      const newEnd = block.start_time + duration;
+      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, {
+        playback_fps: fps,
+        playback_count: count,
+        end_time: newEnd,
+      });
+      if (res?.ok) {
+        setBlock((prev) => (prev ? { ...prev, playback_fps: fps, playback_count: count, end_time: newEnd } : prev));
+        setDuration(duration);
+        onUpdate?.();
+      } else message.error(res?.error || '保存失败');
+    },
+    [blockId, block, projectDir, spriteFrameCount, onUpdate]
+  );
+
   if (!blockId) {
     return (
       <Form form={form} className="selected-block-settings">
@@ -311,7 +365,67 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
   }
 
   const assetName = asset?.description || asset?.path?.split(/[/\\]/).pop() || block.asset_id || '—';
-  const typeLabel = asset?.type ? { character: '人物', scene_bg: '场景背景', prop: '情景道具', sfx: '声效', transparent_video: '透明视频特效', music: '音乐', sticker: '贴纸' }[asset.type] || asset.type : '—';
+  const typeLabel = asset?.type
+    ? (ASSET_CATEGORIES.find((c) => c.value === asset.type)?.label ?? { character: '人物', scene_bg: '场景背景', prop: '情景道具', sticker: '贴纸' }[asset.type] ?? asset.type)
+    : '—';
+
+  const handlePlaybackFpsChange = async (v: number | null) => {
+    if (v == null || v < 0.5) return;
+    const count = (block?.playback_count ?? 1);
+    await updateSpriteDuration(v, count);
+  };
+
+  const handlePlaybackCountChange = async (v: number | null) => {
+    if (v == null || v < 1) return;
+    const fps = block?.playback_fps ?? 8;
+    await updateSpriteDuration(fps, v);
+  };
+
+  if (settingsTab === 'sprite') {
+    const playbackFps = block.playback_fps ?? 8;
+    const playbackCount = block.playback_count ?? 1;
+    const computedDuration = spriteFrameCount > 0 ? (spriteFrameCount / playbackFps) * playbackCount : 0;
+    return (
+      <div className="selected-block-settings selected-block-settings--sprite" style={{ padding: '4px 0' }}>
+        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">播放速度</Text>
+          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <InputNumber
+              size="small"
+              min={1}
+              max={60}
+              step={1}
+              value={playbackFps}
+              onChange={(v) => handlePlaybackFpsChange(typeof v === 'number' ? v : null)}
+              style={{ width: 80 }}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>帧/秒</Text>
+          </div>
+        </section>
+        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">播放次数</Text>
+          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <InputNumber
+              size="small"
+              min={1}
+              max={999}
+              step={1}
+              value={playbackCount}
+              onChange={(v) => handlePlaybackCountChange(typeof v === 'number' ? v : null)}
+              style={{ width: 80 }}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>次</Text>
+          </div>
+        </section>
+        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>时长</Text>
+          <div style={{ marginTop: 4, fontSize: 13 }}>
+            {computedDuration.toFixed(1)} 秒（自动计算）
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="selected-block-settings" style={{ padding: '4px 0' }}>
@@ -325,7 +439,8 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
         </div>
       </section>
 
-      {/* 播放时间 */}
+      {/* 播放时间（精灵图不可调，由播放速度+播放次数自动计算） */}
+      {!isSpriteBlock && (
       <section className="selected-block-settings__section selected-block-settings__duration" style={{ marginBottom: 12 }}>
         <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">播放时间</Text>
         <div className="selected-block-settings__duration-controls" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -348,6 +463,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           </Button>
         </div>
       </section>
+      )}
 
       {/* 位置大小（参考图）：缩放、等比缩放、位置、旋转，每行 label | 控件 | 关键帧右对齐 */}
       <section className="selected-block-settings__section selected-block-settings__transform" style={{ marginBottom: 12 }}>

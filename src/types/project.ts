@@ -21,6 +21,8 @@ export interface EpisodeRow {
   summary: string;
   script_text: string;
   character_refs?: string;
+  /** JSON：结构化剧本 { dramaTags, scenes }，见 docs/短漫剧剧本元素说明.md 15 */
+  script_structured?: string | null;
   created_at: string;
   updated_at: string;
 }

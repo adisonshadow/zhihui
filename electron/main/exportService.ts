@@ -16,7 +16,7 @@ const DESIGN_WIDTH_PORTRAIT = 1080;
 const DESIGN_HEIGHT_PORTRAIT = 1920;
 
 /** 图片类素材类型（支持导出，视频类暂不参与帧合成） */
-const IMAGE_ASSET_TYPES = new Set(['character', 'scene_bg', 'prop', 'sticker']);
+const IMAGE_ASSET_TYPES = new Set(['image', 'character', 'scene_bg', 'prop', 'sticker']);
 
 export interface ExportOptions {
   /** 输出宽度 */

@@ -1,5 +1,5 @@
 /**
- * 画布容器：视口缩放、播放/停止、超出显示 Toggle；画布按当前时间渲染关键帧插值（见功能文档 6.5、6.8、开发计划 2.10）
+ * 工作区容器：视口缩放、播放/停止、超出显示 Toggle；画布按当前时间渲染关键帧插值（见功能文档 6.5、6.8、开发计划 2.10）
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Dropdown, Space, Typography, Modal, Form, Select, Checkbox, Input, App } from 'antd';
@@ -8,7 +8,7 @@ import type { MenuProps } from 'antd';
 import { Canvas } from './Canvas';
 import { CanvasSelectionOverlay } from './CanvasSelectionOverlay';
 import type { ProjectInfo } from '@/hooks/useProject';
-import { ASSET_TYPES } from '@/constants/assetTypes';
+import { ASSET_LIBRARY_CATEGORIES } from '@/constants/assetCategories';
 import { useKeyframeCRUD, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
 import { getInterpolatedTransform, getInterpolatedEffects } from '@/utils/keyframeTween';
 import { computeBlockZIndex } from '@/utils/canvasZIndex';
@@ -41,6 +41,20 @@ interface BlockRow {
   lock_aspect?: number;
   blur?: number;
   opacity?: number;
+  playback_fps?: number;
+}
+
+interface SpriteFrameRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface SpriteDef {
+  frames: SpriteFrameRect[];
+  frame_count: number;
+  playback_fps: number;
 }
 
 interface CanvasContainerProps {
@@ -58,7 +72,7 @@ interface CanvasContainerProps {
   onUpdate?: () => void;
   /** 播放到场景末尾时调用（用于停止播放） */
   onPlayEnd?: () => void;
-  /** 乐观更新（含 blur/opacity 等），用于画布立即反映设置面板的修改 */
+  /** 乐观更新（含 blur/opacity 等），用于画布（Canvas 有效区域）立即反映设置面板的修改 */
   pendingBlockUpdates?: Record<string, Partial<Pick<BlockRow, 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'blur' | 'opacity'>>>;
   setPendingBlockUpdates?: React.Dispatch<React.SetStateAction<Record<string, Partial<Pick<BlockRow, 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'blur' | 'opacity'>>>>>;
 }
@@ -91,8 +105,10 @@ export function CanvasContainer({
   const [keyframesByBlock, setKeyframesByBlock] = useState<Record<string, KeyframeRow[]>>({});
   const [blockDataUrls, setBlockDataUrls] = useState<Record<string, string>>({});
   const [blockAssetPaths, setBlockAssetPaths] = useState<Record<string, string>>({});
+  const [blockAssetTypes, setBlockAssetTypes] = useState<Record<string, string>>({});
+  const [spriteDefByPath, setSpriteDefByPath] = useState<Record<string, SpriteDef>>({});
   const [zoom, setZoom] = useState(0.5);
-  const stageViewportRef = useRef<HTMLDivElement>(null);
+  const workspaceViewportRef = useRef<HTMLDivElement>(null);
   const initialFitDoneRef = useRef(false);
   const pinchRef = useRef<{ distance: number; zoom: number } | null>(null);
   const [overflowVisible, setOverflowVisible] = useState(false);
@@ -127,14 +143,14 @@ export function CanvasContainer({
   );
 
   const handleFitToWindow = useCallback(() => {
-    const el = stageViewportRef.current;
+    const el = workspaceViewportRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
     setZoom(computeFitZoom(width, height));
   }, [computeFitZoom]);
 
   useEffect(() => {
-    const el = stageViewportRef.current;
+    const el = workspaceViewportRef.current;
     if (!el || initialFitDoneRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -150,7 +166,7 @@ export function CanvasContainer({
   }, [computeFitZoom, sceneId]);
 
   useEffect(() => {
-    const el = stageViewportRef.current;
+    const el = workspaceViewportRef.current;
     if (!el) return;
     const onTouchMove = (e: TouchEvent) => {
       if (e.touches.length === 2 && pinchRef.current) {
@@ -179,12 +195,14 @@ export function CanvasContainer({
     setBlocks(allBlocks);
     const urls: Record<string, string> = {};
     const paths: Record<string, string> = {};
+    const types: Record<string, string> = {};
     if (window.yiman.project.getAssetById && window.yiman.project.getAssetDataUrl) {
       for (const b of allBlocks) {
         if (!b.asset_id) continue;
         const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id);
         if (asset?.path) {
           paths[b.id] = asset.path;
+          types[b.id] = (asset as { type?: string }).type ?? '';
           const dataUrl = await window.yiman.project.getAssetDataUrl(projectDir, asset.path);
           if (dataUrl) urls[b.id] = dataUrl;
         }
@@ -192,6 +210,27 @@ export function CanvasContainer({
     }
     setBlockDataUrls(urls);
     setBlockAssetPaths(paths);
+    setBlockAssetTypes(types);
+    if (window.yiman?.project?.getCharacters) {
+      const chars = (await window.yiman.project.getCharacters(projectDir)) as { sprite_sheets?: string | null }[];
+      const defs: Record<string, SpriteDef> = {};
+      for (const c of chars) {
+        try {
+          const arr = c.sprite_sheets ? (JSON.parse(c.sprite_sheets) as { image_path?: string; frames?: SpriteFrameRect[]; frame_count?: number; playback_fps?: number }[]) : [];
+          if (!Array.isArray(arr)) continue;
+          for (const s of arr) {
+            if (s.image_path && s.frames?.length) {
+              defs[s.image_path] = {
+                frames: s.frames,
+                frame_count: s.frame_count ?? s.frames.length,
+                playback_fps: s.playback_fps ?? 8,
+              };
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      setSpriteDefByPath(defs);
+    }
     return allBlocks;
   }, [projectDir, sceneId]);
 
@@ -216,9 +255,10 @@ export function CanvasContainer({
   }, [blocks, getKeyframes, refreshKey]);
 
   const visibleLayerIds = new Set(layers.filter((l) => l.visible).map((l) => l.id));
-  /** 仅显示当前时间在块区间内的素材，并用关键帧插值得到位置/缩放/旋转/透明度等（见功能文档 6.8）；合并 pendingBlockUpdates 实现拖拽时乐观更新 */
+  const TIME_EPS = 1e-5;
+  /** 仅显示当前时间在块区间内的素材，并用关键帧插值得到位置/缩放/旋转/透明度等（见功能文档 6.8）；合并 pendingBlockUpdates 实现拖拽时乐观更新；精灵图按帧播放；TIME_EPS 避免浮点边界不可见 */
   const blockItems: import('./Canvas').BlockItem[] = blocks
-    .filter((b) => visibleLayerIds.has(b.layer_id) && currentTime >= b.start_time && currentTime <= b.end_time)
+    .filter((b) => visibleLayerIds.has(b.layer_id) && currentTime >= b.start_time - TIME_EPS && currentTime <= b.end_time + TIME_EPS)
     .map((b) => {
       const pending = pendingBlockUpdates[b.id];
       const kfs = keyframesByBlock[b.id] ?? [];
@@ -235,6 +275,12 @@ export function CanvasContainer({
       };
       const transform = getInterpolatedTransform(base, kfs, currentTime);
       const effects = getInterpolatedEffects(base, kfs, currentTime);
+      const assetPath = blockAssetPaths[b.id] ?? '';
+      const assetType = blockAssetTypes[b.id] ?? '';
+      const spriteDef = assetPath ? spriteDefByPath[assetPath] : null;
+      const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(assetPath);
+      const isTransparentVideo = assetType === 'transparent_video';
+      const isSprite = !!spriteDef && !isVideo;
       return {
         ...b,
         pos_x: pending?.pos_x ?? transform.pos_x,
@@ -243,12 +289,26 @@ export function CanvasContainer({
         scale_y: pending?.scale_y ?? transform.scale_y,
         rotation: pending?.rotation ?? transform.rotation,
         dataUrl: blockDataUrls[b.id] ?? null,
-        isVideo: /\.(mp4|webm)$/i.test(blockAssetPaths[b.id] ?? ''),
+        isVideo,
+        isTransparentVideo,
         lock_aspect: (b as BlockRow).lock_aspect ?? 1,
         opacity: pending?.opacity ?? effects.opacity,
         blur: pending?.blur ?? effects.blur,
         color: effects.color,
         zIndex: computeBlockZIndex(b.id, blocks, layers),
+        ...(isSprite && spriteDef
+          ? {
+              spriteInfo: {
+                frames: spriteDef.frames,
+                frame_count: spriteDef.frame_count,
+                playback_fps: (b as BlockRow).playback_fps ?? spriteDef.playback_fps,
+                start_time: b.start_time,
+                end_time: b.end_time,
+              },
+              currentTime,
+            }
+          : {}),
+        ...(isVideo ? { currentTime, start_time: b.start_time, end_time: b.end_time } : {}),
       };
     });
 
@@ -516,9 +576,9 @@ export function CanvasContainer({
         <Button type="primary" icon={<UploadOutlined />} onClick={() => setAddAssetModalOpen(true)} />
       </div>
 
-      {/* 舞台：视口 + 画布（缩放内）+ 选中态叠加层（缩放外，固定像素把手） */}
+      {/* 工作区：视口 + 画布（缩放内，导出有效区域）+ 选中态叠加层（缩放外，固定像素把手） */}
       <div
-        ref={stageViewportRef}
+        ref={workspaceViewportRef}
         style={{
           flex: 1,
           minHeight: 0,
@@ -555,7 +615,7 @@ export function CanvasContainer({
           />
         </div>
         <CanvasSelectionOverlay
-          viewportRef={stageViewportRef}
+          viewportRef={workspaceViewportRef}
           zoom={zoom}
           designWidth={designWidth}
           designHeight={designHeight}
@@ -575,9 +635,9 @@ export function CanvasContainer({
         confirmLoading={uploading}
         okText="选择文件并添加"
       >
-        <Form form={form} layout="vertical" initialValues={{ type: 'scene_bg', is_favorite: false, description: '' }}>
+        <Form form={form} layout="vertical" initialValues={{ type: 'image', is_favorite: false, description: '' }}>
           <Form.Item name="type" label="分类" rules={[{ required: true }]}>
-            <Select options={ASSET_TYPES.map((t) => ({ value: t.value, label: t.label }))} />
+            <Select options={ASSET_LIBRARY_CATEGORIES.map((t) => ({ value: t.value, label: t.label }))} />
           </Form.Item>
           <Form.Item name="is_favorite" valuePropName="checked">
             <Checkbox>保存为常用</Checkbox>

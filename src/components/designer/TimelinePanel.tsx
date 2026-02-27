@@ -35,7 +35,7 @@ const { Text } = Typography;
 const TIME_AXIS_WIDTH = 40;
 const TRACK_HEIGHT = 32;
 const RULER_HEIGHT = 24;
-const DEFAULT_LABELS_WIDTH = 240;
+const DEFAULT_LABELS_WIDTH = 220;
 /** 时间单位：1 秒 = timeZoom 像素；timeZoom 范围 10～200 */
 
 interface LayerRow {
@@ -104,6 +104,8 @@ export function TimelinePanel({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
+  const [spriteBlockIds, setSpriteBlockIds] = useState<Set<string>>(new Set());
+
   const loadLayersAndBlocks = useCallback(async () => {
     if (!sceneId || !window.yiman?.project?.getLayers) return;
     let layerList = (await window.yiman.project.getLayers(projectDir, sceneId)) as LayerRow[];
@@ -115,6 +117,7 @@ export function TimelinePanel({
     setLayers(layerList.sort((a, b) => a.z_index - b.z_index));
     const blocks: Record<string, BlockRow[]> = {};
     const keyframes: Record<string, KeyframeRow[]> = {};
+    const spriteIds = new Set<string>();
     if (window.yiman.project.getTimelineBlocks && window.yiman.project.getKeyframes) {
       for (const layer of layerList) {
         const list = (await window.yiman.project.getTimelineBlocks(projectDir, layer.id)) as BlockRow[];
@@ -124,9 +127,32 @@ export function TimelinePanel({
           keyframes[b.id] = kf;
         }
       }
+      if (window.yiman.project.getAssetById && window.yiman.project.getCharacters) {
+        const chars = (await window.yiman.project.getCharacters(projectDir)) as { sprite_sheets?: string | null }[];
+        const spritePaths = new Set<string>();
+        for (const c of chars) {
+          try {
+            const arr = c.sprite_sheets ? (JSON.parse(c.sprite_sheets) as { image_path?: string }[]) : [];
+            if (Array.isArray(arr)) {
+              for (const s of arr) {
+                if (s.image_path) spritePaths.add(s.image_path);
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        for (const list of Object.values(blocks)) {
+          for (const b of list) {
+            if (b.asset_id) {
+              const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id);
+              if (asset?.path && spritePaths.has(asset.path)) spriteIds.add(b.id);
+            }
+          }
+        }
+      }
     }
     setBlocksByLayer(blocks);
     setKeyframesByBlock(keyframes);
+    setSpriteBlockIds(spriteIds);
   }, [projectDir, sceneId]);
 
   useEffect(() => {
@@ -324,6 +350,20 @@ export function TimelinePanel({
     [blocksByLayer, timeZoom]
   );
 
+  /** 主轨道无间隔堆叠：计算 insertAt，落在某块内则截断插入，否则插入到前一块末尾（见功能文档 6.7） */
+  const getMainTrackInsertAt = useCallback(
+    (desiredTime: number, excludeBlockId?: string) => {
+      const mainBlocks = (blocksByLayer[mainLayerId ?? ''] ?? [])
+        .filter((b) => b.id !== excludeBlockId)
+        .sort((a, b) => a.start_time - b.start_time);
+      const containing = mainBlocks.find((b) => b.start_time < desiredTime && b.end_time > desiredTime);
+      if (containing) return desiredTime;
+      const lastBefore = mainBlocks.filter((b) => b.end_time <= desiredTime).pop();
+      return lastBefore ? lastBefore.end_time : 0;
+    },
+    [blocksByLayer, mainLayerId]
+  );
+
   const [dragOver, setDragOver] = useState<
     | { type: 'track'; layerId: string; insertTime: number; blockWidth?: number; placeStart?: number; placeEnd?: number }
     | { type: 'between'; afterIndex: number }
@@ -369,7 +409,8 @@ export function TimelinePanel({
 
       if (fromLayerId === toLayerId) {
         if (toLayerId === mainLayerId && window.yiman?.project?.moveBlockToMainTrack) {
-          const res = await window.yiman.project.moveBlockToMainTrack(projectDir, sceneId!, blockId, dropTime);
+          const insertAt = getMainTrackInsertAt(dropTime, blockId);
+          const res = await window.yiman.project.moveBlockToMainTrack(projectDir, sceneId!, blockId, insertAt);
           if (res?.ok) {
             loadLayersAndBlocks();
             onLayersChange?.();
@@ -396,7 +437,8 @@ export function TimelinePanel({
         return;
       }
       if (toLayerId === mainLayerId && window.yiman?.project?.moveBlockToMainTrack) {
-        const res = await window.yiman.project.moveBlockToMainTrack(projectDir, sceneId!, blockId, dropTime);
+        const insertAt = getMainTrackInsertAt(dropTime, blockId);
+        const res = await window.yiman.project.moveBlockToMainTrack(projectDir, sceneId!, blockId, insertAt);
         if (res?.ok) {
           const fromBlocks = blocksByLayer[fromLayerId] ?? [];
           if (fromLayerId !== mainLayerId && fromBlocks.length === 1 && window.yiman?.project?.deleteLayer) {
@@ -429,7 +471,7 @@ export function TimelinePanel({
         onLayersChange?.();
       } else message.error(res?.error || '移动失败');
     },
-    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, loadLayersAndBlocks, onLayersChange, message]
+    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message]
   );
 
   const handleDropBlock = useCallback(
@@ -446,12 +488,13 @@ export function TimelinePanel({
       }
 
       if (assetId && toLayerId === mainLayerId && window.yiman?.project?.insertBlockAtMainTrack && mainLayerId) {
+        const insertAt = getMainTrackInsertAt(dropTime);
         const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         const res = await window.yiman.project.insertBlockAtMainTrack(projectDir, sceneId!, {
           id: blockIdNew,
           asset_id: assetId,
           duration: assetDuration,
-          insertAt: dropTime,
+          insertAt,
           pos_x: 0.5,
           pos_y: 0.5,
           scale_x: 0.25,
@@ -497,7 +540,7 @@ export function TimelinePanel({
         return;
       }
     },
-    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, loadLayersAndBlocks, onLayersChange, message]
+    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message]
   );
 
   const handleTrackDragOver = useCallback(
@@ -552,13 +595,16 @@ export function TimelinePanel({
         const baseWidth = timeToX(maxTime + 30);
         const rightEdgePx = timeToX(insertTime) + blockWidth;
         setDragExtraWidth(baseWidth - rightEdgePx < 300 ? 300 : 0);
-        // 判断有效落点：重叠且无法 snap 则不显示 placeholder
+        // 判断有效落点：主轨道用 getMainTrackInsertAt 无间隔堆叠；非主轨道重叠则 trySnapNonOverlap
         let placeStart = insertTime;
         let placeEnd = insertTime + duration;
         let valid = true;
         const fromLayerId = (active.data?.current as { layerId?: string })?.layerId;
         const isMainReorder = toLayerId === mainLayerId && fromLayerId === mainLayerId && block;
-        if (!isMainReorder && block) {
+        if (toLayerId === mainLayerId && !isMainReorder) {
+          placeStart = getMainTrackInsertAt(insertTime, block?.id);
+          placeEnd = placeStart + duration;
+        } else if (!isMainReorder && block) {
           if (hasOverlap(toLayerId, placeStart, placeEnd, block.id)) {
             const snapped = trySnapNonOverlap(toLayerId, insertTime, duration, block.id);
             if (snapped) {
@@ -572,7 +618,7 @@ export function TimelinePanel({
         setDragOver(valid ? { type: 'track', layerId: toLayerId, insertTime, blockWidth, placeStart, placeEnd } : null);
         return;
       }
-      // over 为另一个素材条（主轨道 Sortable 时常见），collision 返回 block id 非 track-id，需视为该轨道并实时更新 placeholder
+      // over 为另一个素材条（主轨道 Sortable 时常见），collision 返回 block id 非 track-id，需视为该轨道并实时更新占位指示条
       const overBlock = Object.values(blocksByLayer).flat().find((b) => b.id === overId);
       if (overBlock) {
         const toLayerId = overBlock.layer_id;
@@ -603,7 +649,10 @@ export function TimelinePanel({
         let valid = true;
         const fromLayerId = (active.data?.current as { layerId?: string })?.layerId;
         const isMainReorder = toLayerId === mainLayerId && fromLayerId === mainLayerId && block;
-        if (!isMainReorder && block) {
+        if (toLayerId === mainLayerId && !isMainReorder) {
+          placeStart = getMainTrackInsertAt(insertTime, block?.id);
+          placeEnd = placeStart + duration;
+        } else if (!isMainReorder && block) {
           if (hasOverlap(toLayerId, placeStart, placeEnd, block.id)) {
             const snapped = trySnapNonOverlap(toLayerId, insertTime, duration, block.id);
             if (snapped) {
@@ -620,7 +669,7 @@ export function TimelinePanel({
       setDragExtraWidth(0);
       setDragOver(null);
     },
-    [activeBlock, blocksByLayer, timeToX, xToTime, mainLayerId, hasOverlap, trySnapNonOverlap]
+    [activeBlock, blocksByLayer, timeToX, xToTime, mainLayerId, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt]
   );
 
   const handleBetweenDragOver = useCallback((afterIndex: number, e: React.DragEvent) => {
@@ -751,7 +800,7 @@ export function TimelinePanel({
     [blocksByLayer, timeToX]
   );
 
-  /** 拖拽时用指针实际位置实时更新 placeholder，placeholder x 与素材条 left 一致（见功能文档） */
+  /** 拖拽时用指针实际位置实时更新占位指示条（Drop Placeholder Bar），x 与素材条 left 一致（见功能文档 1.1） */
   const trackRowHeightNum = compact ? TRACK_HEIGHT : TRACK_HEIGHT + 8;
   useEffect(() => {
     if (!activeBlock) return;
@@ -807,7 +856,10 @@ export function TimelinePanel({
       let placeEnd = insertTime + duration;
       let valid = true;
       const isMainReorder = toLayerId === mainLayerId && fromLayerId === mainLayerId;
-      if (!isMainReorder) {
+      if (toLayerId === mainLayerId && !isMainReorder) {
+        placeStart = getMainTrackInsertAt(insertTime, block.id);
+        placeEnd = placeStart + duration;
+      } else if (!isMainReorder) {
         if (hasOverlap(toLayerId, placeStart, placeEnd, block.id)) {
           const snapped = trySnapNonOverlap(toLayerId, insertTime, duration, block.id);
           if (snapped) {
@@ -831,6 +883,7 @@ export function TimelinePanel({
     blocksByLayer,
     hasOverlap,
     trySnapNonOverlap,
+    getMainTrackInsertAt,
     mainLayerId,
     timeToX,
     xToTime,
@@ -895,13 +948,7 @@ export function TimelinePanel({
         const overIdx = mainBlocks.indexOf(overId);
         if (oldIdx >= 0 && overIdx >= 0 && oldIdx !== overIdx) {
           const newOrder = arrayMove(mainBlocks, oldIdx, overIdx);
-          const newIdx = newOrder.indexOf(blockId);
-          let insertAt = 0;
-          for (let i = 0; i < newIdx; i++) {
-            const b = (blocksByLayer[mainLayerId] ?? []).find((x) => x.id === newOrder[i]);
-            if (b) insertAt = b.end_time;
-          }
-          const res = await window.yiman?.project?.moveBlockToMainTrack(projectDir, sceneId!, blockId, insertAt);
+          const res = await window.yiman?.project?.reorderMainTrack?.(projectDir, sceneId!, newOrder);
           if (res?.ok) {
             loadLayersAndBlocks();
             onLayersChange?.();
@@ -1037,7 +1084,7 @@ export function TimelinePanel({
       >
         <Splitter style={{ flex: 1, minHeight: 0 }} orientation="horizontal">
           {/* 左列：timeline-layer-labels-container，默认 240px */}
-          <Splitter.Panel defaultSize={DEFAULT_LABELS_WIDTH} min={160} max={400}>
+          <Splitter.Panel defaultSize={DEFAULT_LABELS_WIDTH} resizable={false} min={160} max={400}>
             <div
               ref={labelsContainerRef}
               className="timeline-layer-labels-container"
@@ -1209,8 +1256,7 @@ export function TimelinePanel({
                         minWidth: axisWidth,
                         borderBottom: '1px solid rgba(255,255,255,0.06)',
                         background: 'rgba(0,0,0,0.2)',
-                        display: layer.id === mainLayerId ? 'flex' : 'block',
-                        flexDirection: layer.id === mainLayerId ? 'row' : undefined,
+                        display: 'block',
                       }}
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -1253,6 +1299,7 @@ export function TimelinePanel({
                         onSelectBlock={(id) => onSelectBlock(id)}
                         onResizeBlock={handleResizeBlock}
                         onKeyframeClick={(t) => setCurrentTimeClamped(t)}
+                        resizable={!spriteBlockIds.has(block.id)}
                       />
                     ))}
                   </SortableContext>
@@ -1269,12 +1316,15 @@ export function TimelinePanel({
                       onSelectBlock={(id) => onSelectBlock(id)}
                       onResizeBlock={handleResizeBlock}
                       onKeyframeClick={(t) => setCurrentTimeClamped(t)}
+                      resizable={!spriteBlockIds.has(block.id)}
                     />
                   ))
                 )}
                 {dragOver?.type === 'track' && dragOver.layerId === layer.id && (
                   <div
                     className="timeline-drop-placeholder"
+                    title="占位指示条（Drop Placeholder Bar）"
+                    aria-label="占位指示条，素材即将放下的位置"
                     style={{
                       position: 'absolute',
                       left: timeToX(dragOver.placeStart ?? dragOver.insertTime),
@@ -1295,6 +1345,24 @@ export function TimelinePanel({
               </TrackDroppable>
             ];
           })}
+                {/* 选中时间轴：放在轨道内容内部，随内容滚动，与素材条始终对齐，避免 scroll 时 tracksScrollLeft 状态延迟导致不同步 */}
+                <div
+                  role="slider"
+                  aria-label="选中时间轴"
+                  className="timeline-playhead"
+                  style={{
+                    position: 'absolute',
+                    left: timeToX(currentTime) - 1,
+                    top: 0,
+                    bottom: 0,
+                    width: 2,
+                    background: '#ff4d4f',
+                    cursor: 'ew-resize',
+                    pointerEvents: 'auto',
+                    zIndex: 15,
+                  }}
+                  onMouseDown={startPlayheadDrag}
+                />
                 {/* 最下方 44px drop zone（below last） */}
                 {layers.length > 0 && (
                 <BetweenDropZone
@@ -1321,23 +1389,6 @@ export function TimelinePanel({
                 )}
                   </div>
                 </div>
-                {/* DOM 2：timeline-playhead */}
-                <div
-                  role="slider"
-                  aria-label="选中时间轴"
-                  className="timeline-playhead"
-                  style={{
-                    position: 'absolute',
-                    left: timeToX(currentTime) - 1 - tracksScrollLeft,
-                    top: 0,
-                    width: 2,
-                    height: '100%',
-                    background: '#ff4d4f',
-                    cursor: 'ew-resize',
-                    pointerEvents: 'auto',
-                  }}
-                  onMouseDown={startPlayheadDrag}
-                />
               </div>
             </div>
           </Splitter.Panel>

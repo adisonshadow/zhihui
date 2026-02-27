@@ -24,15 +24,15 @@ function getStoredEpisodeScene(projectId: string): { episodeId: string | null; s
   return { episodeId: null, sceneId: null };
 }
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Splitter, Space, Typography, Card } from 'antd';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Splitter, Space, Typography, Card, Radio } from 'antd';
 import type { ProjectInfo } from '@/hooks/useProject';
 import type { EpisodeRow } from '@/types/project';
 import { CanvasContainer } from '@/components/designer/CanvasContainer';
 import { TimelinePanel } from '@/components/designer/TimelinePanel';
 import { SceneSettingsAccordion } from '@/components/designer/SceneSettingsAccordion';
 import { AssetBrowsePanel } from '@/components/designer/AssetBrowsePanel';
-import { SelectedBlockSettings } from '@/components/designer/SelectedBlockSettings';
+import { SelectedBlockSettings, type BlockSettingsTab } from '@/components/designer/SelectedBlockSettings';
 import { ExportModal } from '@/components/designer/ExportModal';
 import { GrowCard } from '@/components/GrowCard';
 
@@ -82,7 +82,19 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   const showChat = showChatProp ?? showChatInternal;
   const setShowChat = onShowChatChange ?? setShowChatInternal;
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [isSpriteBlock, setIsSpriteBlock] = useState(false);
+  const [blockSettingsTab, setBlockSettingsTab] = useState<BlockSettingsTab>('base');
   const projectDir = project.project_dir;
+  /** 仅在新块加载时设置默认 tab，避免 refreshKey 导致 loadBlock 重跑时覆盖用户选择 */
+  const lastBlockIdForTabRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedBlockId) {
+      setIsSpriteBlock(false);
+      setBlockSettingsTab('base');
+      lastBlockIdForTabRef.current = null;
+    }
+  }, [selectedBlockId]);
 
   useEffect(() => {
     try {
@@ -194,9 +206,10 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
             {/* 列 1：素材面板 */}
             {showAssets && (
               <Splitter.Panel className='relative' defaultSize={240} min={180} max={420}>
-                <div
+                {/* <div
                   className="bg-[#242424] rounded-md absolute top-2 left-2 right-2 bottom-2"
-                  >
+                  style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}
+                > */}
                   <AssetBrowsePanel
                     project={project}
                     sceneId={selectedSceneId}
@@ -205,10 +218,10 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                     onPlaced={() => setRefreshKey((k) => k + 1)}
                     refreshKey={refreshKey}
                   />
-                </div>
+                {/* </div> */}
               </Splitter.Panel>
             )}
-            {/* 列 2：播放器面板（舞台 + 渲染区）；播放时时间轴随进度移动，画布按当前帧渲染关键帧（见功能文档 6.8） */}
+            {/* 列 2：播放器面板（工作区 + 画布）；播放时时间轴随进度移动，画布按当前帧渲染关键帧（见功能文档 6.8） */}
             <Splitter.Panel min={280}>
               <CanvasContainer
                 project={project}
@@ -227,11 +240,32 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                 setPendingBlockUpdates={setPendingBlockUpdates}
               />
             </Splitter.Panel>
-            {/* 列 3：功能面板（无选中显示当前场景设置，有选中显示选中素材设置） */}
+            {/* 列 3：功能面板（无选中显示当前场景设置，有选中显示基础设置/精灵图设置） */}
             <Splitter.Panel defaultSize={280} min={200} max={420} className="designer-panel-panel">
               <GrowCard
                 className="designer-panel-content"
-                header={selectedBlockId ? '选中素材设置' : '当前场景设置'}
+                header={
+                  selectedBlockId ? (
+                    isSpriteBlock ? (
+                      <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
+                        <Radio.Group
+                          optionType="button"
+                          buttonStyle="solid"
+                          size="small"
+                          value={blockSettingsTab}
+                          onChange={(e) => setBlockSettingsTab(e.target.value)}
+                        >
+                          <Radio value="base">基础设置</Radio>
+                          <Radio value="sprite">精灵图设置</Radio>
+                        </Radio.Group>
+                      </div>
+                    ) : (
+                      '基础设置'
+                    )
+                  ) : (
+                    '当前场景设置'
+                  )
+                }
                 headerClassName="designer-panel-content__header"
                 bodyClassName="designer-panel-content__body"
                 bodyStyle={{ padding: 12 }}
@@ -246,6 +280,15 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       onUpdate={() => setRefreshKey((k) => k + 1)}
                       onJumpToTime={setCurrentTime}
                       onBlockUpdate={(blockId, data) => setPendingBlockUpdates((prev) => ({ ...prev, [blockId]: { ...prev[blockId], ...data } }))}
+                      onBlockInfo={(info) => {
+                        setIsSpriteBlock(info.isSprite);
+                        if (selectedBlockId && selectedBlockId !== lastBlockIdForTabRef.current) {
+                          lastBlockIdForTabRef.current = selectedBlockId;
+                          setBlockSettingsTab(info.isSprite ? 'sprite' : 'base');
+                        }
+                      }}
+                      settingsTab={blockSettingsTab}
+                      isSpriteBlock={isSpriteBlock}
                     />
                   </div>
                 ) : (
@@ -265,7 +308,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
           </Splitter>
         </Splitter.Panel>
         {/* 第三行：时间线面板 */}
-        <Splitter.Panel defaultSize="40%" min={120}>
+        <Splitter.Panel  defaultSize="40%" min={120}>
           <TimelinePanel
             project={project}
             sceneId={selectedSceneId}

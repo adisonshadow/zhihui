@@ -1,15 +1,17 @@
 /**
  * 芝绘 - 顶部导航（参考 Biezhi2/web AppHeader 布局）
- * 见功能文档 2、开发计划 2.2
+ * 见功能文档 2、开发计划 2.2；设置以 Modal 打开（见 docs/配置订阅使用.md）
  */
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { SettingOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { useConfigModal } from '@/contexts/ConfigContext';
 import './AppHeader.css';
 
 const AppHeader: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { openConfigModal } = useConfigModal();
   const isProjectEditor = location.pathname.startsWith('/project/');
   if (isProjectEditor) return null;
 
@@ -45,7 +47,7 @@ const AppHeader: React.FC = () => {
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              navigate('/settings');
+              openConfigModal();
             }}
           >
             <span className="yiman-header-icon">

@@ -123,7 +123,7 @@ export function ExportModal({ open, onClose, project, sceneId, landscape }: Expo
       open={open}
       onCancel={handleClose}
       footer={null}
-      destroyOnClose
+      destroyOnHidden
       width={440}
     >
       {!resultPath ? (

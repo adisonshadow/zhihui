@@ -1,7 +1,7 @@
 /**
  * 人物设计页：人物列表 CRUD、名称/形象/备注、默认 TTS 参数、角度与骨骼绑定（见功能文档 4.2、开发计划 2.6，docs/06-人物骨骼贴图功能设计.md）
  */
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Button,
   Input,
@@ -9,18 +9,25 @@ import {
   Space,
   Typography,
   App,
-  Card,
   Spin,
   Modal,
   InputNumber,
   Splitter,
+  Dropdown,
+  Radio,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, UploadOutlined, PictureOutlined, RobotOutlined, ApartmentOutlined } from '@ant-design/icons';
+import { GrowCard } from '@/components/GrowCard';
+import type { MenuProps } from 'antd';
+import { PlusOutlined, DeleteOutlined, UploadOutlined, PictureOutlined, RobotOutlined, MoreOutlined, ExportOutlined, ImportOutlined } from '@ant-design/icons';
 import type { ProjectInfo } from '@/hooks/useProject';
 import { parseCharacterAngles, serializeCharacterAngles } from '@/types/skeleton';
 import type { CharacterAngle } from '@/types/skeleton';
 import { SkeletonBindingPanel } from '@/components/character/SkeletonBindingPanel';
 import { SpriteSheetPanel, type SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
+import { GroupComponentPanel } from '@/components/character/GroupComponentPanel';
+import { AdaptiveCard } from '@/components/antd-plus/AdaptiveCard';
+import { STANDALONE_SPRITES_CHARACTER_ID } from '@/constants/project';
+import type { GroupComponentItem } from '@/types/groupComponent';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -34,6 +41,7 @@ interface CharacterRow {
   tts_speed: number | null;
   angles: string | null;
   sprite_sheets: string | null;
+  component_groups: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -52,6 +60,20 @@ function serializeSpriteSheets(list: SpriteSheetItem[]): string {
   return JSON.stringify(list);
 }
 
+function parseComponentGroups(json: string | null): GroupComponentItem[] {
+  if (!json || json.trim() === '') return [];
+  try {
+    const arr = JSON.parse(json) as GroupComponentItem[];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeComponentGroups(list: GroupComponentItem[]): string {
+  return JSON.stringify(list);
+}
+
 interface AssetRow {
   id: string;
   path: string;
@@ -67,7 +89,6 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   const [characters, setCharacters] = useState<CharacterRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
@@ -76,16 +97,23 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   const [skeletonPanelAngle, setSkeletonPanelAngle] = useState<CharacterAngle | null>(null);
   const [spriteSheetPanelOpen, setSpriteSheetPanelOpen] = useState(false);
   const [spriteSheetPanelItem, setSpriteSheetPanelItem] = useState<SpriteSheetItem | null>(null);
+  const [groupComponentPanelOpen, setGroupComponentPanelOpen] = useState(false);
+  const [groupComponentPanelItem, setGroupComponentPanelItem] = useState<GroupComponentItem | null>(null);
+  const [activeTab, setActiveTab] = useState<'image' | 'groupComponent' | 'skeleton' | 'sprite' | 'tts'>('image');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const projectDir = project.project_dir;
 
-  const loadCharacters = useCallback(async () => {
+  const loadCharacters = useCallback(async (): Promise<CharacterRow[] | void> => {
     if (!window.yiman?.project?.getCharacters) return;
     setLoading(true);
     try {
-      const list = (await window.yiman.project.getCharacters(projectDir)) as CharacterRow[];
+      const list = ((await window.yiman.project.getCharacters(projectDir)) as CharacterRow[]).filter(
+        (c) => c.id !== STANDALONE_SPRITES_CHARACTER_ID
+      );
       setCharacters(list);
       if (!selectedId && list.length > 0) setSelectedId(list[0].id);
       if (selectedId && !list.some((c) => c.id === selectedId)) setSelectedId(list[0]?.id ?? null);
+      return list;
     } catch {
       message.error('加载人物列表失败');
     } finally {
@@ -96,6 +124,13 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   useEffect(() => {
     loadCharacters();
   }, [loadCharacters]);
+
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    },
+    []
+  );
 
   const selected = characters.find((c) => c.id === selectedId);
   useEffect(() => {
@@ -133,24 +168,36 @@ export default function CharactersTab({ project }: CharactersTabProps) {
     } else message.error(res?.error || '删除失败');
   };
 
-  const handleSave = async () => {
+  const doAutoSave = useCallback(
+    async (values: { name?: string; note?: string; tts_voice?: string; tts_speed?: number }) => {
+      if (!selectedId) return;
+      try {
+        const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+          name: values.name,
+          note: values.note ?? null,
+          tts_voice: values.tts_voice ?? null,
+          tts_speed: values.tts_speed ?? null,
+        });
+        if (res?.ok) {
+          message.success('已保存');
+          loadCharacters();
+        } else message.error(res?.error || '保存失败');
+      } catch {
+        message.error('保存失败');
+      }
+    },
+    [projectDir, selectedId, loadCharacters, message]
+  );
+
+  const handleFormValuesChange = useCallback(() => {
     if (!selectedId) return;
-    try {
-      const values = await form.validateFields();
-      const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
-        name: values.name,
-        note: values.note || null,
-        tts_voice: values.tts_voice || null,
-        tts_speed: values.tts_speed ?? null,
-      });
-      if (res?.ok) {
-        message.success('已保存');
-        loadCharacters();
-      } else message.error(res?.error || '保存失败');
-    } finally {
-      setSaving(false);
-    }
-  };
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      const values = form.getFieldsValue();
+      doAutoSave(values);
+    }, 500);
+  }, [selectedId, doAutoSave, form]);
 
   const handleUploadImage = async () => {
     const filePath = await window.yiman?.dialog?.openFile?.();
@@ -189,6 +236,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
 
   const angles = selected ? parseCharacterAngles(selected.angles ?? null) : [];
   const spriteSheets = selected ? parseSpriteSheets(selected.sprite_sheets ?? null) : [];
+  const componentGroups = selected ? parseComponentGroups(selected.component_groups ?? null) : [];
 
   const openSpriteSheetPanel = (item: SpriteSheetItem | null) => {
     setSpriteSheetPanelItem(item);
@@ -224,6 +272,111 @@ export default function CharactersTab({ project }: CharactersTabProps) {
       setSpriteSheetPanelOpen(true);
     } else {
       message.error(res?.error || '添加失败');
+    }
+  };
+
+  const handleDeleteSpriteSheet = async (item: SpriteSheetItem) => {
+    if (!selectedId) return;
+    const next = spriteSheets.filter((s) => s.id !== item.id);
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      sprite_sheets: serializeSpriteSheets(next),
+    });
+    if (res?.ok) {
+      message.success('已删除');
+      loadCharacters();
+    } else {
+      message.error(res?.error || '删除失败');
+    }
+  };
+
+  const handleExportSpriteSheet = async (item: SpriteSheetItem) => {
+    if (!item.image_path) {
+      message.warning('请先导入精灵图');
+      return;
+    }
+    const res = await window.yiman?.project?.exportSpriteSheet?.(projectDir, item);
+    if (res?.ok) {
+      message.success('导出成功');
+    } else {
+      message.error(res?.error || '导出失败');
+    }
+  };
+
+  const openGroupComponentPanel = (item: GroupComponentItem | null) => {
+    setGroupComponentPanelItem(item);
+    setGroupComponentPanelOpen(true);
+  };
+
+  const handleGroupComponentSave = async (updated: GroupComponentItem) => {
+    if (!selectedId) return;
+    const next = componentGroups.some((g) => g.id === updated.id)
+      ? componentGroups.map((g) => (g.id === updated.id ? updated : g))
+      : [...componentGroups, updated];
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      component_groups: serializeComponentGroups(next),
+    });
+    if (res?.ok) {
+      loadCharacters();
+    } else {
+      message.error(res?.error || '保存失败');
+    }
+  };
+
+  const handleAddGroupComponent = async () => {
+    if (!selectedId) return;
+    const newId = `group_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const defaultStateId = `state_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const newItem: GroupComponentItem = {
+      id: newId,
+      name: '元件组',
+      states: [{ id: defaultStateId, tags: [], items: [] }],
+    };
+    const next = [...componentGroups, newItem];
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      component_groups: serializeComponentGroups(next),
+    });
+    if (res?.ok) {
+      loadCharacters();
+      setGroupComponentPanelItem(newItem);
+      setGroupComponentPanelOpen(true);
+    } else {
+      message.error(res?.error || '添加失败');
+    }
+  };
+
+  const handleDeleteGroupComponent = async (item: GroupComponentItem) => {
+    if (!selectedId) return;
+    const next = componentGroups.filter((g) => g.id !== item.id);
+    const res = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+      component_groups: serializeComponentGroups(next),
+    });
+    if (res?.ok) {
+      message.success('已删除');
+      loadCharacters();
+    } else {
+      message.error(res?.error || '删除失败');
+    }
+  };
+
+  const handleImportSpriteSheet = async () => {
+    if (!selectedId) return;
+    const zipPath = await window.yiman?.dialog?.openFile?.({ filters: [{ name: 'ZIP 包', extensions: ['zip'] }] });
+    if (!zipPath) return;
+    const res = await window.yiman?.project?.importSpriteSheet?.(projectDir, zipPath);
+    if (res?.ok && res.item) {
+      const newItem = res.item as SpriteSheetItem;
+      const next = [...spriteSheets, newItem];
+      const up = await window.yiman?.project?.updateCharacter(projectDir, selectedId, {
+        sprite_sheets: serializeSpriteSheets(next),
+      });
+      if (up?.ok) {
+        message.success('导入成功');
+        loadCharacters();
+      } else {
+        message.error(up?.error || '保存失败');
+      }
+    } else {
+      message.error(res?.error || '导入失败');
     }
   };
 
@@ -267,12 +420,16 @@ export default function CharactersTab({ project }: CharactersTabProps) {
       <Splitter style={{ height: '100%' }} orientation="horizontal">
         {/* 左侧：人物列表，默认 240px */}
         <Splitter.Panel defaultSize={240} min={160} max={400}>
-          <Card size="small" title="人物列表" style={{ height: '100%', overflow: 'auto' }}>
-            <Button type="primary" block icon={<PlusOutlined />} onClick={handleAdd} style={{ marginBottom: 12 }}>
-              添加人物
-            </Button>
+          <GrowCard headerHeight={40} headerStyle={{ display: 'flex', alignItems: 'center' }} header={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' ,padding: '0 12px'}}>
+              <Text>人物列表</Text>
+              <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAdd}>
+                添加人物
+              </Button>
+            </div>
+          }>
             <Spin spinning={loading}>
-              <Space orientation="vertical" style={{ width: '100%' }} size="small">
+              <Space orientation="vertical" style={{ width: '100%' }} size={0}>
                 {characters.map((item) => (
                   <div
                     key={item.id}
@@ -280,8 +437,9 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      padding: '6px 0',
-                      borderBottom: '1px solid rgba(255,255,255,0.06)',
+                      padding: '6px 12px',
+                      borderBottom: '1px solid rgba(255,255,255,0.03)',
+                      backgroundColor: selectedId === item.id ? 'rgba(255,255,255,0.04)' : 'transparent',
                     }}
                   >
                     <span
@@ -302,19 +460,45 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                 ))}
               </Space>
             </Spin>
-          </Card>
+          </GrowCard>
         </Splitter.Panel>
 
         {/* 右侧：人物编辑 */}
         <Splitter.Panel min={320}>
-          <Card size="small" title={selected ? selected.name || '选择或添加人物' : '选择或添加人物'} style={{ height: '100%', overflow: 'auto' }}>
-            <Form form={form} layout="vertical" onFinish={() => { setSaving(true); handleSave(); }}>
-            {selected ? (
-              <>
+          <AdaptiveCard 
+            headerHeight={40}
+            headerStyle={{ display: 'flex'}}
+            contentOverflow={false}
+            variant="borderless"
+            styles={{ body: { padding: 0 } }}
+            header={
+              (
+                <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
+                  <Radio.Group
+                    optionType="button"
+                    buttonStyle="solid"
+                    size="small"
+                    value={activeTab}
+                    onChange={(e) => setActiveTab(e.target.value)}
+                  >
+                    <Radio value="image">形象</Radio>
+                    <Radio value="groupComponent">元件组</Radio>
+                    <Radio value="sprite">精灵动作</Radio>
+                    <Radio value="skeleton">骨骼</Radio>
+                    <Radio value="tts">声音</Radio>
+                  </Radio.Group>
+                </div>
+              )
+          }>
+          {selected ? (
+            activeTab === 'image' ? (
+              <Form form={form} layout="vertical" onValuesChange={handleFormValuesChange} style={{ padding: 20 }}>
                 <Form.Item name="name" label="名称" rules={[{ required: true }]}>
                   <Input placeholder="人物名称" />
                 </Form.Item>
-
+                <Form.Item name="note" label="备注">
+                  <TextArea rows={3} placeholder="人物设定、备注等" />
+                </Form.Item>
                 <Form.Item label="形象">
                   <Space orientation="vertical" size="small" style={{ width: '100%' }}>
                     <div style={{ width: 120, height: 120, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -324,7 +508,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                         <Text type="secondary">暂无形象</Text>
                       )}
                     </div>
-                    <Space wrap>
+                    <Space style={{ marginTop: 12 }} wrap>
                       <Button type="default" icon={<UploadOutlined />} onClick={handleUploadImage}>
                         本地上传
                       </Button>
@@ -337,89 +521,98 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                     </Space>
                   </Space>
                 </Form.Item>
-
-                <Form.Item label="精灵动作图">
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                    {spriteSheets.map((s) => (
-                      <SpriteSheetCard
-                        key={s.id}
-                        projectDir={projectDir}
-                        item={s}
-                        onEdit={() => openSpriteSheetPanel(s)}
-                      />
-                    ))}
-                    <div
-                      style={{
-                        width: 140,
-                        minHeight: 180,
-                        borderRadius: 12,
-                        background: 'rgba(255,255,255,0.04)',
-                        border: '1px dashed rgba(255,255,255,0.2)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer',
-                      }}
-                      onClick={handleAddSpriteSheet}
-                    >
-                      <Text type="secondary">新建</Text>
-                    </div>
-                  </div>
-                </Form.Item>
-
-                <Form.Item label="角度与骨骼">
-                  <Space direction="vertical" style={{ width: '100%' }} size="small">
-                    {angles.map((angle) => (
-                      <div
-                        key={angle.id}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '6px 8px',
-                          background: 'rgba(255,255,255,0.04)',
-                          borderRadius: 6,
-                        }}
-                      >
-                        <span style={{ fontWeight: 500 }}>{angle.name}</span>
-                        <Button
-                          type="default"
-                          size="small"
-                          icon={<ApartmentOutlined />}
-                          onClick={() => openSkeletonPanel(angle)}
-                        >
-                          骨骼设置
-                        </Button>
-                      </div>
-                    ))}
-                    <Button type="dashed" size="small" block onClick={handleAddAngle}>
+              </Form>
+            ) : activeTab === 'skeleton' ? (
+              <AdaptiveCard
+                headerHeight={40}
+                variant="borderless"
+                header={
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 20px' }}>
+                    <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddAngle}>
                       添加角度
                     </Button>
-                  </Space>
-                </Form.Item>
-
-                <Form.Item name="note" label="备注">
-                  <TextArea rows={3} placeholder="人物设定、备注等" />
-                </Form.Item>
-
+                  </div>
+                }
+              >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {angles.map((a) => (
+                    <SkeletonAngleCard
+                      key={a.id}
+                      projectDir={projectDir}
+                      angle={a}
+                      characterImagePath={selected.image_path}
+                      onClick={() => openSkeletonPanel(a)}
+                    />
+                  ))}
+                </div>
+              </AdaptiveCard>
+            ) : activeTab === 'groupComponent' ? (
+              <AdaptiveCard
+                headerHeight={40}
+                variant="borderless"
+                header={
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 20px' }}>
+                    <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddGroupComponent}>
+                      新建
+                    </Button>
+                  </div>
+                }
+              >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {componentGroups.map((g) => (
+                    <GroupComponentCard
+                      key={g.id}
+                      projectDir={projectDir}
+                      item={g}
+                      spriteSheets={spriteSheets}
+                      onEdit={() => openGroupComponentPanel(g)}
+                      onDelete={() => handleDeleteGroupComponent(g)}
+                    />
+                  ))}
+                </div>
+              </AdaptiveCard>
+            ) : activeTab === 'sprite' ? (
+              <AdaptiveCard
+                headerHeight={40}
+                variant="borderless"
+                header={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                  <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAddSpriteSheet}>
+                    新建
+                  </Button>
+                  <Button size="small" icon={<ImportOutlined />} onClick={handleImportSpriteSheet}>
+                    导入
+                  </Button>
+                </div>}
+              >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {spriteSheets.map((s) => (
+                    <SpriteSheetCard
+                      key={s.id}
+                      projectDir={projectDir}
+                      item={s}
+                      onEdit={() => openSpriteSheetPanel(s)}
+                      onDelete={() => handleDeleteSpriteSheet(s)}
+                      onExport={() => handleExportSpriteSheet(s)}
+                    />
+                  ))}
+                </div>
+              </AdaptiveCard>
+            ) : (
+              <Form form={form} layout="vertical" onValuesChange={handleFormValuesChange} style={{ padding: 20 }}>
                 <Form.Item name="tts_voice" label="默认 TTS 音色">
                   <Input placeholder="如：音色 ID 或名称，供视频设计器对白默认带出" />
                 </Form.Item>
                 <Form.Item name="tts_speed" label="默认 TTS 语速" extra="1 为正常语速">
                   <InputNumber min={0.5} max={2} step={0.1} style={{ width: '100%' }} />
                 </Form.Item>
-
-                <Form.Item>
-                  <Button type="primary" htmlType="submit" loading={saving}>
-                    保存
-                  </Button>
-                </Form.Item>
-              </>
-            ) : (
+              </Form>
+            )
+          ) : (
+            <div style={{ padding: 20 }}>
               <Text type="secondary">在左侧添加人物或选择已有角色进行编辑。</Text>
-            )}
-            </Form>
-          </Card>
+            </div>
+          )}
+          </AdaptiveCard>
         </Splitter.Panel>
       </Splitter>
 
@@ -471,6 +664,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
           getAssets={(dir) => window.yiman?.project?.getAssets?.(dir) ?? Promise.resolve([])}
           saveAssetFromFile={async (dir, filePath, type) => (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type)) ?? { ok: false }}
           openFileDialog={() => window.yiman?.dialog?.openFile?.() ?? Promise.resolve(undefined)}
+          matteImageForContour={(dir, path) => window.yiman?.project?.matteImageForContour?.(dir, path) ?? Promise.resolve({ ok: false, error: '未就绪' })}
         />
       )}
 
@@ -485,11 +679,45 @@ export default function CharactersTab({ project }: CharactersTabProps) {
           getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
           getAssets={(dir) => window.yiman?.project?.getAssets?.(dir) ?? Promise.resolve([])}
           saveAssetFromFile={async (dir, filePath, type) => (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type)) ?? { ok: false }}
+          saveAssetFromBase64={(dir, base64, ext, type) => window.yiman?.project?.saveAssetFromBase64?.(dir, base64, ext, type) ?? Promise.resolve({ ok: false, error: '未就绪' })}
           openFileDialog={() => window.yiman?.dialog?.openFile?.() ?? Promise.resolve(undefined)}
+          matteImageAndSave={(dir, path, opt) => window.yiman?.project?.matteImageAndSave?.(dir, path, opt) ?? Promise.resolve({ ok: false, error: '未就绪' })}
           getSpriteBackgroundColor={(dir, rel) => window.yiman?.project?.getSpriteBackgroundColor?.(dir, rel) ?? Promise.resolve(null)}
           getSpriteFrames={(dir, rel, bg, opt) => window.yiman?.project?.getSpriteFrames?.(dir, rel, bg, opt) ?? Promise.resolve({ raw: [], normalized: [] })}
+          extractSpriteCover={(dir, rel, frame) => window.yiman?.project?.extractSpriteCover?.(dir, rel, frame) ?? Promise.resolve({ ok: false })}
           processSpriteWithOnnx={(dir, rel, opt) => window.yiman?.project?.processSpriteWithOnnx?.(dir, rel, opt) ?? Promise.resolve({ ok: false, error: '未就绪' })}
           openDirectoryDialog={() => window.yiman?.dialog?.openDirectory?.() ?? Promise.resolve(null)}
+        />
+      )}
+
+      {groupComponentPanelOpen && selectedId && (
+        <GroupComponentPanel
+          open={groupComponentPanelOpen}
+          onClose={() => { setGroupComponentPanelOpen(false); setGroupComponentPanelItem(null); }}
+          projectDir={projectDir}
+          characterId={selectedId}
+          item={groupComponentPanelItem}
+          onSave={handleGroupComponentSave}
+          spriteSheets={spriteSheets}
+          componentGroups={componentGroups}
+          getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+          getAssets={(dir) => window.yiman?.project?.getAssets?.(dir) ?? Promise.resolve([])}
+          saveAssetFromFile={async (dir, filePath, type) => (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type)) ?? { ok: false }}
+          saveAssetFromBase64={(dir, base64, ext, type) => window.yiman?.project?.saveAssetFromBase64?.(dir, base64, ext, type) ?? Promise.resolve({ ok: false, error: '未就绪' })}
+          openFileDialog={() => window.yiman?.dialog?.openFile?.() ?? Promise.resolve(undefined)}
+          matteImageAndSave={(dir, path, opt) => window.yiman?.project?.matteImageAndSave?.(dir, path, opt) ?? Promise.resolve({ ok: false, error: '未就绪' })}
+          getAllCharactersData={async () => {
+            if (!window.yiman?.project?.getCharacters) return [];
+            const list = (await window.yiman.project.getCharacters(projectDir)) as CharacterRow[];
+            return list
+              .filter((c) => c.id !== STANDALONE_SPRITES_CHARACTER_ID)
+              .map((c) => ({
+                characterId: c.id,
+                characterName: c.name ?? undefined,
+                spriteSheets: parseSpriteSheets(c.sprite_sheets ?? null),
+                componentGroups: parseComponentGroups(c.component_groups ?? null),
+              }));
+          }}
         />
       )}
     </div>
@@ -508,17 +736,19 @@ function AssetThumb({ projectDir, path }: { projectDir: string; path: string }) 
   );
 }
 
-function SpriteSheetCard({
+function SkeletonAngleCard({
   projectDir,
-  item,
-  onEdit,
+  angle,
+  characterImagePath,
+  onClick,
 }: {
   projectDir: string;
-  item: SpriteSheetItem;
-  onEdit: () => void;
+  angle: CharacterAngle;
+  characterImagePath: string | null;
+  onClick: () => void;
 }) {
+  const imgPath = angle.image_path || characterImagePath;
   const [dataUrl, setDataUrl] = useState<string | null>(null);
-  const imgPath = item.cover_path || item.image_path;
   useEffect(() => {
     if (!imgPath) {
       setDataUrl(null);
@@ -526,6 +756,8 @@ function SpriteSheetCard({
     }
     window.yiman?.project?.getAssetDataUrl(projectDir, imgPath).then(setDataUrl);
   }, [projectDir, imgPath]);
+
+  const title = angle.display_name ? `${angle.display_name} ${angle.name}` : angle.name;
 
   return (
     <div
@@ -536,12 +768,12 @@ function SpriteSheetCard({
         overflow: 'hidden',
         cursor: 'pointer',
       }}
-      onClick={onEdit}
+      onClick={onClick}
     >
       <div
         style={{
           width: '100%',
-          aspectRatio: 3 / 4,
+          aspectRatio: 1,
           background: 'rgba(0,0,0,0.2)',
           borderRadius: '12px 12px 0 0',
           overflow: 'hidden',
@@ -555,6 +787,199 @@ function SpriteSheetCard({
         ) : (
           <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
         )}
+      </div>
+      <div style={{ padding: '8px 10px' }}>
+        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {title}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getGroupCoverPath(
+  item: GroupComponentItem,
+  spriteSheets: SpriteSheetItem[]
+): string | null {
+  const firstItem = item.states?.[0]?.items?.[0];
+  if (!firstItem) return null;
+  if (firstItem.type === 'image') return firstItem.path;
+  if (firstItem.type === 'sprite') {
+    const sp = spriteSheets.find((s) => s.id === firstItem.spriteId);
+    return sp?.cover_path || sp?.image_path || null;
+  }
+  return null;
+}
+
+function GroupComponentCard({
+  projectDir,
+  item,
+  spriteSheets,
+  onEdit,
+  onDelete,
+}: {
+  projectDir: string;
+  item: GroupComponentItem;
+  spriteSheets: SpriteSheetItem[];
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const menuItems: MenuProps['items'] = [
+    { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined />, onClick: () => onDelete() },
+  ];
+  const coverPath = getGroupCoverPath(item, spriteSheets);
+
+  return (
+    <div
+      style={{
+        width: 140,
+        borderRadius: 12,
+        background: 'rgba(255,255,255,0.06)',
+        overflow: 'hidden',
+        cursor: 'pointer',
+      }}
+      onClick={onEdit}
+    >
+      <div style={{ position: 'relative' }}>
+        <GroupComponentCardThumb projectDir={projectDir} path={coverPath} />
+        <div
+          style={{
+            position: 'absolute',
+            right: 8,
+            top: 8,
+            zIndex: 1,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Dropdown menu={{ items: menuItems }} trigger={['click']} placement="bottomRight">
+            <Button
+              type="text"
+              icon={<MoreOutlined />}
+              style={{ color: 'rgba(255,255,255,0.85)' }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </Dropdown>
+        </div>
+      </div>
+      <div style={{ padding: '8px 10px' }}>
+        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {item.name || '未命名'}
+        </div>
+        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>
+          {item.states?.length ?? 0} 个状态
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GroupComponentCardThumb({ projectDir, path }: { projectDir: string; path: string | null }) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!path) {
+      setDataUrl(null);
+      return;
+    }
+    window.yiman?.project?.getAssetDataUrl(projectDir, path).then(setDataUrl);
+  }, [projectDir, path]);
+  return (
+    <div
+      style={{
+        width: '100%',
+        aspectRatio: 1,
+        background: 'rgba(0,0,0,0.2)',
+        borderRadius: '12px 12px 0 0',
+        overflow: 'hidden',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {dataUrl ? (
+        <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
+      )}
+    </div>
+  );
+}
+
+function SpriteSheetCard({
+  projectDir,
+  item,
+  onEdit,
+  onDelete,
+  onExport,
+}: {
+  projectDir: string;
+  item: SpriteSheetItem;
+  onEdit: () => void;
+  onDelete: () => void;
+  onExport: () => void;
+}) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const imgPath = item.cover_path || item.image_path;
+  useEffect(() => {
+    if (!imgPath) {
+      setDataUrl(null);
+      return;
+    }
+    window.yiman?.project?.getAssetDataUrl(projectDir, imgPath).then(setDataUrl);
+  }, [projectDir, imgPath]);
+
+  const menuItems: MenuProps['items'] = [
+    { key: 'export', label: '导出', icon: <ExportOutlined />, onClick: () => onExport() },
+    { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined />, onClick: () => onDelete() },
+  ];
+
+  return (
+    <div
+      style={{
+        width: 140,
+        borderRadius: 12,
+        background: 'rgba(255,255,255,0.06)',
+        overflow: 'hidden',
+        cursor: 'pointer',
+      }}
+      onClick={onEdit}
+    >
+      <div style={{ position: 'relative' }}>
+        <div
+          style={{
+            width: '100%',
+            aspectRatio: 1,
+            background: 'rgba(0,0,0,0.2)',
+            borderRadius: '12px 12px 0 0',
+            overflow: 'hidden',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {dataUrl ? (
+            <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+          ) : (
+            <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
+          )}
+        </div>
+        <div
+          style={{
+            position: 'absolute',
+            right: 8,
+            top: 8,
+            zIndex: 1,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Dropdown menu={{ items: menuItems }} trigger={['click']} placement="bottomRight">
+            <Button
+              type="text"
+              icon={<MoreOutlined />}
+              style={{ color: 'rgba(255,255,255,0.85)' }}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </Dropdown>
+        </div>
       </div>
       <div style={{ padding: '8px 10px' }}>
         <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

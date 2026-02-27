@@ -6,6 +6,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { initAppDb, getProjects, createProject, deleteProject, importProject } from './db';
@@ -37,8 +38,10 @@ import {
   deleteTimelineBlock,
   insertBlockAtMainTrack,
   moveBlockToMainTrack,
+  reorderMainTrack,
   resizeTimelineBlockWithCascade,
   getCharacters,
+  getOrCreateStandaloneSpritesCharacter,
   createCharacter,
   updateCharacter,
   deleteCharacter,
@@ -47,15 +50,20 @@ import {
   getAssets,
   getAssetById,
   saveAssetFromFile,
+  saveAssetFromBase64,
   updateAsset,
   deleteAsset,
   getAssetDataUrl,
   getExportsPath,
+  getAssetsPath,
 } from './projectDb';
 import { getPackages } from './projectPackages';
 import { exportSceneVideo } from './exportService';
-import { getSpriteBackgroundColor, getSpriteFrames } from './spriteService';
-import { processSpriteWithOnnx } from './spriteOnnxService';
+import { extractVideoFrame } from './videoCoverService';
+import { processTransparentVideo, type ChromaKeyColor } from './transparentVideoService';
+import { getSpriteBackgroundColor, getSpriteFrames, extractSpriteCoverToTemp } from './spriteService';
+import { processSpriteWithOnnx, matteImageForContour, matteImageAndSave } from './spriteOnnxService';
+import { exportSpriteSheetToZip, importSpriteSheetFromZip } from './spriteSheetExportService';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -227,6 +235,14 @@ ipcMain.handle('app:dialog:openFile', async (_, options?: { filters?: { name: st
   const r = await dialog.showOpenDialog(win!, { properties: ['openFile'], filters });
   return r.canceled ? null : r.filePaths[0] ?? null;
 });
+ipcMain.handle('app:dialog:saveFile', async (_, options?: { defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => {
+  const win = BrowserWindow.getFocusedWindow() || mainWindow;
+  const r = await dialog.showSaveDialog(win!, {
+    defaultPath: options?.defaultPath,
+    filters: options?.filters ?? [{ name: 'ZIP 包', extensions: ['zip'] }],
+  });
+  return r.canceled ? null : r.filePath ?? null;
+});
 ipcMain.handle('app:fs:pathExists', (_, p: string) => fs.existsSync(p));
 ipcMain.handle('app:shell:showItemInFolder', (_, fullPath: string) => shell.showItemInFolder(fullPath));
 ipcMain.handle('app:shell:openPath', (_: unknown, path: string) => shell.openPath(path));
@@ -265,6 +281,9 @@ ipcMain.handle('app:project:insertBlockAtMainTrack', (_, projectDir: string, sce
 ipcMain.handle('app:project:moveBlockToMainTrack', (_, projectDir: string, sceneId: string, blockId: string, insertAt: number) =>
   moveBlockToMainTrack(projectDir, sceneId, blockId, insertAt)
 );
+ipcMain.handle('app:project:reorderMainTrack', (_, projectDir: string, sceneId: string, blockIds: string[]) =>
+  reorderMainTrack(projectDir, sceneId, blockIds)
+);
 ipcMain.handle('app:project:resizeTimelineBlockWithCascade', (_, projectDir: string, blockId: string, newEndTime: number) =>
   resizeTimelineBlockWithCascade(projectDir, blockId, newEndTime)
 );
@@ -275,6 +294,9 @@ ipcMain.handle('app:project:updateKeyframe', (_, projectDir: string, id: string,
 );
 ipcMain.handle('app:project:deleteKeyframe', (_, projectDir: string, id: string) => deleteKeyframe(projectDir, id));
 ipcMain.handle('app:project:getCharacters', (_, projectDir: string) => getCharacters(projectDir));
+ipcMain.handle('app:project:getOrCreateStandaloneSpritesCharacter', (_, projectDir: string) =>
+  getOrCreateStandaloneSpritesCharacter(projectDir)
+);
 ipcMain.handle('app:project:createCharacter', (_, projectDir: string, data: unknown) => createCharacter(projectDir, data as Parameters<typeof createCharacter>[1]));
 ipcMain.handle('app:project:updateCharacter', (_, projectDir: string, id: string, data: unknown) =>
   updateCharacter(projectDir, id, data as Parameters<typeof updateCharacter>[2])
@@ -286,8 +308,47 @@ ipcMain.handle('app:project:saveAiConfig', (_, projectDir: string, data: unknown
 );
 ipcMain.handle('app:project:getAssets', (_, projectDir: string, type?: string) => getAssets(projectDir, type));
 ipcMain.handle('app:project:getAssetById', (_, projectDir: string, id: string) => getAssetById(projectDir, id));
-ipcMain.handle('app:project:saveAssetFromFile', (_, projectDir: string, sourcePath: string, type?: string, options?: { description?: string | null; is_favorite?: number }) =>
-  saveAssetFromFile(projectDir, sourcePath, type ?? 'character', options)
+ipcMain.handle(
+  'app:project:saveAssetFromFile',
+  async (
+    _,
+    projectDir: string,
+    sourcePath: string,
+    type?: string,
+    options?: { description?: string | null; is_favorite?: number }
+  ) => {
+    const res = saveAssetFromFile(projectDir, sourcePath, type ?? 'character', options);
+    if (!res.ok || !res.id || !res.path) return res;
+    const t = type ?? 'character';
+    if (t !== 'video' && t !== 'transparent_video') return res;
+    const ext = path.extname(sourcePath).toLowerCase();
+    if (!['.mp4', '.webm', '.mov', '.avi', '.mkv'].includes(ext)) return res;
+    try {
+      const tmpCover = path.join(os.tmpdir(), `yiman_video_cover_${Date.now()}.png`);
+      const frameRes = await extractVideoFrame(sourcePath, tmpCover, 0.5);
+      if (!frameRes.ok || !frameRes.path) return res;
+      try {
+        const assetsDir = getAssetsPath(projectDir);
+        const coverFileName = `${res.id}_cover.png`;
+        const coverFullPath = path.join(assetsDir, coverFileName);
+        fs.copyFileSync(frameRes.path, coverFullPath);
+        const coverRelative = `assets/${coverFileName}`;
+        updateAsset(projectDir, res.id, { cover_path: coverRelative });
+      } finally {
+        try {
+          fs.unlinkSync(tmpCover);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* 封面提取失败不影响主流程 */
+    }
+    return res;
+  }
+);
+ipcMain.handle('app:project:saveAssetFromBase64', (_, projectDir: string, base64Data: string, ext?: string, type?: string) =>
+  saveAssetFromBase64(projectDir, base64Data, ext ?? '.png', type ?? 'character')
 );
 ipcMain.handle('app:project:updateAsset', (_, projectDir: string, id: string, data: unknown) =>
   updateAsset(projectDir, id, data as Parameters<typeof updateAsset>[2])
@@ -295,6 +356,53 @@ ipcMain.handle('app:project:updateAsset', (_, projectDir: string, id: string, da
 ipcMain.handle('app:project:deleteAsset', (_, projectDir: string, id: string) => deleteAsset(projectDir, id));
 ipcMain.handle('app:project:getAssetDataUrl', (_, projectDir: string, relativePath: string) =>
   getAssetDataUrl(projectDir, relativePath)
+);
+ipcMain.handle(
+  'app:project:saveTransparentVideoAsset',
+  async (
+    _,
+    projectDir: string,
+    sourcePath: string,
+    color: ChromaKeyColor,
+    options?: { description?: string | null; is_favorite?: number; tags?: string | null }
+  ) => {
+    const proc = await processTransparentVideo(sourcePath, color);
+    if (!proc.ok || !proc.path) return { ok: false, error: proc.error ?? '抠图处理失败' };
+    const tempPath = proc.path;
+    try {
+      const res = saveAssetFromFile(projectDir, tempPath, 'transparent_video', options);
+      if (!res.ok || !res.id || !res.path) return res;
+      try {
+        const tmpCover = path.join(os.tmpdir(), `yiman_video_cover_${Date.now()}.png`);
+        const frameRes = await extractVideoFrame(tempPath, tmpCover, 0.5);
+        if (frameRes.ok && frameRes.path) {
+          try {
+            const assetsDir = getAssetsPath(projectDir);
+            const coverFileName = `${res.id}_cover.png`;
+            const coverFullPath = path.join(assetsDir, coverFileName);
+            fs.copyFileSync(frameRes.path, coverFullPath);
+            const coverRelative = `assets/${coverFileName}`;
+            updateAsset(projectDir, res.id, { cover_path: coverRelative });
+          } finally {
+            try {
+              fs.unlinkSync(tmpCover);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      } catch {
+        /* 封面提取失败不影响主流程 */
+      }
+      return res;
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 );
 ipcMain.handle('app:project:getPackages', (_, projectDir: string) => getPackages(projectDir));
 ipcMain.handle('app:project:getExportsPath', (_, projectDir: string) => getExportsPath(projectDir));
@@ -308,9 +416,41 @@ ipcMain.handle(
     projectDir: string,
     relativePath: string,
     background: { r: number; g: number; b: number; a: number } | null,
-    options?: { backgroundThreshold?: number; minGapPixels?: number }
+    options?: { backgroundThreshold?: number; minGapPixels?: number; useTransparentBackground?: boolean }
   ) => getSpriteFrames(projectDir, relativePath, background, options)
 );
+
+ipcMain.handle(
+  'app:project:extractSpriteCover',
+  async (
+    _,
+    projectDir: string,
+    relativePath: string,
+    frame: { x: number; y: number; width: number; height: number }
+  ) => {
+    const res = await extractSpriteCoverToTemp(projectDir, relativePath, frame);
+    if (!res.ok || !res.tempPath) return res;
+    try {
+      const saveRes = saveAssetFromFile(projectDir, res.tempPath, 'character');
+      try {
+        fs.unlinkSync(res.tempPath);
+      } catch {
+        /* ignore */
+      }
+      return saveRes;
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+);
+
+ipcMain.handle('app:project:matteImageForContour', async (_, projectDir: string, relativePath: string) => {
+  return matteImageForContour(projectDir, relativePath);
+});
+
+ipcMain.handle('app:project:matteImageAndSave', async (_, projectDir: string, relativePath: string, options?: { mattingModel?: string; downsampleRatio?: number }) => {
+  return matteImageAndSave(projectDir, relativePath, options);
+});
 
 ipcMain.handle(
   'app:project:processSpriteWithOnnx',
@@ -318,7 +458,7 @@ ipcMain.handle(
     _,
     projectDir: string,
     relativePath: string,
-    options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2'; u2netpAlphaMatting?: boolean }
+    options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: string; u2netpAlphaMatting?: boolean }
   ) => {
     const res = await processSpriteWithOnnx(projectDir, relativePath, options);
     if (!res.ok || !res.path || !res.frames) return res;
@@ -352,6 +492,26 @@ ipcMain.handle(
     }
   }
 );
+
+ipcMain.handle(
+  'app:project:exportSpriteSheet',
+  async (
+    _,
+    projectDir: string,
+    item: { id: string; name?: string; image_path: string; cover_path?: string; frame_count?: number; frames?: unknown[]; chroma_key?: string; background_color?: unknown; matting_model?: string; playback_fps?: number }
+  ) => {
+    const savePath = await dialog.showSaveDialog(BrowserWindow.getFocusedWindow() || mainWindow!, {
+      defaultPath: `${item.name || '精灵动作'}.zip`,
+      filters: [{ name: 'ZIP 包', extensions: ['zip'] }],
+    });
+    if (!savePath.filePath) return { ok: false, error: '已取消' };
+    return exportSpriteSheetToZip(projectDir, item, savePath.filePath);
+  }
+);
+
+ipcMain.handle('app:project:importSpriteSheet', async (_, projectDir: string, zipPath: string) => {
+  return importSpriteSheetFromZip(projectDir, zipPath);
+});
 
 // 视频导出（见开发计划 2.13）；进度通过 event.sender 推送
 ipcMain.handle(

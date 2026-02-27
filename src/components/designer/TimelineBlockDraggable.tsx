@@ -20,6 +20,8 @@ interface TimelineBlockDraggableProps {
   onSelectBlock: (id: string) => void;
   onResizeBlock: (blockId: string, edge: 'left' | 'right', start: number, end: number, layerId: string) => void;
   onKeyframeClick?: (time: number) => void;
+  /** 精灵图不可 resize */
+  resizable?: boolean;
 }
 
 export function TimelineBlockDraggable({
@@ -32,6 +34,7 @@ export function TimelineBlockDraggable({
   onSelectBlock,
   onResizeBlock,
   onKeyframeClick,
+  resizable = true,
 }: TimelineBlockDraggableProps) {
   const left = timeToX(block.start_time);
   const width = Math.max(12, timeToX(block.end_time - block.start_time));
@@ -64,16 +67,20 @@ export function TimelineBlockDraggable({
       {...listeners}
       onClick={(e) => { e.stopPropagation(); onSelectBlock(block.id); }}
     >
-      <div
-        style={{ position: 'absolute', left: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize' }}
-        onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeBlock(block.id, 'left', block.start_time, block.end_time, block.layer_id); }}
-      />
-      <div
-        style={{ position: 'absolute', right: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize' }}
-        onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeBlock(block.id, 'right', block.start_time, block.end_time, block.layer_id); }}
-      />
+      {resizable && (
+        <>
+          <div
+            style={{ position: 'absolute', left: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize' }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeBlock(block.id, 'left', block.start_time, block.end_time, block.layer_id); }}
+          />
+          <div
+            style={{ position: 'absolute', right: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize' }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeBlock(block.id, 'right', block.start_time, block.end_time, block.layer_id); }}
+          />
+        </>
+      )}
       {selectedBlockId === block.id && [...new Set(keyframes.map((k) => k.time))].map((time) => {
         const blockDur = Math.max(0.001, block.end_time - block.start_time);
         const pct = Math.max(0, Math.min(100, ((time - block.start_time) / blockDur) * 100));

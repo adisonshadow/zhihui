@@ -1,12 +1,22 @@
 /**
  * DOM 画布：尺寸与项目横竖屏一致，素材位置/缩放/旋转归一化存储、渲染时换算为 px（见技术文档 4.2、开发计划 2.10）
+ * 精灵图按 currentTime 与 playback_fps 计算当前帧并裁剪渲染
  */
-import React, { useRef, useCallback, useState } from 'react';
+import React, { useRef, useCallback, useState, useEffect } from 'react';
+
+export interface SpriteFrameRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export interface BlockItem {
   id: string;
   layer_id: string;
   asset_id: string | null;
+  start_time?: number;
+  end_time?: number;
   pos_x: number;
   pos_y: number;
   scale_x: number;
@@ -14,6 +24,8 @@ export interface BlockItem {
   rotation: number;
   dataUrl: string | null;
   isVideo?: boolean;
+  /** 透明视频（WebM 带 alpha），画布需支持透明通道显示 */
+  isTransparentVideo?: boolean;
   /** 等比缩放：1=等比，0=自由；画布 resize 时据此决定是否拉伸到区域 */
   lock_aspect?: number;
   /** 关键帧插值效果（见功能文档 6.8） */
@@ -22,6 +34,16 @@ export interface BlockItem {
   color?: string;
   /** 画布渲染 z-index（自动管理：分层从上到下越高，同层素材越靠后越高，见功能文档 6.7） */
   zIndex?: number;
+  /** 精灵图：按帧 index 裁剪渲染，非整图 */
+  spriteInfo?: {
+    frames: SpriteFrameRect[];
+    frame_count: number;
+    playback_fps: number;
+    start_time: number;
+    end_time: number;
+  };
+  /** 当前时间（秒），用于精灵帧计算 */
+  currentTime?: number;
 }
 
 interface CanvasProps {
@@ -34,6 +56,79 @@ interface CanvasProps {
   onBlockMove: (blockId: string, newPos_x: number, newPos_y: number) => Promise<void> | void;
   /** 拖拽结束（pointer up）时调用，用于刷新数据并同步到设置面板 */
   onBlockMoveEnd?: () => void;
+}
+
+/** 视频块：根据时间轴 currentTime 同步视频播放位置；透明视频（WebM alpha）需容器透明以显示透明通道 */
+function VideoBlock({
+  dataUrl,
+  currentTime = 0,
+  startTime,
+  endTime,
+  lockAspect,
+  isTransparentVideo,
+}: {
+  dataUrl: string;
+  currentTime?: number;
+  startTime: number;
+  endTime: number;
+  lockAspect?: number;
+  isTransparentVideo?: boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const duration = Math.max(0, endTime - startTime);
+  const localTime = Math.max(0, Math.min(currentTime - startTime, duration));
+
+  const syncTime = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !dataUrl) return;
+    const targetTime = localTime;
+    if (Math.abs(video.currentTime - targetTime) > 0.05) {
+      video.currentTime = targetTime;
+    }
+  }, [localTime, dataUrl]);
+
+  useEffect(() => {
+    syncTime();
+  }, [syncTime]);
+
+  return (
+    <div style={{ width: '100%', height: '100%', background: isTransparentVideo ? 'transparent' : undefined }}>
+      <video
+        ref={videoRef}
+        src={dataUrl}
+        muted
+        playsInline
+        preload="auto"
+        onLoadedMetadata={syncTime}
+        onLoadedData={syncTime}
+        style={{ width: '100%', height: '100%', objectFit: (lockAspect !== 0) ? 'contain' : 'fill', pointerEvents: 'none' }}
+      />
+    </div>
+  );
+}
+
+/** 精灵图单帧渲染：按帧 rect 从 sprite sheet 裁剪显示 */
+function SpriteFrame({ dataUrl, frame, width, height }: { dataUrl: string; frame: SpriteFrameRect; width: number; height: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (!dataUrl || !frame || frame.width <= 0 || frame.height <= 0 || width <= 0 || height <= 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = width;
+      canvas.height = height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(img, frame.x, frame.y, frame.width, frame.height, 0, 0, width, height);
+    };
+    img.src = dataUrl;
+    return () => { img.src = ''; };
+  }, [dataUrl, frame.x, frame.y, frame.width, frame.height, width, height]);
+
+  return <canvas ref={canvasRef} width={width} height={height} style={{ width: '100%', height: '100%', display: 'block', pointerEvents: 'none' }} />;
 }
 
 export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockId, onSelectBlock, onBlockMove, onBlockMoveEnd }: CanvasProps) {
@@ -126,10 +221,35 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
             }}
             onPointerDown={(e) => handlePointerDown(e, block)}
           >
-            {block.dataUrl && !block.isVideo ? (
+            {block.spriteInfo && block.dataUrl ? (
+              <SpriteFrame
+                dataUrl={block.dataUrl}
+                frame={
+                  (() => {
+                    const { frames, frame_count, playback_fps, start_time, end_time } = block.spriteInfo!;
+                    const t = block.currentTime ?? 0;
+                    const elapsed = Math.max(0, Math.min(t - start_time, end_time - start_time));
+                    const idx = Math.min(
+                      Math.floor(elapsed * playback_fps) % Math.max(1, frame_count),
+                      frames.length - 1
+                    );
+                    return frames[Math.max(0, idx)] ?? frames[0] ?? { x: 0, y: 0, width: 100, height: 100 };
+                  })()
+                }
+                width={width}
+                height={height}
+              />
+            ) : block.dataUrl && !block.isVideo ? (
               <img src={block.dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: (block.lock_aspect !== 0) ? 'contain' : 'fill', pointerEvents: 'none' }} draggable={false} />
             ) : block.dataUrl && block.isVideo ? (
-              <video src={block.dataUrl} style={{ width: '100%', height: '100%', objectFit: (block.lock_aspect !== 0) ? 'contain' : 'fill', pointerEvents: 'none' }} muted playsInline />
+              <VideoBlock
+                dataUrl={block.dataUrl}
+                currentTime={block.currentTime}
+                startTime={block.start_time ?? 0}
+                endTime={block.end_time ?? 0}
+                lockAspect={block.lock_aspect}
+                isTransparentVideo={block.isTransparentVideo}
+              />
             ) : (
               <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>
                 素材

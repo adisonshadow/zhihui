@@ -22,6 +22,8 @@ const api = {
     openDirectory: () => ipcRenderer.invoke('app:dialog:openDirectory'),
     openFile: (options?: { filters?: { name: string; extensions: string[] }[] }) =>
       ipcRenderer.invoke('app:dialog:openFile', options),
+    saveFile: (options?: { defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) =>
+      ipcRenderer.invoke('app:dialog:saveFile', options),
   },
   fs: {
     pathExists: (p: string) => ipcRenderer.invoke('app:fs:pathExists', p),
@@ -75,6 +77,8 @@ const api = {
       ipcRenderer.invoke('app:project:insertBlockAtMainTrack', projectDir, sceneId, data),
     moveBlockToMainTrack: (projectDir: string, sceneId: string, blockId: string, insertAt: number) =>
       ipcRenderer.invoke('app:project:moveBlockToMainTrack', projectDir, sceneId, blockId, insertAt),
+    reorderMainTrack: (projectDir: string, sceneId: string, blockIds: string[]) =>
+      ipcRenderer.invoke('app:project:reorderMainTrack', projectDir, sceneId, blockIds),
     resizeTimelineBlockWithCascade: (projectDir: string, blockId: string, newEndTime: number) =>
       ipcRenderer.invoke('app:project:resizeTimelineBlockWithCascade', projectDir, blockId, newEndTime),
     getKeyframes: (projectDir: string, blockId?: string) =>
@@ -86,6 +90,8 @@ const api = {
     deleteKeyframe: (projectDir: string, id: string) =>
       ipcRenderer.invoke('app:project:deleteKeyframe', projectDir, id),
     getCharacters: (projectDir: string) => ipcRenderer.invoke('app:project:getCharacters', projectDir),
+    getOrCreateStandaloneSpritesCharacter: (projectDir: string) =>
+      ipcRenderer.invoke('app:project:getOrCreateStandaloneSpritesCharacter', projectDir),
     createCharacter: (projectDir: string, data: unknown) =>
       ipcRenderer.invoke('app:project:createCharacter', projectDir, data),
     updateCharacter: (projectDir: string, id: string, data: unknown) =>
@@ -97,8 +103,16 @@ const api = {
       ipcRenderer.invoke('app:project:saveAiConfig', projectDir, data),
     getAssets: (projectDir: string, type?: string) => ipcRenderer.invoke('app:project:getAssets', projectDir, type),
     getAssetById: (projectDir: string, id: string) => ipcRenderer.invoke('app:project:getAssetById', projectDir, id),
-    saveAssetFromFile: (projectDir: string, sourcePath: string, type?: string, options?: { description?: string | null; is_favorite?: number }) =>
+    saveAssetFromFile: (projectDir: string, sourcePath: string, type?: string, options?: { description?: string | null; is_favorite?: number; tags?: string | null }) =>
       ipcRenderer.invoke('app:project:saveAssetFromFile', projectDir, sourcePath, type, options),
+    saveTransparentVideoAsset: (
+      projectDir: string,
+      sourcePath: string,
+      color: 'black' | 'green' | 'purple',
+      options?: { description?: string | null; is_favorite?: number }
+    ) => ipcRenderer.invoke('app:project:saveTransparentVideoAsset', projectDir, sourcePath, color, options),
+    saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string) =>
+      ipcRenderer.invoke('app:project:saveAssetFromBase64', projectDir, base64Data, ext, type),
     updateAsset: (projectDir: string, id: string, data: unknown) =>
       ipcRenderer.invoke('app:project:updateAsset', projectDir, id, data),
     deleteAsset: (projectDir: string, id: string) =>
@@ -111,14 +125,30 @@ const api = {
       projectDir: string,
       relativePath: string,
       background: { r: number; g: number; b: number; a: number } | null,
-      options?: { backgroundThreshold?: number; minGapPixels?: number }
+      options?: { backgroundThreshold?: number; minGapPixels?: number; useTransparentBackground?: boolean }
     ) => ipcRenderer.invoke('app:project:getSpriteFrames', projectDir, relativePath, background, options),
+    extractSpriteCover: (
+      projectDir: string,
+      relativePath: string,
+      frame: { x: number; y: number; width: number; height: number }
+    ) => ipcRenderer.invoke('app:project:extractSpriteCover', projectDir, relativePath, frame),
+    matteImageForContour: (projectDir: string, relativePath: string) =>
+      ipcRenderer.invoke('app:project:matteImageForContour', projectDir, relativePath),
+    matteImageAndSave: (
+      projectDir: string,
+      relativePath: string,
+      options?: { mattingModel?: string; downsampleRatio?: number }
+    ) => ipcRenderer.invoke('app:project:matteImageAndSave', projectDir, relativePath, options),
     processSpriteWithOnnx: (
       projectDir: string,
       relativePath: string,
       options?: { frameCount?: number; cellSize?: number; spacing?: number }
     ) =>
       ipcRenderer.invoke('app:project:processSpriteWithOnnx', projectDir, relativePath, options),
+    exportSpriteSheet: (projectDir: string, item: unknown) =>
+      ipcRenderer.invoke('app:project:exportSpriteSheet', projectDir, item),
+    importSpriteSheet: (projectDir: string, zipPath: string) =>
+      ipcRenderer.invoke('app:project:importSpriteSheet', projectDir, zipPath),
     getPackages: (projectDir: string) => ipcRenderer.invoke('app:project:getPackages', projectDir),
     getExportsPath: (projectDir: string) => ipcRenderer.invoke('app:project:getExportsPath', projectDir),
     /** 导出视频（见开发计划 2.13）；onProgress 可选，用于进度回调 */

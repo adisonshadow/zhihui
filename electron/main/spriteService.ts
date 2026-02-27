@@ -2,6 +2,8 @@
  * 精灵图服务：借助 sharp 读取背景色（左上 2x2 平均）与自动解析帧边界
  */
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import sharp from 'sharp';
 
 export interface SpriteBackgroundColor {
@@ -68,7 +70,7 @@ export async function getSpriteBackgroundColor(
 const SEPARATOR_BACKGROUND_RATIO = 0.99;
 
 /** 帧边界扩展像素，避免裁剪到内容边缘 */
-const FRAME_PADDING = 10;
+const FRAME_PADDING = 5;
 
 /** 用 IQR 排除异常值，返回在 [Q1 - 1.5*IQR, Q3 + 1.5*IQR] 内的数 */
 function filterOutliers(values: number[]): number[] {
@@ -121,10 +123,11 @@ export async function getSpriteFrames(
   projectDir: string,
   relativePath: string,
   background: SpriteBackgroundColor | null,
-  options?: { backgroundThreshold?: number; minGapPixels?: number }
+  options?: { backgroundThreshold?: number; minGapPixels?: number; useTransparentBackground?: boolean }
 ): Promise<{ raw: SpriteFrameRect[]; normalized: SpriteFrameRect[] }> {
   const threshold = options?.backgroundThreshold ?? 120;
   const minGapPixels = options?.minGapPixels ?? 6;
+  const useTransparent = options?.useTransparentBackground ?? false;
   try {
     const fullPath = getFullPath(projectDir, relativePath);
     const meta = await sharp(fullPath).metadata();
@@ -144,6 +147,10 @@ export async function getSpriteFrames(
     const tb = background?.b ?? 0;
 
     const isBackground = (i: number): boolean => {
+      if (useTransparent && ch >= 4) {
+        const a = data[i + 3] ?? 255;
+        return a < 20;
+      }
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
@@ -251,5 +258,40 @@ export async function getSpriteFrames(
     return { raw: frames, normalized };
   } catch {
     return { raw: [], normalized: [] };
+  }
+}
+
+/** 从精灵图中提取指定区域到临时文件，返回临时文件路径（由调用方保存后删除） */
+export async function extractSpriteCoverToTemp(
+  projectDir: string,
+  relativePath: string,
+  frame: SpriteFrameRect
+): Promise<{ ok: boolean; tempPath?: string; error?: string }> {
+  try {
+    const fullPath = getFullPath(projectDir, relativePath);
+    if (!fs.existsSync(fullPath)) return { ok: false, error: '精灵图文件不存在' };
+    const meta = await sharp(fullPath).metadata();
+    const imgW = meta.width ?? 0;
+    const imgH = meta.height ?? 0;
+    if (imgW <= 0 || imgH <= 0) return { ok: false, error: '无法读取图片尺寸' };
+    let left = Math.round(frame.x);
+    let top = Math.round(frame.y);
+    let w = Math.round(frame.width);
+    let h = Math.round(frame.height);
+    if (w <= 0 || h <= 0) return { ok: false, error: '帧尺寸无效' };
+    left = Math.max(0, Math.min(left, imgW - 1));
+    top = Math.max(0, Math.min(top, imgH - 1));
+    w = Math.min(w, imgW - left);
+    h = Math.min(h, imgH - top);
+    if (w <= 0 || h <= 0) return { ok: false, error: '裁剪区域无效' };
+    const buf = await sharp(fullPath)
+      .extract({ left, top, width: w, height: h })
+      .png()
+      .toBuffer();
+    const tempPath = path.join(os.tmpdir(), `yiman_sprite_cover_${Date.now()}.png`);
+    fs.writeFileSync(tempPath, buf);
+    return { ok: true, tempPath };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

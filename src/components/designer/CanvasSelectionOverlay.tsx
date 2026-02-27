@@ -1,6 +1,6 @@
 /**
  * 画布选中态叠加层：选中框、四角缩放把手、底部旋转把手（参考图）
- * 在缩放层外渲染，使用视口坐标 + 固定像素把手，避免舞台缩小后无法点选（见功能文档 6.8）
+ * 在缩放层外渲染，使用视口坐标 + 固定像素把手，避免工作区缩小后无法点选（见功能文档 6.8）
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { UndoOutlined } from '@ant-design/icons';
@@ -364,7 +364,7 @@ export function CanvasSelectionOverlay({
         onPointerDown={handlePointerDownMove}
         {...pointerHandlers}
       />
-      {/* 四角缩放把手：固定像素大小，不随舞台缩放 */}
+      {/* 四角缩放把手：固定像素大小，不随工作区缩放 */}
       {cornersScreen.map((pos, i) => (
         <div
           key={i}

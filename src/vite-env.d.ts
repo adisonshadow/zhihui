@@ -12,6 +12,7 @@ declare global {
       dialog: {
         openDirectory: () => Promise<string | null>;
         openFile: (options?: { filters?: { name: string; extensions: string[] }[] }) => Promise<string | undefined>;
+        saveFile: (options?: { defaultPath?: string; filters?: { name: string; extensions: string[] }[] }) => Promise<string | null>;
       };
       shell: {
         showItemInFolder: (fullPath: string) => Promise<string>;
@@ -30,6 +31,7 @@ declare global {
         updateEpisode: (projectDir: string, id: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         deleteEpisode: (projectDir: string, id: string) => Promise<{ ok: boolean; error?: string }>;
         getCharacters: (projectDir: string) => Promise<unknown[]>;
+        getOrCreateStandaloneSpritesCharacter: (projectDir: string) => Promise<{ id: string; sprite_sheets?: string | null }>;
         createCharacter: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         updateCharacter: (projectDir: string, id: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         deleteCharacter: (projectDir: string, id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -40,14 +42,28 @@ declare global {
           projectDir: string,
           relativePath: string,
           background: { r: number; g: number; b: number; a: number } | null,
-          options?: { backgroundThreshold?: number; minGapPixels?: number }
+          options?: { backgroundThreshold?: number; minGapPixels?: number; useTransparentBackground?: boolean }
         ) => Promise<{ raw: { x: number; y: number; width: number; height: number }[]; normalized: { x: number; y: number; width: number; height: number }[] }>;
+        extractSpriteCover: (
+          projectDir: string,
+          relativePath: string,
+          frame: { x: number; y: number; width: number; height: number }
+        ) => Promise<{ ok: boolean; path?: string; error?: string }>;
+        matteImageForContour: (projectDir: string, relativePath: string) => Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
+        matteImageAndSave: (
+          projectDir: string,
+          relativePath: string,
+          options?: { mattingModel?: string; downsampleRatio?: number }
+        ) => Promise<{ ok: boolean; path?: string; error?: string }>;
         processSpriteWithOnnx: (
           projectDir: string,
           relativePath: string,
-          options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: 'rvm' | 'birefnet' | 'mvanet' | 'u2netp' | 'rmbg2'; u2netpAlphaMatting?: boolean; debugDir?: string }
+          options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: string; u2netpAlphaMatting?: boolean; debugDir?: string }
         ) => Promise<{ ok: boolean; path?: string; frames?: { x: number; y: number; width: number; height: number }[]; cover_path?: string; error?: string }>;
+        exportSpriteSheet: (projectDir: string, item: unknown) => Promise<{ ok: boolean; error?: string }>;
+        importSpriteSheet: (projectDir: string, zipPath: string) => Promise<{ ok: boolean; item?: unknown; error?: string }>;
         saveAssetFromFile: (projectDir: string, sourcePath: string, type?: string, options?: unknown) => Promise<{ ok: boolean; path?: string; error?: string }>;
+        saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
         getAiConfig: (projectDir: string) => Promise<unknown>;
         saveAiConfig: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
       };

@@ -50,6 +50,7 @@ yarn add <包名>
 
 ## 🚫 Ant Design 使用规范
 - **Modal**：禁止使用函数式 Modal 方法
+- **Modal**: `destroyOnClose` is deprecated. Please use `destroyOnHidden` instead.
 - **Tag**：没有 `size` 属性
 - **Space**：`direction` 已弃用，请用 `orientation`（如 `orientation="vertical"`）
 - **Spin**：`tip` 仅在 nest 或 fullscreen 模式下生效，需用子元素包裹（如 `<Spin tip="…"><div style={{ minHeight: 120 }} /></Spin>`）

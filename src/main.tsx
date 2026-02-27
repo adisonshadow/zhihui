@@ -100,6 +100,14 @@ const customTheme = {
       "Input": {
         "activeBorderColor": "rgb(22,119,255)",
         "hoverBorderColor": "rgba(170,208,255,0.76)"
+      },
+      "Radio": {
+        "buttonSolidCheckedActiveBg": "rgb(126,126,126)",
+        "buttonSolidCheckedBg": "rgb(80,80,80)",
+        "buttonSolidCheckedHoverBg": "rgb(77,82,88)",
+        "colorPrimary": "rgb(222,222,222)",
+        "colorPrimaryActive": "rgb(143,143,143)",
+        "colorPrimaryHover": "rgb(158,169,182)"
       }
     },
     "token": {

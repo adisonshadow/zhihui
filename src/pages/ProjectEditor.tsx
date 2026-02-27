@@ -4,14 +4,16 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Tabs, Result, Spin, Space, Typography, Tooltip } from 'antd';
+import { Button, Result, Spin, Space, Typography, Tooltip } from 'antd';
 import { ArrowLeftOutlined, FileTextOutlined, UserOutlined, SettingOutlined, VideoCameraOutlined, FolderOutlined, CommentOutlined, MenuOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { useConfigModal } from '@/contexts/ConfigContext';
 import { useProject } from '@/hooks/useProject';
 import OutlineTab from './OutlineTab';
 import CharactersTab from './CharactersTab';
 import AiConfigTab from './AiConfigTab';
 import AssetLibraryTab from './AssetLibraryTab';
 import DesignerTab from './DesignerTab';
+import { AdaptiveTabs } from '@/components/antd-plus/AdaptiveTabs';
 
 const { Text } = Typography;
 
@@ -58,6 +60,7 @@ function getStoredCurrentEpisode(projectId: string): { id: string; title: string
 const ProjectEditor: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { openConfigModal } = useConfigModal();
   const { project, loading, error } = useProject(id);
   const [activeKey, setActiveKey] = useState(getStoredTab);
   const [showNav, setShowNav] = useState(getStoredShowNav);
@@ -123,7 +126,7 @@ const ProjectEditor: React.FC = () => {
       key: 'outline',
       label: (
         <span>
-          <FileTextOutlined /> 大纲
+          <FileTextOutlined /> 剧本
         </span>
       ),
       children: <OutlineTab project={project} />,
@@ -199,25 +202,27 @@ const ProjectEditor: React.FC = () => {
             </Tooltip>
           </>
         )}
-        <Button
-          type="text"
-          icon={<SettingOutlined />}
-          onClick={() => navigate('/settings')}
-        >
-        </Button>
+        <Tooltip title="设置">
+          <Button
+            type="text"
+            icon={<SettingOutlined />}
+            onClick={() => openConfigModal()}
+          />
+        </Tooltip>
       </Space>
     ),
   };
 
   return (
     <div style={{ paddingTop: '8px' }}>
-      <Tabs
+      <AdaptiveTabs
         centered
         activeKey={activeKey}
         onChange={setActiveKey}
         items={tabItems}
         type="card"
         tabBarExtraContent={operationsSlot}
+        contentOverflow={false}
         styles= {{
           header: {
             margin: 0,
