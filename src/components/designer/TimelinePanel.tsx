@@ -63,6 +63,45 @@ interface KeyframeRow {
   time: number;
 }
 
+/** 根据图片实际尺寸更新 block 的 scale，使选中框与裁剪后图片一致（见功能文档 6.8） */
+async function updateBlockScaleForImage(
+  projectDir: string,
+  blockId: string,
+  assetId: string,
+  landscape: boolean
+): Promise<void> {
+  const api = window.yiman?.project;
+  if (!api?.getAssetById || !api?.getAssetDataUrl || !api?.updateTimelineBlock) return;
+  const asset = (await api.getAssetById(projectDir, assetId)) as { path?: string; type?: string } | null;
+  if (!asset?.path || (asset.type ?? '') !== 'image') return;
+  const dataUrl = await api.getAssetDataUrl(projectDir, asset.path);
+  if (!dataUrl) return;
+  const dim = await new Promise<{ w: number; h: number }>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = dataUrl;
+  });
+  if (dim.w <= 0 || dim.h <= 0) return;
+  const designW = landscape ? 1920 : 1080;
+  const designH = landscape ? 1080 : 1920;
+  const baseScale = 0.25;
+  const frameAspect = dim.w / dim.h;
+  const designAspect = designW / designH;
+  let scale_x = baseScale;
+  let scale_y = baseScale;
+  if (frameAspect >= designAspect) {
+    scale_x = baseScale;
+    scale_y = baseScale * (designW / designH) / frameAspect;
+  } else {
+    scale_y = baseScale;
+    scale_x = baseScale * (designH / designW) * frameAspect;
+  }
+  scale_x = Math.max(0.02, Math.min(1, scale_x));
+  scale_y = Math.max(0.02, Math.min(1, scale_y));
+  await api.updateTimelineBlock(projectDir, blockId, { scale_x, scale_y });
+}
+
 interface TimelinePanelProps {
   project: ProjectInfo;
   sceneId: string | null;
@@ -105,6 +144,7 @@ export function TimelinePanel({
   );
 
   const [spriteBlockIds, setSpriteBlockIds] = useState<Set<string>>(new Set());
+  const [blockAudioUrls, setBlockAudioUrls] = useState<Record<string, string>>({});
 
   const loadLayersAndBlocks = useCallback(async () => {
     if (!sceneId || !window.yiman?.project?.getLayers) return;
@@ -118,6 +158,7 @@ export function TimelinePanel({
     const blocks: Record<string, BlockRow[]> = {};
     const keyframes: Record<string, KeyframeRow[]> = {};
     const spriteIds = new Set<string>();
+    const audioUrls: Record<string, string> = {};
     if (window.yiman.project.getTimelineBlocks && window.yiman.project.getKeyframes) {
       for (const layer of layerList) {
         const list = (await window.yiman.project.getTimelineBlocks(projectDir, layer.id)) as BlockRow[];
@@ -125,6 +166,13 @@ export function TimelinePanel({
         for (const b of list) {
           const kf = (await window.yiman.project.getKeyframes(projectDir, b.id)) as KeyframeRow[];
           keyframes[b.id] = kf;
+          if ((layer.layer_type ?? 'video') === 'audio' && b.asset_id && window.yiman.project.getAssetById && window.yiman.project.getAssetDataUrl) {
+            const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id);
+            if (asset?.path) {
+              const url = await window.yiman.project.getAssetDataUrl(projectDir, asset.path);
+              if (url) audioUrls[b.id] = url;
+            }
+          }
         }
       }
       if (window.yiman.project.getAssetById && window.yiman.project.getCharacters) {
@@ -153,6 +201,7 @@ export function TimelinePanel({
     setBlocksByLayer(blocks);
     setKeyframesByBlock(keyframes);
     setSpriteBlockIds(spriteIds);
+    setBlockAudioUrls(audioUrls);
   }, [projectDir, sceneId]);
 
   useEffect(() => {
@@ -474,20 +523,61 @@ export function TimelinePanel({
     [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message]
   );
 
+  const getAssetDuration = useCallback(async (aid: string, fallback: number): Promise<number> => {
+    if (!window.yiman?.project?.getAssetById || !window.yiman?.project?.getAssetDataUrl) return fallback;
+    const a = (await window.yiman.project.getAssetById(projectDir, aid)) as { path?: string; type?: string } | null;
+    if (!a?.path) return fallback;
+    const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(a.path) || ['video', 'transparent_video'].includes(a.type || '');
+    if (!isVideo) return fallback;
+    const url = await window.yiman.project.getAssetDataUrl(projectDir, a.path);
+    if (!url) return fallback;
+    return new Promise<number>((resolve) => {
+      const el = document.createElement('video');
+      el.preload = 'metadata';
+      el.onloadedmetadata = () => {
+        el.src = '';
+        resolve(Math.max(0.5, Number.isFinite(el.duration) ? el.duration : fallback));
+      };
+      el.onerror = () => resolve(fallback);
+      el.src = url;
+    });
+  }, [projectDir]);
+
   const handleDropBlock = useCallback(
     async (toLayerId: string, dropTime: number, e: React.DragEvent) => {
       setDragOver(null);
       const blockId = e.dataTransfer.getData('blockId');
       const fromLayerId = e.dataTransfer.getData('fromLayerId');
       const assetId = e.dataTransfer.getData('assetId');
-      const assetDuration = parseFloat(e.dataTransfer.getData('assetDuration') || '10');
+      let assetDuration = parseFloat(e.dataTransfer.getData('assetDuration') || '10');
+      const assetType = e.dataTransfer.getData('assetType') || '';
+      const isAudioAsset = ['sfx', 'music'].includes(assetType);
+      if (assetId && ['video', 'transparent_video'].includes(assetType)) {
+        assetDuration = await getAssetDuration(assetId, assetDuration);
+      }
 
       if (blockId && fromLayerId) {
         await handleDropBlockData(blockId, fromLayerId, toLayerId, dropTime);
         return;
       }
 
-      if (assetId && toLayerId === mainLayerId && window.yiman?.project?.insertBlockAtMainTrack && mainLayerId) {
+      /** 音效/音乐：放置到声音层，不使用主轨道（见功能文档 6.7） */
+      if (assetId && isAudioAsset && window.yiman?.project?.insertBlockAtAudioTrack) {
+        const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const res = await window.yiman.project.insertBlockAtAudioTrack(projectDir, sceneId!, {
+          id: blockIdNew,
+          asset_id: assetId,
+          start_time: dropTime,
+          duration: assetDuration,
+        });
+        if (res?.ok) {
+          loadLayersAndBlocks();
+          onLayersChange?.();
+        } else message.error(res?.error || '放置失败');
+        return;
+      }
+
+      if (assetId && toLayerId === mainLayerId && !isAudioAsset && window.yiman?.project?.insertBlockAtMainTrack && mainLayerId) {
         const insertAt = getMainTrackInsertAt(dropTime);
         const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         const res = await window.yiman.project.insertBlockAtMainTrack(projectDir, sceneId!, {
@@ -502,6 +592,9 @@ export function TimelinePanel({
           rotation: 0,
         });
         if (res?.ok) {
+          if (assetType === 'image') {
+            await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
+          }
           loadLayersAndBlocks();
           onLayersChange?.();
         } else message.error(res?.error || '放置失败');
@@ -534,13 +627,16 @@ export function TimelinePanel({
           rotation: 0,
         });
         if (res?.ok) {
+          if (assetType === 'image') {
+            await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
+          }
           loadLayersAndBlocks();
           onLayersChange?.();
         } else message.error(res?.error || '放置失败');
         return;
       }
     },
-    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message]
+    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message, project, getAssetDuration]
   );
 
   const handleTrackDragOver = useCallback(
@@ -683,8 +779,28 @@ export function TimelinePanel({
       const blockId = e.dataTransfer.getData('blockId');
       const fromLayerId = e.dataTransfer.getData('fromLayerId');
       const assetId = e.dataTransfer.getData('assetId');
-      const assetDuration = parseFloat(e.dataTransfer.getData('assetDuration') || '10');
+      let assetDuration = parseFloat(e.dataTransfer.getData('assetDuration') || '10');
+      const assetType = e.dataTransfer.getData('assetType') || '';
+      const isAudioAsset = ['sfx', 'music'].includes(assetType);
+      if (assetId && ['video', 'transparent_video'].includes(assetType)) {
+        assetDuration = await getAssetDuration(assetId, assetDuration);
+      }
       if (!sceneId || !window.yiman?.project?.createLayer) return;
+      /** 音效/音乐：使用 insertBlockAtAudioTrack 放置到声音层 */
+      if (assetId && isAudioAsset && window.yiman?.project?.insertBlockAtAudioTrack) {
+        const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const res = await window.yiman.project.insertBlockAtAudioTrack(projectDir, sceneId, {
+          id: blockIdNew,
+          asset_id: assetId,
+          start_time: dropTime,
+          duration: assetDuration,
+        });
+        if (res?.ok) {
+          loadLayersAndBlocks();
+          onLayersChange?.();
+        } else message.error(res?.error || '放置失败');
+        return;
+      }
       const newLayerId = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       let newZ = 0;
       if (layers.length === 0) {
@@ -716,6 +832,7 @@ export function TimelinePanel({
           onLayersChange?.();
         } else message.error(res?.error || '移动失败');
       } else if (assetId && window.yiman?.project?.createTimelineBlock) {
+        const assetType = e.dataTransfer.getData('assetType') || '';
         const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         const res = await window.yiman.project.createTimelineBlock(projectDir, {
           id: blockIdNew,
@@ -730,12 +847,15 @@ export function TimelinePanel({
           rotation: 0,
         });
         if (res?.ok) {
+          if (assetType === 'image') {
+            await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
+          }
           loadLayersAndBlocks();
           onLayersChange?.();
         } else message.error(res?.error || '放置失败');
       }
     },
-    [projectDir, sceneId, layers, mainLayerId, blocksByLayer, loadLayersAndBlocks, onLayersChange, message]
+    [projectDir, sceneId, layers, mainLayerId, blocksByLayer, loadLayersAndBlocks, onLayersChange, message, project, getAssetDuration]
   );
 
   /** 素材条拖到 between zone 时创建新分层并移动块（见功能文档 6.7） */
@@ -1317,6 +1437,7 @@ export function TimelinePanel({
                       onResizeBlock={handleResizeBlock}
                       onKeyframeClick={(t) => setCurrentTimeClamped(t)}
                       resizable={!spriteBlockIds.has(block.id)}
+                      audioUrl={(layer.layer_type ?? 'video') === 'audio' ? blockAudioUrls[block.id] : undefined}
                     />
                   ))
                 )}
@@ -1352,7 +1473,7 @@ export function TimelinePanel({
                   className="timeline-playhead"
                   style={{
                     position: 'absolute',
-                    left: timeToX(currentTime) - 1,
+                    left: 0,
                     top: 0,
                     bottom: 0,
                     width: 2,
@@ -1360,6 +1481,8 @@ export function TimelinePanel({
                     cursor: 'ew-resize',
                     pointerEvents: 'auto',
                     zIndex: 15,
+                    transform: `translateX(${timeToX(currentTime) - 1}px)`,
+                    willChange: 'transform',
                   }}
                   onMouseDown={startPlayheadDrag}
                 />

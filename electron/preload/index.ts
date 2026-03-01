@@ -75,6 +75,8 @@ const api = {
       ipcRenderer.invoke('app:project:deleteTimelineBlock', projectDir, id),
     insertBlockAtMainTrack: (projectDir: string, sceneId: string, data: unknown) =>
       ipcRenderer.invoke('app:project:insertBlockAtMainTrack', projectDir, sceneId, data),
+    insertBlockAtAudioTrack: (projectDir: string, sceneId: string, data: unknown) =>
+      ipcRenderer.invoke('app:project:insertBlockAtAudioTrack', projectDir, sceneId, data),
     moveBlockToMainTrack: (projectDir: string, sceneId: string, blockId: string, insertAt: number) =>
       ipcRenderer.invoke('app:project:moveBlockToMainTrack', projectDir, sceneId, blockId, insertAt),
     reorderMainTrack: (projectDir: string, sceneId: string, blockIds: string[]) =>
@@ -92,6 +94,8 @@ const api = {
     getCharacters: (projectDir: string) => ipcRenderer.invoke('app:project:getCharacters', projectDir),
     getOrCreateStandaloneSpritesCharacter: (projectDir: string) =>
       ipcRenderer.invoke('app:project:getOrCreateStandaloneSpritesCharacter', projectDir),
+    getOrCreateStandaloneComponentsCharacter: (projectDir: string) =>
+      ipcRenderer.invoke('app:project:getOrCreateStandaloneComponentsCharacter', projectDir),
     createCharacter: (projectDir: string, data: unknown) =>
       ipcRenderer.invoke('app:project:createCharacter', projectDir, data),
     updateCharacter: (projectDir: string, id: string, data: unknown) =>
@@ -111,8 +115,8 @@ const api = {
       color: 'black' | 'green' | 'purple',
       options?: { description?: string | null; is_favorite?: number }
     ) => ipcRenderer.invoke('app:project:saveTransparentVideoAsset', projectDir, sourcePath, color, options),
-    saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string) =>
-      ipcRenderer.invoke('app:project:saveAssetFromBase64', projectDir, base64Data, ext, type),
+    saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) =>
+      ipcRenderer.invoke('app:project:saveAssetFromBase64', projectDir, base64Data, ext, type, options),
     updateAsset: (projectDir: string, id: string, data: unknown) =>
       ipcRenderer.invoke('app:project:updateAsset', projectDir, id, data),
     deleteAsset: (projectDir: string, id: string) =>

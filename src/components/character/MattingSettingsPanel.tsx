@@ -38,13 +38,15 @@ export interface MattingSettingsPanelProps {
   projectDir: string;
   imagePath: string;
   getAssetDataUrl: (projectDir: string, path: string) => Promise<string | null>;
-  saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
   matteImageAndSave: (
     projectDir: string,
     path: string,
-    options?: { mattingModel?: string; downsampleRatio?: number }
+    options?: { mattingModel?: string; downsampleRatio?: number; replaceAssetId?: string }
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
   onPathChange: (itemId: string, newPath: string) => void;
+  /** 指定时替换该素材的图片文件（不新建素材行） */
+  replaceAssetId?: string;
 }
 
 export function MattingSettingsPanel({
@@ -57,6 +59,7 @@ export function MattingSettingsPanel({
   saveAssetFromBase64,
   matteImageAndSave,
   onPathChange,
+  replaceAssetId,
 }: MattingSettingsPanelProps) {
   const { message } = App.useApp();
   const config = useConfigSubscribe();
@@ -138,6 +141,7 @@ export function MattingSettingsPanel({
         const res = await matteImageAndSave(projectDir, imagePath, {
           mattingModel,
           downsampleRatio: mattingModel === 'rvm' ? downsampleRatio : undefined,
+          replaceAssetId,
         });
         if (res.ok && res.path) {
           const mattedDataUrl = await getAssetDataUrl(projectDir, res.path);
@@ -176,7 +180,7 @@ export function MattingSettingsPanel({
       setMattedResult(null);
       message.success('已替换，可点击撤销恢复原图');
     } else if (mattedResult.base64) {
-      const res = await saveAssetFromBase64(projectDir, mattedResult.base64, '.png', 'character');
+      const res = await saveAssetFromBase64(projectDir, mattedResult.base64, '.png', 'character', replaceAssetId ? { replaceAssetId } : undefined);
       if (res.ok && res.path) {
         setOriginalPath(imagePath);
         onPathChange(itemId, res.path);
@@ -186,7 +190,7 @@ export function MattingSettingsPanel({
         message.error(res.error ?? '保存失败');
       }
     }
-  }, [itemId, projectDir, imagePath, mattedResult, saveAssetFromBase64, onPathChange, message]);
+  }, [itemId, projectDir, imagePath, mattedResult, saveAssetFromBase64, onPathChange, message, replaceAssetId]);
 
   const handleUndo = useCallback(() => {
     if (originalPath) {

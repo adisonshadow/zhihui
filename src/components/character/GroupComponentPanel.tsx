@@ -1,5 +1,5 @@
 /**
- * 元件组编辑面板：多状态（由 tag 构成）、画板可插入图片/精灵动作/嵌套元件组、预览支持 tag 指定与向内传递
+ * 元件编辑面板：多状态（由 tag 构成）、画板可插入图片/精灵动作/嵌套元件、预览支持 tag 指定与向内传递
  */
 import { useState, useEffect, useCallback } from 'react';
 import { Drawer, Button, Space, Typography, App, Input, Tag, Dropdown, Modal, Radio } from 'antd';
@@ -11,37 +11,9 @@ import type { SpriteSheetItem } from './SpriteSheetPanel';
 import { GroupStateCanvas } from './GroupStateCanvas';
 import { GroupPreview } from './GroupPreview';
 import { EditableTitle } from '@/components/antd-plus/EditableTitle';
+import { collectGroupsWithTags, collectTaggedSpritesForPreview } from '@/utils/groupComponentTags';
 
 const { Text } = Typography;
-
-/** 递归收集当前元件组及所有嵌套元件组及其 tags（用于预览 tag 选择） */
-function collectGroupsWithTags(
-  group: GroupComponentItem | null,
-  componentGroups: GroupComponentItem[],
-  seen: Set<string> = new Set()
-): { group: GroupComponentItem; tags: string[] }[] {
-  if (!group || seen.has(group.id)) return [];
-  seen.add(group.id);
-  const tagOrder: string[] = [];
-  for (const s of group.states) {
-    for (const t of s.tags) {
-      const trimmed = t?.trim();
-      if (trimmed && !tagOrder.includes(trimmed)) tagOrder.push(trimmed);
-    }
-  }
-  const result: { group: GroupComponentItem; tags: string[] }[] = [{ group, tags: tagOrder }];
-  for (const state of group.states) {
-    for (const it of state.items) {
-      if (it.type === 'group' && it.groupId) {
-        const nested = componentGroups.find((g) => g.id === it.groupId);
-        if (nested) {
-          result.push(...collectGroupsWithTags(nested, componentGroups, seen));
-        }
-      }
-    }
-  }
-  return result;
-}
 
 /** 预览区域显示尺寸（px），内部按 GROUP_CANVAS_SIZE 1024 设计并 scale 适配 */
 const PREVIEW_DISPLAY_SIZE = 370;
@@ -55,7 +27,7 @@ export interface GroupComponentPanelProps {
   onSave: (item: GroupComponentItem) => void;
   /** 当前人物的精灵动作列表 */
   spriteSheets: SpriteSheetItem[];
-  /** 当前人物的元件组列表（不含自身，用于嵌套选择） */
+  /** 当前人物的元件列表（不含自身，用于嵌套选择） */
   componentGroups: GroupComponentItem[];
   getAssetDataUrl: (projectDir: string, path: string) => Promise<string | null>;
   getAssets: (projectDir: string) => Promise<{ id: string; path: string; type: string }[]>;
@@ -67,7 +39,7 @@ export interface GroupComponentPanelProps {
     path: string,
     options?: { mattingModel?: string; downsampleRatio?: number }
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
-  /** 从人物元件组打开时，可获取全部人物的精灵图/元件组以支持「仅查看本人物的」筛选 */
+  /** 从人物元件打开时，可获取全部人物的精灵图/元件以支持「仅查看本人物的」筛选 */
   getAllCharactersData?: () => Promise<
     { characterId: string; characterName?: string; spriteSheets: SpriteSheetItem[]; componentGroups: GroupComponentItem[] }[]
   >;
@@ -95,8 +67,13 @@ export function GroupComponentPanel({
   const [selectedStateId, setSelectedStateId] = useState<string | null>(() =>
     initialItem?.states?.length ? initialItem.states[0]!.id : null
   );
-  /** 预览时每个元件组选中的 tag，key=groupId, value=tag */
+  /** 预览时每个元件选中的 tag，key=groupId, value=tag */
   const [selectedTagsByGroupId, setSelectedTagsByGroupId] = useState<Record<string, string>>({});
+  /** 预览时每个标签精灵选中的 tag，key=itemId, value={ propertyName: selectedValue } */
+  const [selectedTagsBySpriteItemId, setSelectedTagsBySpriteItemId] = useState<Record<string, Record<string, string>>>({});
+  const [allCharactersDataForPreview, setAllCharactersDataForPreview] = useState<
+    { characterId: string; characterName?: string; spriteSheets: SpriteSheetItem[]; componentGroups: GroupComponentItem[] }[]
+  >([]);
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [assets, setAssets] = useState<{ id: string; path: string; type: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -114,16 +91,36 @@ export function GroupComponentPanel({
     }
   }, [initialItem, open]);
 
-  /** 预览面板打开时，各 Radio.Group 默认选中第一个 tag */
+  /** 预览面板打开时，加载全部人物数据、初始化各 tag 选中 */
   useEffect(() => {
     if (!previewDrawerOpen || !item) return;
-    const groupsWithTags = collectGroupsWithTags(item, componentGroups);
-    const next: Record<string, string> = {};
-    for (const { group, tags } of groupsWithTags) {
-      next[group.id] = tags[0] ?? '';
-    }
-    setSelectedTagsByGroupId(next);
-  }, [previewDrawerOpen, item?.id, componentGroups]);
+    const run = async () => {
+      const data = getAllCharactersData ? await getAllCharactersData() : [];
+      setAllCharactersDataForPreview(data);
+      const groupsWithTags = collectGroupsWithTags(item, componentGroups);
+      const nextGroup: Record<string, string> = {};
+      for (const { group, tags } of groupsWithTags) {
+        nextGroup[group.id] = tags[0] ?? '';
+      }
+      setSelectedTagsByGroupId(nextGroup);
+      const taggedSprites = collectTaggedSpritesForPreview(
+        item,
+        componentGroups,
+        spriteSheets,
+        characterId,
+        data.length > 0 ? data : undefined
+      );
+      const nextSprite: Record<string, Record<string, string>> = {};
+      for (const { itemId, properties } of taggedSprites) {
+        nextSprite[itemId] = {};
+        for (const { propertyName, tagValues } of properties) {
+          nextSprite[itemId][propertyName] = tagValues[0] ?? '';
+        }
+      }
+      setSelectedTagsBySpriteItemId(nextSprite);
+    };
+    run();
+  }, [previewDrawerOpen, item?.id, componentGroups, spriteSheets, characterId, getAllCharactersData]);
 
   const selectedState = item?.states.find((s) => s.id === selectedStateId) ?? null;
 
@@ -319,7 +316,41 @@ export function GroupComponentPanel({
 
   const parsedPreviewTags = Object.values(selectedTagsByGroupId).filter(Boolean);
 
-  const groupsWithTags = item ? collectGroupsWithTags(item, componentGroups) : [];
+  /** 合并全部人物的元件，用于预览时解析跨人物的嵌套元件 */
+  const mergedComponentGroups =
+    allCharactersDataForPreview.length > 0
+      ? (() => {
+          const seen = new Set<string>();
+          const result: GroupComponentItem[] = [];
+          for (const g of componentGroups) {
+            if (!seen.has(g.id)) {
+              seen.add(g.id);
+              result.push(g);
+            }
+          }
+          for (const c of allCharactersDataForPreview) {
+            for (const g of c.componentGroups ?? []) {
+              if (!seen.has(g.id)) {
+                seen.add(g.id);
+                result.push(g);
+              }
+            }
+          }
+          return result;
+        })()
+      : componentGroups;
+
+  const groupsWithTags = item ? collectGroupsWithTags(item, mergedComponentGroups) : [];
+  const taggedSpritesWithTags =
+    item && previewDrawerOpen
+      ? collectTaggedSpritesForPreview(
+          item,
+          mergedComponentGroups,
+          spriteSheets,
+          characterId,
+          allCharactersDataForPreview.length > 0 ? allCharactersDataForPreview : undefined
+        )
+      : [];
 
   return (
     <>
@@ -329,11 +360,11 @@ export function GroupComponentPanel({
             <EditableTitle
               value={item.name ?? ''}
               onChange={(v) => setItem((i) => (i ? { ...i, name: v || undefined } : i))}
-              placeholder="元件组"
-              prefix="编辑元件组："
+              placeholder="元件"
+              prefix="编辑元件："
             />
           ) : (
-            '新建元件组'
+            '新建元件'
           )
         }
         placement="right"
@@ -478,9 +509,11 @@ export function GroupComponentPanel({
             group={item}
             tags={parsedPreviewTags}
             spriteSheets={spriteSheets}
-            componentGroups={componentGroups}
+            componentGroups={mergedComponentGroups}
             getAssetDataUrl={getAssetDataUrl}
             size={PREVIEW_DISPLAY_SIZE}
+            selectedTagsBySpriteItemId={selectedTagsBySpriteItemId}
+            allCharactersData={allCharactersDataForPreview.length > 0 ? allCharactersDataForPreview : undefined}
           />
           {groupsWithTags.map(({ group, tags }) =>
             tags.length > 0 ? (
@@ -499,6 +532,27 @@ export function GroupComponentPanel({
                 />
               </div>
             ) : null
+          )}
+          {taggedSpritesWithTags.map(({ itemId, spriteName, properties }) =>
+            properties.map(({ propertyName, tagValues }) => (
+              <div key={`${itemId}_${propertyName}`}>
+                <Text type="secondary" style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>
+                  {spriteName} · {propertyName}
+                </Text>
+                <Radio.Group
+                  value={selectedTagsBySpriteItemId[itemId]?.[propertyName] ?? ''}
+                  optionType="button"
+                  buttonStyle="solid"
+                  onChange={(e) =>
+                    setSelectedTagsBySpriteItemId((prev) => ({
+                      ...prev,
+                      [itemId]: { ...prev[itemId], [propertyName]: e.target.value },
+                    }))
+                  }
+                  options={[{ label: '不限', value: '' }, ...tagValues.map((t) => ({ label: t, value: t }))]}
+                />
+              </div>
+            ))
           )}
         </Space>
       </Drawer>

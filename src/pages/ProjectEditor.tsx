@@ -66,6 +66,8 @@ const ProjectEditor: React.FC = () => {
   const [showNav, setShowNav] = useState(getStoredShowNav);
   const [showChat, setShowChat] = useState(getStoredShowChat);
   const [currentEpisode, setCurrentEpisode] = useState<{ id: string; title: string } | null>(null);
+  /** 设计器素材面板更新（裁剪、抠图等）时递增，用于素材页同步刷新 */
+  const [assetRefreshKey, setAssetRefreshKey] = useState(0);
 
   useEffect(() => {
     if (activeKey) {
@@ -156,7 +158,7 @@ const ProjectEditor: React.FC = () => {
           <FolderOutlined /> 素材
         </span>
       ),
-      children: <AssetLibraryTab project={project} />,
+      children: <AssetLibraryTab project={project} assetRefreshKey={assetRefreshKey} onAssetAdded={() => setAssetRefreshKey((k) => k + 1)} />,
     },
     {
       key: 'designer',
@@ -165,7 +167,7 @@ const ProjectEditor: React.FC = () => {
           <VideoCameraOutlined /> 设计器
         </span>
       ),
-      children: <DesignerTab project={project} onBack={() => navigate('/')} showNav={showNav} onShowNavChange={setShowNav} showChat={showChat} onShowChatChange={setShowChat} onEpisodeChange={handleEpisodeChange} />,
+      children: <DesignerTab project={project} onBack={() => navigate('/')} showNav={showNav} onShowNavChange={setShowNav} showChat={showChat} onShowChatChange={setShowChat} onEpisodeChange={handleEpisodeChange} onAssetUpdatedToProject={() => setAssetRefreshKey((k) => k + 1)} assetRefreshKey={assetRefreshKey} />,
     },
   ];
 

@@ -37,11 +37,13 @@ import {
   updateTimelineBlock,
   deleteTimelineBlock,
   insertBlockAtMainTrack,
+  insertBlockAtAudioTrack,
   moveBlockToMainTrack,
   reorderMainTrack,
   resizeTimelineBlockWithCascade,
   getCharacters,
   getOrCreateStandaloneSpritesCharacter,
+  getOrCreateStandaloneComponentsCharacter,
   createCharacter,
   updateCharacter,
   deleteCharacter,
@@ -59,7 +61,7 @@ import {
 } from './projectDb';
 import { getPackages } from './projectPackages';
 import { exportSceneVideo } from './exportService';
-import { extractVideoFrame } from './videoCoverService';
+import { extractVideoFrame, getVideoMetadata } from './videoCoverService';
 import { processTransparentVideo, type ChromaKeyColor } from './transparentVideoService';
 import { getSpriteBackgroundColor, getSpriteFrames, extractSpriteCoverToTemp } from './spriteService';
 import { processSpriteWithOnnx, matteImageForContour, matteImageAndSave } from './spriteOnnxService';
@@ -278,6 +280,9 @@ ipcMain.handle('app:project:deleteTimelineBlock', (_, projectDir: string, id: st
 ipcMain.handle('app:project:insertBlockAtMainTrack', (_, projectDir: string, sceneId: string, data: unknown) =>
   insertBlockAtMainTrack(projectDir, sceneId, data as Parameters<typeof insertBlockAtMainTrack>[2])
 );
+ipcMain.handle('app:project:insertBlockAtAudioTrack', (_, projectDir: string, sceneId: string, data: unknown) =>
+  insertBlockAtAudioTrack(projectDir, sceneId, data as Parameters<typeof insertBlockAtAudioTrack>[2])
+);
 ipcMain.handle('app:project:moveBlockToMainTrack', (_, projectDir: string, sceneId: string, blockId: string, insertAt: number) =>
   moveBlockToMainTrack(projectDir, sceneId, blockId, insertAt)
 );
@@ -296,6 +301,9 @@ ipcMain.handle('app:project:deleteKeyframe', (_, projectDir: string, id: string)
 ipcMain.handle('app:project:getCharacters', (_, projectDir: string) => getCharacters(projectDir));
 ipcMain.handle('app:project:getOrCreateStandaloneSpritesCharacter', (_, projectDir: string) =>
   getOrCreateStandaloneSpritesCharacter(projectDir)
+);
+ipcMain.handle('app:project:getOrCreateStandaloneComponentsCharacter', (_, projectDir: string) =>
+  getOrCreateStandaloneComponentsCharacter(projectDir)
 );
 ipcMain.handle('app:project:createCharacter', (_, projectDir: string, data: unknown) => createCharacter(projectDir, data as Parameters<typeof createCharacter>[1]));
 ipcMain.handle('app:project:updateCharacter', (_, projectDir: string, id: string, data: unknown) =>
@@ -323,6 +331,19 @@ ipcMain.handle(
     if (t !== 'video' && t !== 'transparent_video') return res;
     const ext = path.extname(sourcePath).toLowerCase();
     if (!['.mp4', '.webm', '.mov', '.avi', '.mkv'].includes(ext)) return res;
+    const savedFullPath = path.join(projectDir, res.path);
+    try {
+      const meta = await getVideoMetadata(savedFullPath);
+      if (meta.ok && (meta.duration != null || meta.width != null || meta.height != null)) {
+        updateAsset(projectDir, res.id, {
+          duration: meta.duration ?? null,
+          width: meta.width ?? null,
+          height: meta.height ?? null,
+        });
+      }
+    } catch {
+      /* 元数据提取失败不影响主流程 */
+    }
     try {
       const tmpCover = path.join(os.tmpdir(), `yiman_video_cover_${Date.now()}.png`);
       const frameRes = await extractVideoFrame(sourcePath, tmpCover, 0.5);
@@ -347,8 +368,8 @@ ipcMain.handle(
     return res;
   }
 );
-ipcMain.handle('app:project:saveAssetFromBase64', (_, projectDir: string, base64Data: string, ext?: string, type?: string) =>
-  saveAssetFromBase64(projectDir, base64Data, ext ?? '.png', type ?? 'character')
+ipcMain.handle('app:project:saveAssetFromBase64', (_, projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) =>
+  saveAssetFromBase64(projectDir, base64Data, ext ?? '.png', type ?? 'character', options)
 );
 ipcMain.handle('app:project:updateAsset', (_, projectDir: string, id: string, data: unknown) =>
   updateAsset(projectDir, id, data as Parameters<typeof updateAsset>[2])
@@ -372,6 +393,19 @@ ipcMain.handle(
     try {
       const res = saveAssetFromFile(projectDir, tempPath, 'transparent_video', options);
       if (!res.ok || !res.id || !res.path) return res;
+      try {
+        const savedFullPath = path.join(projectDir, res.path);
+        const meta = await getVideoMetadata(savedFullPath);
+        if (meta.ok && (meta.duration != null || meta.width != null || meta.height != null)) {
+          updateAsset(projectDir, res.id, {
+            duration: meta.duration ?? null,
+            width: meta.width ?? null,
+            height: meta.height ?? null,
+          });
+        }
+      } catch {
+        /* 元数据提取失败不影响主流程 */
+      }
       try {
         const tmpCover = path.join(os.tmpdir(), `yiman_video_cover_${Date.now()}.png`);
         const frameRes = await extractVideoFrame(tempPath, tmpCover, 0.5);
@@ -448,7 +482,7 @@ ipcMain.handle('app:project:matteImageForContour', async (_, projectDir: string,
   return matteImageForContour(projectDir, relativePath);
 });
 
-ipcMain.handle('app:project:matteImageAndSave', async (_, projectDir: string, relativePath: string, options?: { mattingModel?: string; downsampleRatio?: number }) => {
+ipcMain.handle('app:project:matteImageAndSave', async (_, projectDir: string, relativePath: string, options?: { mattingModel?: string; downsampleRatio?: number; replaceAssetId?: string }) => {
   return matteImageAndSave(projectDir, relativePath, options);
 });
 

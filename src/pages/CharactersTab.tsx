@@ -13,18 +13,23 @@ import {
   Modal,
   InputNumber,
   Splitter,
-  Dropdown,
   Radio,
 } from 'antd';
 import { GrowCard } from '@/components/GrowCard';
-import type { MenuProps } from 'antd';
-import { PlusOutlined, DeleteOutlined, UploadOutlined, PictureOutlined, RobotOutlined, MoreOutlined, ExportOutlined, ImportOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, UploadOutlined, PictureOutlined, RobotOutlined, ImportOutlined } from '@ant-design/icons';
 import type { ProjectInfo } from '@/hooks/useProject';
 import { parseCharacterAngles, serializeCharacterAngles } from '@/types/skeleton';
 import type { CharacterAngle } from '@/types/skeleton';
 import { SkeletonBindingPanel } from '@/components/character/SkeletonBindingPanel';
 import { SpriteSheetPanel, type SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
 import { GroupComponentPanel } from '@/components/character/GroupComponentPanel';
+import {
+  AssetThumb,
+  SpriteCard,
+  GroupComponentCard,
+  SkeletonAngleCard,
+} from '@/components/asset/AssetLibraryCard';
+import { ResponsiveCardGrid } from '@/components/antd-plus/ResponsiveCardGrid';
 import { AdaptiveCard } from '@/components/antd-plus/AdaptiveCard';
 import { STANDALONE_SPRITES_CHARACTER_ID } from '@/constants/project';
 import type { GroupComponentItem } from '@/types/groupComponent';
@@ -237,6 +242,10 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   const angles = selected ? parseCharacterAngles(selected.angles ?? null) : [];
   const spriteSheets = selected ? parseSpriteSheets(selected.sprite_sheets ?? null) : [];
   const componentGroups = selected ? parseComponentGroups(selected.component_groups ?? null) : [];
+  /** 新添加的在前面显示（desc 排序） */
+  const sortedAngles = [...angles].reverse();
+  const sortedSpriteSheets = [...spriteSheets].reverse();
+  const sortedComponentGroups = [...componentGroups].reverse();
 
   const openSpriteSheetPanel = (item: SpriteSheetItem | null) => {
     setSpriteSheetPanelItem(item);
@@ -328,7 +337,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
     const defaultStateId = `state_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const newItem: GroupComponentItem = {
       id: newId,
-      name: '元件组',
+      name: '元件',
       states: [{ id: defaultStateId, tags: [], items: [] }],
     };
     const next = [...componentGroups, newItem];
@@ -482,7 +491,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                     onChange={(e) => setActiveTab(e.target.value)}
                   >
                     <Radio value="image">形象</Radio>
-                    <Radio value="groupComponent">元件组</Radio>
+                    <Radio value="groupComponent">元件</Radio>
                     <Radio value="sprite">精灵动作</Radio>
                     <Radio value="skeleton">骨骼</Radio>
                     <Radio value="tts">声音</Radio>
@@ -534,8 +543,8 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                   </div>
                 }
               >
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                  {angles.map((a) => (
+                <ResponsiveCardGrid>
+                  {sortedAngles.map((a) => (
                     <SkeletonAngleCard
                       key={a.id}
                       projectDir={projectDir}
@@ -544,7 +553,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                       onClick={() => openSkeletonPanel(a)}
                     />
                   ))}
-                </div>
+                </ResponsiveCardGrid>
               </AdaptiveCard>
             ) : activeTab === 'groupComponent' ? (
               <AdaptiveCard
@@ -558,8 +567,8 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                   </div>
                 }
               >
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                  {componentGroups.map((g) => (
+                <ResponsiveCardGrid>
+                  {sortedComponentGroups.map((g) => (
                     <GroupComponentCard
                       key={g.id}
                       projectDir={projectDir}
@@ -569,7 +578,7 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                       onDelete={() => handleDeleteGroupComponent(g)}
                     />
                   ))}
-                </div>
+                </ResponsiveCardGrid>
               </AdaptiveCard>
             ) : activeTab === 'sprite' ? (
               <AdaptiveCard
@@ -584,18 +593,18 @@ export default function CharactersTab({ project }: CharactersTabProps) {
                   </Button>
                 </div>}
               >
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                  {spriteSheets.map((s) => (
-                    <SpriteSheetCard
+                <ResponsiveCardGrid>
+                  {sortedSpriteSheets.map((s) => (
+                    <SpriteCard
                       key={s.id}
                       projectDir={projectDir}
-                      item={s}
+                      sprite={s}
                       onEdit={() => openSpriteSheetPanel(s)}
                       onDelete={() => handleDeleteSpriteSheet(s)}
                       onExport={() => handleExportSpriteSheet(s)}
                     />
                   ))}
-                </div>
+                </ResponsiveCardGrid>
               </AdaptiveCard>
             ) : (
               <Form form={form} layout="vertical" onValuesChange={handleFormValuesChange} style={{ padding: 20 }}>
@@ -724,271 +733,3 @@ export default function CharactersTab({ project }: CharactersTabProps) {
   );
 }
 
-function AssetThumb({ projectDir, path }: { projectDir: string; path: string }) {
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
-  useEffect(() => {
-    window.yiman?.project?.getAssetDataUrl(projectDir, path).then(setDataUrl);
-  }, [projectDir, path]);
-  return (
-    <div style={{ width: 80, height: 80, background: 'rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      {dataUrl ? <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Text type="secondary">加载中</Text>}
-    </div>
-  );
-}
-
-function SkeletonAngleCard({
-  projectDir,
-  angle,
-  characterImagePath,
-  onClick,
-}: {
-  projectDir: string;
-  angle: CharacterAngle;
-  characterImagePath: string | null;
-  onClick: () => void;
-}) {
-  const imgPath = angle.image_path || characterImagePath;
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!imgPath) {
-      setDataUrl(null);
-      return;
-    }
-    window.yiman?.project?.getAssetDataUrl(projectDir, imgPath).then(setDataUrl);
-  }, [projectDir, imgPath]);
-
-  const title = angle.display_name ? `${angle.display_name} ${angle.name}` : angle.name;
-
-  return (
-    <div
-      style={{
-        width: 140,
-        borderRadius: 12,
-        background: 'rgba(255,255,255,0.06)',
-        overflow: 'hidden',
-        cursor: 'pointer',
-      }}
-      onClick={onClick}
-    >
-      <div
-        style={{
-          width: '100%',
-          aspectRatio: 1,
-          background: 'rgba(0,0,0,0.2)',
-          borderRadius: '12px 12px 0 0',
-          overflow: 'hidden',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        {dataUrl ? (
-          <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
-        )}
-      </div>
-      <div style={{ padding: '8px 10px' }}>
-        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {title}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function getGroupCoverPath(
-  item: GroupComponentItem,
-  spriteSheets: SpriteSheetItem[]
-): string | null {
-  const firstItem = item.states?.[0]?.items?.[0];
-  if (!firstItem) return null;
-  if (firstItem.type === 'image') return firstItem.path;
-  if (firstItem.type === 'sprite') {
-    const sp = spriteSheets.find((s) => s.id === firstItem.spriteId);
-    return sp?.cover_path || sp?.image_path || null;
-  }
-  return null;
-}
-
-function GroupComponentCard({
-  projectDir,
-  item,
-  spriteSheets,
-  onEdit,
-  onDelete,
-}: {
-  projectDir: string;
-  item: GroupComponentItem;
-  spriteSheets: SpriteSheetItem[];
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  const menuItems: MenuProps['items'] = [
-    { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined />, onClick: () => onDelete() },
-  ];
-  const coverPath = getGroupCoverPath(item, spriteSheets);
-
-  return (
-    <div
-      style={{
-        width: 140,
-        borderRadius: 12,
-        background: 'rgba(255,255,255,0.06)',
-        overflow: 'hidden',
-        cursor: 'pointer',
-      }}
-      onClick={onEdit}
-    >
-      <div style={{ position: 'relative' }}>
-        <GroupComponentCardThumb projectDir={projectDir} path={coverPath} />
-        <div
-          style={{
-            position: 'absolute',
-            right: 8,
-            top: 8,
-            zIndex: 1,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Dropdown menu={{ items: menuItems }} trigger={['click']} placement="bottomRight">
-            <Button
-              type="text"
-              icon={<MoreOutlined />}
-              style={{ color: 'rgba(255,255,255,0.85)' }}
-              onClick={(e) => e.stopPropagation()}
-            />
-          </Dropdown>
-        </div>
-      </div>
-      <div style={{ padding: '8px 10px' }}>
-        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {item.name || '未命名'}
-        </div>
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>
-          {item.states?.length ?? 0} 个状态
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function GroupComponentCardThumb({ projectDir, path }: { projectDir: string; path: string | null }) {
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!path) {
-      setDataUrl(null);
-      return;
-    }
-    window.yiman?.project?.getAssetDataUrl(projectDir, path).then(setDataUrl);
-  }, [projectDir, path]);
-  return (
-    <div
-      style={{
-        width: '100%',
-        aspectRatio: 1,
-        background: 'rgba(0,0,0,0.2)',
-        borderRadius: '12px 12px 0 0',
-        overflow: 'hidden',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      {dataUrl ? (
-        <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-      ) : (
-        <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
-      )}
-    </div>
-  );
-}
-
-function SpriteSheetCard({
-  projectDir,
-  item,
-  onEdit,
-  onDelete,
-  onExport,
-}: {
-  projectDir: string;
-  item: SpriteSheetItem;
-  onEdit: () => void;
-  onDelete: () => void;
-  onExport: () => void;
-}) {
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
-  const imgPath = item.cover_path || item.image_path;
-  useEffect(() => {
-    if (!imgPath) {
-      setDataUrl(null);
-      return;
-    }
-    window.yiman?.project?.getAssetDataUrl(projectDir, imgPath).then(setDataUrl);
-  }, [projectDir, imgPath]);
-
-  const menuItems: MenuProps['items'] = [
-    { key: 'export', label: '导出', icon: <ExportOutlined />, onClick: () => onExport() },
-    { key: 'delete', label: '删除', danger: true, icon: <DeleteOutlined />, onClick: () => onDelete() },
-  ];
-
-  return (
-    <div
-      style={{
-        width: 140,
-        borderRadius: 12,
-        background: 'rgba(255,255,255,0.06)',
-        overflow: 'hidden',
-        cursor: 'pointer',
-      }}
-      onClick={onEdit}
-    >
-      <div style={{ position: 'relative' }}>
-        <div
-          style={{
-            width: '100%',
-            aspectRatio: 1,
-            background: 'rgba(0,0,0,0.2)',
-            borderRadius: '12px 12px 0 0',
-            overflow: 'hidden',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {dataUrl ? (
-            <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-          ) : (
-            <Text type="secondary" style={{ fontSize: 12 }}>暂无封面</Text>
-          )}
-        </div>
-        <div
-          style={{
-            position: 'absolute',
-            right: 8,
-            top: 8,
-            zIndex: 1,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Dropdown menu={{ items: menuItems }} trigger={['click']} placement="bottomRight">
-            <Button
-              type="text"
-              icon={<MoreOutlined />}
-              style={{ color: 'rgba(255,255,255,0.85)' }}
-              onClick={(e) => e.stopPropagation()}
-            />
-          </Dropdown>
-        </div>
-      </div>
-      <div style={{ padding: '8px 10px' }}>
-        <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {item.name || '未命名'}
-        </div>
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', marginTop: 2 }}>
-          {item.frame_count ? `${item.frame_count} 帧` : item.image_path ? '未抠图' : '未导入'}
-        </div>
-      </div>
-    </div>
-  );
-}

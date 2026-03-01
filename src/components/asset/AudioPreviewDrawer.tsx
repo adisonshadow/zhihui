@@ -1,11 +1,12 @@
 /**
- * 音效/音乐预览 Drawer：预览音频、修改名称与 tags、删除素材
+ * 音效/音乐预览 Drawer：使用 wavesurfer 波形预览、修改名称与 tags、删除素材（支持 AAC 等格式）
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Drawer, Input, Button, App, Space, Typography, Tag, theme } from 'antd';
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlusOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import type { InputRef } from 'antd';
 import { EditableTitle } from '@/components/antd-plus/EditableTitle';
+import WavesurferPlayer from '@wavesurfer/react';
 
 const { Text } = Typography;
 
@@ -46,12 +47,18 @@ export function AudioPreviewDrawer({ open, onClose, projectDir, asset, onUpdate 
   const [deleting, setDeleting] = useState(false);
   const [name, setName] = useState('');
   const inputRef = useRef<InputRef>(null);
+  const wavesurferRef = useRef<{ playPause: () => void } | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   useEffect(() => {
     if (!open || !asset?.path || !window.yiman?.project?.getAssetDataUrl) {
       setAudioUrl(null);
+      wavesurferRef.current = null;
+      setIsPlaying(false);
       return;
     }
+    wavesurferRef.current = null;
+    setIsPlaying(false);
     window.yiman.project.getAssetDataUrl(projectDir, asset.path).then(setAudioUrl);
   }, [open, projectDir, asset?.path]);
 
@@ -146,11 +153,27 @@ export function AudioPreviewDrawer({ open, onClose, projectDir, asset, onUpdate 
             }}
           >
             {audioUrl ? (
-              <audio
-                src={audioUrl}
-                controls
-                style={{ width: '100%' }}
-              />
+              <Space orientation="vertical" style={{ width: '100%' }} size="small">
+                <WavesurferPlayer
+                  height={80}
+                  waveColor="rgba(255,255,255,0.4)"
+                  progressColor="rgba(100,150,255,0.8)"
+                  url={audioUrl}
+                  onReady={(ws) => {
+                    wavesurferRef.current = ws;
+                  }}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                />
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={isPlaying ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                  onClick={() => wavesurferRef.current?.playPause?.()}
+                >
+                  {isPlaying ? '暂停' : '播放'}
+                </Button>
+              </Space>
             ) : (
               <div style={{ padding: 24, textAlign: 'center' }}>
                 <Text type="secondary">加载中</Text>

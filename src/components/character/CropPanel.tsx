@@ -18,11 +18,13 @@ export interface CropPanelProps {
   projectDir: string;
   imagePath: string;
   getAssetDataUrl: (projectDir: string, path: string) => Promise<string | null>;
-  saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
   /** 裁剪确认后回调，传入新图片路径 */
   onConfirm: (newPath: string) => void;
   /** 保存时的素材类型，默认 character */
   assetType?: string;
+  /** 指定时替换该素材的图片文件（不新建素材行） */
+  replaceAssetId?: string;
 }
 
 /** 裁剪区域（图片像素坐标） */
@@ -42,6 +44,7 @@ export function CropPanel({
   saveAssetFromBase64,
   onConfirm,
   assetType = 'character',
+  replaceAssetId,
 }: CropPanelProps) {
   const { message } = App.useApp();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -358,7 +361,7 @@ export function CropPanel({
       );
       const base64 = canvas.toDataURL('image/png').split(',')[1];
       if (!base64) throw new Error('导出失败');
-      const res = await saveAssetFromBase64(projectDir, base64, '.png', assetType);
+      const res = await saveAssetFromBase64(projectDir, base64, '.png', assetType, replaceAssetId ? { replaceAssetId } : undefined);
       if (res.ok && res.path) {
         onConfirm(res.path);
         message.success('裁剪已应用');
@@ -371,7 +374,7 @@ export function CropPanel({
     } finally {
       setLoading(false);
     }
-  }, [dataUrl, cropRect, imgSize, projectDir, saveAssetFromBase64, onConfirm, onClose, message, assetType]);
+  }, [dataUrl, cropRect, imgSize, projectDir, saveAssetFromBase64, onConfirm, onClose, message, assetType, replaceAssetId]);
 
   if (!open) return null;
 

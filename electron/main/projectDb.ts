@@ -70,7 +70,7 @@ export interface CharacterRow {
   angles: string | null;
   /** JSON 数组：精灵动作图列表。每项 { id, name?, image_path, frame_count?, chroma_key? } */
   sprite_sheets: string | null;
-  /** JSON 数组：元件组列表。每项 { id, name, states: [{ id, tags: string[], items: CanvasItem[] }] } */
+  /** JSON 数组：元件列表。每项 { id, name, states: [{ id, tags: string[], items: CanvasItem[] }] } */
   component_groups: string | null;
   created_at: string;
   updated_at: string;
@@ -570,6 +570,16 @@ export interface TimelineBlockRow {
   playback_fps?: number;
   /** 精灵图播放次数，duration = (frame_count/fps)*count，仅精灵类素材使用 */
   playback_count?: number;
+  /** 音量 0~1，音效/音乐使用 */
+  volume?: number;
+  /** 是否渐入，音效/音乐使用 */
+  fade_in?: number;
+  /** 是否渐出，音效/音乐使用 */
+  fade_out?: number;
+  /** 动画配置 JSON，见 docs/08-素材动画功能技术方案.md */
+  animation_config?: string | null;
+  /** 状态关键帧 JSON，元件/标签精灵用：[{ time, selectedTagsByGroupId?, selectedTagsBySpriteItemId? }] */
+  state_keyframes?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -602,8 +612,41 @@ function ensureTimelineBlocksTransformColumns(projectDir: string): void {
   }
 }
 
+function ensureTimelineBlocksAudioColumns(projectDir: string): void {
+  const db = getDb(projectDir);
+  const columns = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('volume')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN volume REAL NOT NULL DEFAULT 1').run();
+  }
+  if (!columns.includes('fade_in')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN fade_in INTEGER NOT NULL DEFAULT 0').run();
+  }
+  if (!columns.includes('fade_out')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN fade_out INTEGER NOT NULL DEFAULT 0').run();
+  }
+}
+
+function ensureTimelineBlocksAnimationColumn(projectDir: string): void {
+  const db = getDb(projectDir);
+  const columns = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('animation_config')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN animation_config TEXT').run();
+  }
+}
+
+function ensureTimelineBlocksStateKeyframesColumn(projectDir: string): void {
+  const db = getDb(projectDir);
+  const columns = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('state_keyframes')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN state_keyframes TEXT').run();
+  }
+}
+
 export function getTimelineBlocks(projectDir: string, layerId: string): TimelineBlockRow[] {
   ensureTimelineBlocksTransformColumns(projectDir);
+  ensureTimelineBlocksAudioColumns(projectDir);
+  ensureTimelineBlocksAnimationColumn(projectDir);
+  ensureTimelineBlocksStateKeyframesColumn(projectDir);
   const db = getDb(projectDir);
   const rows = db.prepare('SELECT * FROM timeline_blocks WHERE layer_id = ? ORDER BY start_time ASC').all(layerId) as TimelineBlockRow[];
   return rows.map((r) => ({
@@ -622,6 +665,9 @@ export function getTimelineBlocks(projectDir: string, layerId: string): Timeline
 /** 按 id 获取单个时间轴块（见开发计划 2.12 选中素材设置） */
 export function getTimelineBlockById(projectDir: string, blockId: string): TimelineBlockRow | null {
   ensureTimelineBlocksTransformColumns(projectDir);
+  ensureTimelineBlocksAudioColumns(projectDir);
+  ensureTimelineBlocksAnimationColumn(projectDir);
+  ensureTimelineBlocksStateKeyframesColumn(projectDir);
   const db = getDb(projectDir);
   const row = db.prepare('SELECT * FROM timeline_blocks WHERE id = ?').get(blockId) as TimelineBlockRow | undefined;
   if (!row) return null;
@@ -672,10 +718,12 @@ export function createTimelineBlock(
 export function updateTimelineBlock(
   projectDir: string,
   id: string,
-  data: Partial<Pick<TimelineBlockRow, 'layer_id' | 'asset_id' | 'start_time' | 'end_time' | 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'lock_aspect' | 'blur' | 'opacity' | 'playback_fps' | 'playback_count'>>
+  data: Partial<Pick<TimelineBlockRow, 'layer_id' | 'asset_id' | 'start_time' | 'end_time' | 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'lock_aspect' | 'blur' | 'opacity' | 'playback_fps' | 'playback_count' | 'volume' | 'fade_in' | 'fade_out' | 'animation_config' | 'state_keyframes'>>
 ): { ok: boolean; error?: string } {
   try {
     ensureTimelineBlocksTransformColumns(projectDir);
+    ensureTimelineBlocksAudioColumns(projectDir);
+    ensureTimelineBlocksAnimationColumn(projectDir);
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     const row = db.prepare('SELECT * FROM timeline_blocks WHERE id = ?').get(id) as TimelineBlockRow | undefined;
@@ -687,17 +735,48 @@ export function updateTimelineBlock(
     const opacity = data.opacity !== undefined ? data.opacity : ((row as { opacity?: number }).opacity ?? 1);
     const playbackFps = data.playback_fps !== undefined ? data.playback_fps : ((row as { playback_fps?: number }).playback_fps ?? null);
     const playbackCount = data.playback_count !== undefined ? data.playback_count : ((row as { playback_count?: number }).playback_count ?? null);
+    const volume = data.volume !== undefined ? data.volume : ((row as { volume?: number }).volume ?? 1);
+    const fadeIn = data.fade_in !== undefined ? data.fade_in : ((row as { fade_in?: number }).fade_in ?? 0);
+    const fadeOut = data.fade_out !== undefined ? data.fade_out : ((row as { fade_out?: number }).fade_out ?? 0);
+    ensureTimelineBlocksStateKeyframesColumn(projectDir);
+    const animationConfig = data.animation_config !== undefined ? data.animation_config : ((row as { animation_config?: string | null }).animation_config ?? null);
+    const stateKeyframes = data.state_keyframes !== undefined ? data.state_keyframes : ((row as { state_keyframes?: string | null }).state_keyframes ?? null);
     const cols = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
     const hasPlaybackCount = cols.includes('playback_count');
-    db.prepare(
-      hasPlaybackCount
-        ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, updated_at = ? WHERE id = ?`
-        : `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, updated_at = ? WHERE id = ?`
-    ).run(
-      ...(hasPlaybackCount
-        ? [layer_id, data.asset_id !== undefined ? data.asset_id : row.asset_id, newStart, data.end_time !== undefined ? data.end_time : row.end_time, data.pos_x !== undefined ? data.pos_x : (row.pos_x ?? 0.5), data.pos_y !== undefined ? data.pos_y : (row.pos_y ?? 0.5), data.scale_x !== undefined ? data.scale_x : (row.scale_x ?? 1), data.scale_y !== undefined ? data.scale_y : (row.scale_y ?? 1), data.rotation !== undefined ? data.rotation : (row.rotation ?? 0), lockAspect, blur, opacity, playbackFps, playbackCount, now, id]
-        : [layer_id, data.asset_id !== undefined ? data.asset_id : row.asset_id, newStart, data.end_time !== undefined ? data.end_time : row.end_time, data.pos_x !== undefined ? data.pos_x : (row.pos_x ?? 0.5), data.pos_y !== undefined ? data.pos_y : (row.pos_y ?? 0.5), data.scale_x !== undefined ? data.scale_x : (row.scale_x ?? 1), data.scale_y !== undefined ? data.scale_y : (row.scale_y ?? 1), data.rotation !== undefined ? data.rotation : (row.rotation ?? 0), lockAspect, blur, opacity, playbackFps, now, id])
-    );
+    const hasVolume = cols.includes('volume');
+    const hasAnimationConfig = cols.includes('animation_config');
+    const hasStateKeyframes = cols.includes('state_keyframes');
+    const setClause = hasStateKeyframes
+      ? (hasAnimationConfig
+        ? (hasVolume
+          ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, volume = ?, fade_in = ?, fade_out = ?, animation_config = ?, state_keyframes = ?, updated_at = ? WHERE id = ?`
+          : hasPlaybackCount
+            ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, animation_config = ?, state_keyframes = ?, updated_at = ? WHERE id = ?`
+            : `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, animation_config = ?, state_keyframes = ?, updated_at = ? WHERE id = ?`)
+        : (hasVolume
+          ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, volume = ?, fade_in = ?, fade_out = ?, state_keyframes = ?, updated_at = ? WHERE id = ?`
+          : hasPlaybackCount
+            ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, state_keyframes = ?, updated_at = ? WHERE id = ?`
+            : `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, state_keyframes = ?, updated_at = ? WHERE id = ?`))
+      : (hasAnimationConfig
+        ? (hasVolume
+          ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, volume = ?, fade_in = ?, fade_out = ?, animation_config = ?, updated_at = ? WHERE id = ?`
+          : hasPlaybackCount
+            ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, animation_config = ?, updated_at = ? WHERE id = ?`
+            : `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, animation_config = ?, updated_at = ? WHERE id = ?`)
+        : (hasVolume
+          ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, volume = ?, fade_in = ?, fade_out = ?, updated_at = ? WHERE id = ?`
+          : hasPlaybackCount
+            ? `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, playback_count = ?, updated_at = ? WHERE id = ?`
+            : `UPDATE timeline_blocks SET layer_id = ?, asset_id = ?, start_time = ?, end_time = ?, pos_x = ?, pos_y = ?, scale_x = ?, scale_y = ?, rotation = ?, lock_aspect = ?, blur = ?, opacity = ?, playback_fps = ?, updated_at = ? WHERE id = ?`));
+    const baseParams: unknown[] = [layer_id, data.asset_id !== undefined ? data.asset_id : row.asset_id, newStart, data.end_time !== undefined ? data.end_time : row.end_time, data.pos_x !== undefined ? data.pos_x : (row.pos_x ?? 0.5), data.pos_y !== undefined ? data.pos_y : (row.pos_y ?? 0.5), data.scale_x !== undefined ? data.scale_x : (row.scale_x ?? 1), data.scale_y !== undefined ? data.scale_y : (row.scale_y ?? 1), data.rotation !== undefined ? data.rotation : (row.rotation ?? 0), lockAspect, blur, opacity, playbackFps];
+    if (hasPlaybackCount) baseParams.push(playbackCount);
+    if (hasVolume) baseParams.push(volume, fadeIn, fadeOut);
+    if (hasAnimationConfig) baseParams.push(animationConfig);
+    if (hasStateKeyframes) baseParams.push(stateKeyframes);
+    baseParams.push(now, id);
+    const params = baseParams;
+    db.prepare(setClause).run(...params);
     const startDelta = newStart - row.start_time;
     if (Math.abs(startDelta) >= 1e-9) shiftKeyframesForBlock(projectDir, id, startDelta);
     const layerRow = db.prepare('SELECT scene_id FROM layers WHERE id = ? AND is_main = 1').get(row.layer_id) as { scene_id: string } | undefined;
@@ -779,6 +858,61 @@ export function insertBlockAtMainTrack(
       );
     })();
     compactMainTrack(projectDir, sceneId);
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 音效/音乐放置到声音层：在 startTime 放置，无声音层则创建，冲突则新建声音层；声音层在主层下面（见功能文档 6.7） */
+export function insertBlockAtAudioTrack(
+  projectDir: string,
+  sceneId: string,
+  data: { id: string; asset_id: string | null; start_time: number; duration: number }
+): { ok: boolean; error?: string } {
+  try {
+    ensureTimelineBlocksTransformColumns(projectDir);
+    ensureTimelineBlocksAudioColumns(projectDir);
+    const db = getDb(projectDir);
+    const mainLayerId = getMainLayerId(projectDir, sceneId);
+    if (!mainLayerId) return { ok: false, error: '无主轨道，请先创建场景' };
+
+    const duration = Math.max(0.5, data.duration);
+    const startTime = Math.max(0, data.start_time);
+    const endTime = startTime + duration;
+
+    const layers = getLayers(projectDir, sceneId);
+    const audioLayers = layers.filter((l) => (l.layer_type ?? 'video') === 'audio').sort((a, b) => a.z_index - b.z_index);
+
+    let targetLayerId: string | null = null;
+    for (const layer of audioLayers) {
+      const blocks = db.prepare('SELECT start_time, end_time FROM timeline_blocks WHERE layer_id = ?').all(layer.id) as { start_time: number; end_time: number }[];
+      const overlaps = blocks.some((b) => !(endTime <= b.start_time || startTime >= b.end_time));
+      if (!overlaps) {
+        targetLayerId = layer.id;
+        break;
+      }
+    }
+
+    if (!targetLayerId) {
+      const maxZ = Math.max(0, ...layers.map((l) => l.z_index ?? 0));
+      const newLayerId = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const cr = createLayer(projectDir, {
+        id: newLayerId,
+        scene_id: sceneId,
+        name: '声音层',
+        z_index: maxZ + 1,
+        is_main: 0,
+        layer_type: 'audio',
+      } as { id: string; scene_id: string; name?: string; z_index?: number; is_main?: number; layer_type?: string });
+      if (!cr.ok) return cr;
+      targetLayerId = newLayerId;
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, volume, fade_in, fade_out, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0.5, 0.5, 1, 1, 0, 1, 0, 0, ?, ?)`
+    ).run(data.id, targetLayerId, data.asset_id ?? null, startTime, endTime, now, now);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -1173,6 +1307,9 @@ export function updateCharacter(
 /** 项目级未绑定人物的精灵图存储：使用虚拟 character 的 sprite_sheets */
 export const STANDALONE_SPRITES_CHARACTER_ID = '__standalone_sprites__';
 
+/** 项目级未绑定人物的元件存储：使用虚拟 character 的 component_groups */
+export const STANDALONE_COMPONENTS_CHARACTER_ID = '__standalone_components__';
+
 export function getOrCreateStandaloneSpritesCharacter(projectDir: string): CharacterRow {
   const db = getDb(projectDir);
   ensureCharactersSpriteSheetsColumn(db);
@@ -1189,9 +1326,26 @@ export function getOrCreateStandaloneSpritesCharacter(projectDir: string): Chara
   return row;
 }
 
+export function getOrCreateStandaloneComponentsCharacter(projectDir: string): CharacterRow {
+  const db = getDb(projectDir);
+  ensureCharactersSpriteSheetsColumn(db);
+  ensureCharactersComponentGroupsColumn(db);
+  let row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_COMPONENTS_CHARACTER_ID) as CharacterRow | undefined;
+  if (!row) {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(STANDALONE_COMPONENTS_CHARACTER_ID, '(项目元件)', null, null, null, null, null, null, '[]', now, now);
+    row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_COMPONENTS_CHARACTER_ID) as CharacterRow;
+  }
+  return row;
+}
+
 export function deleteCharacter(projectDir: string, id: string): { ok: boolean; error?: string } {
   try {
     if (id === STANDALONE_SPRITES_CHARACTER_ID) return { ok: false, error: '不可删除项目精灵图容器' };
+    if (id === STANDALONE_COMPONENTS_CHARACTER_ID) return { ok: false, error: '不可删除项目元件容器' };
     getDb(projectDir).prepare('DELETE FROM characters WHERE id = ?').run(id);
     return { ok: true };
   } catch (e: unknown) {
@@ -1236,6 +1390,12 @@ export interface AssetRow {
   description: string | null;
   cover_path?: string | null;
   tags?: string | null;
+  /** 视频/透明视频：宽（像素） */
+  width?: number | null;
+  /** 视频/透明视频：高（像素） */
+  height?: number | null;
+  /** 视频/透明视频/音效/音乐：播放时长（秒） */
+  duration?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -1254,44 +1414,67 @@ function ensureAssetsTagsColumn(db: Database.Database): void {
   }
 }
 
+function ensureAssetsVideoMetadataColumns(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(assets_index)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'width')) {
+    db.prepare('ALTER TABLE assets_index ADD COLUMN width INTEGER').run();
+  }
+  if (!info.some((c) => c.name === 'height')) {
+    db.prepare('ALTER TABLE assets_index ADD COLUMN height INTEGER').run();
+  }
+  if (!info.some((c) => c.name === 'duration')) {
+    db.prepare('ALTER TABLE assets_index ADD COLUMN duration REAL').run();
+  }
+}
+
 export function getAssets(projectDir: string, type?: string): AssetRow[] {
   const db = getDb(projectDir);
   ensureAssetsCoverPathColumn(db);
   ensureAssetsTagsColumn(db);
+  ensureAssetsVideoMetadataColumns(db);
   if (type) {
-    return db.prepare('SELECT * FROM assets_index WHERE type = ? ORDER BY created_at ASC').all(type) as AssetRow[];
+    return db.prepare('SELECT * FROM assets_index WHERE type = ? ORDER BY created_at DESC').all(type) as AssetRow[];
   }
-  return db.prepare('SELECT * FROM assets_index ORDER BY created_at ASC').all() as AssetRow[];
+  return db.prepare('SELECT * FROM assets_index ORDER BY created_at DESC').all() as AssetRow[];
 }
 
 export function getAssetById(projectDir: string, id: string): AssetRow | null {
   const db = getDb(projectDir);
   ensureAssetsCoverPathColumn(db);
   ensureAssetsTagsColumn(db);
+  ensureAssetsVideoMetadataColumns(db);
   return db.prepare('SELECT * FROM assets_index WHERE id = ?').get(id) as AssetRow | null;
 }
 
-/** 从 base64 数据保存到项目 assets（供渲染进程即时透明抠图等） */
+/** 从 base64 数据保存到项目 assets（供渲染进程即时透明抠图等）
+ * replaceAssetId: 指定时仅保存文件并更新该素材的 path，不新建素材行（用于裁剪/抠图替换） */
 export function saveAssetFromBase64(
   projectDir: string,
   base64Data: string,
   ext: string = '.png',
-  type: string = 'character'
+  type: string = 'character',
+  options?: { replaceAssetId?: string }
 ): { ok: boolean; path?: string; id?: string; error?: string } {
   try {
     const normalized = path.normalize(projectDir);
     const assetsDir = path.join(normalized, DIR_ASSETS);
     if (!fs.existsSync(assetsDir)) fs.mkdirSync(assetsDir, { recursive: true });
-    const id = crypto.randomUUID();
+    const id = options?.replaceAssetId ?? crypto.randomUUID();
     const fileName = id + (ext.startsWith('.') ? ext : '.' + ext);
     const destPath = path.join(assetsDir, fileName);
     const buf = Buffer.from(base64Data, 'base64');
     fs.writeFileSync(destPath, buf);
     const relativePath = DIR_ASSETS + '/' + fileName;
-    const now = new Date().toISOString();
     const db = getDb(projectDir);
     ensureAssetsCoverPathColumn(db);
     ensureAssetsTagsColumn(db);
+    ensureAssetsVideoMetadataColumns(db);
+    if (options?.replaceAssetId) {
+      const now = new Date().toISOString();
+      db.prepare('UPDATE assets_index SET path = ?, updated_at = ? WHERE id = ?').run(relativePath, now, options.replaceAssetId);
+      return { ok: true, path: relativePath, id: options.replaceAssetId };
+    }
+    const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO assets_index (id, path, type, is_favorite, description, cover_path, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, relativePath, type, 0, null, null, null, now, now);
@@ -1322,6 +1505,7 @@ export function saveAssetFromFile(
     const db = getDb(projectDir);
     ensureAssetsCoverPathColumn(db);
     ensureAssetsTagsColumn(db);
+    ensureAssetsVideoMetadataColumns(db);
     const isFav = options?.is_favorite ?? 0;
     const desc = options?.description ?? null;
     const tags = (options as { tags?: string | null })?.tags ?? null;
@@ -1334,28 +1518,46 @@ export function saveAssetFromFile(
   }
 }
 
-/** 更新素材索引（描述、常用标记、封面路径、标签）（见开发计划 2.8） */
+/** 更新素材索引（描述、常用标记、封面路径、标签、路径、视频尺寸与时长）（见开发计划 2.8） */
 export function updateAsset(
   projectDir: string,
   id: string,
-  data: { description?: string | null; is_favorite?: number; cover_path?: string | null; tags?: string | null }
+  data: {
+    description?: string | null;
+    is_favorite?: number;
+    cover_path?: string | null;
+    tags?: string | null;
+    path?: string | null;
+    width?: number | null;
+    height?: number | null;
+    duration?: number | null;
+  }
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     ensureAssetsCoverPathColumn(db);
     ensureAssetsTagsColumn(db);
+    ensureAssetsVideoMetadataColumns(db);
     const row = db.prepare('SELECT * FROM assets_index WHERE id = ?').get(id) as AssetRow | undefined;
     if (!row) return { ok: false, error: '素材不存在' };
     const coverPath = data.cover_path !== undefined ? data.cover_path : (row as AssetRow).cover_path ?? null;
     const tags = data.tags !== undefined ? data.tags : (row as AssetRow).tags ?? null;
+    const pathVal = data.path !== undefined ? data.path : (row as AssetRow).path;
+    const widthVal = data.width !== undefined ? data.width : (row as AssetRow).width ?? null;
+    const heightVal = data.height !== undefined ? data.height : (row as AssetRow).height ?? null;
+    const durationVal = data.duration !== undefined ? data.duration : (row as AssetRow).duration ?? null;
     db.prepare(
-      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, updated_at = ? WHERE id = ?`
+      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, path = ?, width = ?, height = ?, duration = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.description !== undefined ? data.description : row.description,
       data.is_favorite !== undefined ? data.is_favorite : row.is_favorite,
       coverPath,
       tags,
+      pathVal,
+      widthVal,
+      heightVal,
+      durationVal,
       now,
       id
     );
@@ -1393,6 +1595,10 @@ export function getAssetDataUrl(projectDir: string, relativePath: string): strin
       : ext === '.mov' ? 'video/quicktime'
       : ext === '.mp3' ? 'audio/mpeg'
       : ext === '.wav' ? 'audio/wav'
+      : ext === '.aac' ? 'audio/aac'
+      : ext === '.m4a' ? 'audio/mp4'
+      : ext === '.ogg' ? 'audio/ogg'
+      : ext === '.flac' ? 'audio/flac'
       : 'image/jpeg';
     return `data:${mime};base64,${buf.toString('base64')}`;
   } catch {

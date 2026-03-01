@@ -58,9 +58,13 @@ interface DesignerTabProps {
   onShowChatChange?: (show: boolean) => void;
   /** 节数变更时上报给父组件（项目级 currentEpisode） */
   onEpisodeChange?: (ep: { id: string; title: string } | null) => void;
+  /** 素材面板更新（裁剪、抠图等）时调用，用于素材页同步刷新 */
+  onAssetUpdatedToProject?: () => void;
+  /** 素材页添加素材时递增，用于设计器素材面板同步刷新 */
+  assetRefreshKey?: number;
 }
 
-export default function DesignerTab({ project, onBack, showNav: showNavProp, onShowNavChange, showChat: showChatProp, onShowChatChange, onEpisodeChange }: DesignerTabProps) {
+export default function DesignerTab({ project, onBack, showNav: showNavProp, onShowNavChange, showChat: showChatProp, onShowChatChange, onEpisodeChange, onAssetUpdatedToProject, assetRefreshKey: assetRefreshKeyFromProject }: DesignerTabProps) {
   const [episodes, setEpisodes] = useState<EpisodeRow[]>([]);
   const [scenesByEpisode, setScenesByEpisode] = useState<Record<string, SceneRow[]>>({});
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(() =>
@@ -72,7 +76,13 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
+  /** 设置时间轴位置：若正在播放则先停止，再移动到目标时间（见功能文档 6.8） */
+  const handleSetCurrentTime = useCallback((t: number) => {
+    if (playing) setPlaying(false);
+    setCurrentTime(t);
+  }, [playing]);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [assetUpdatedId, setAssetUpdatedId] = useState<string | null>(null);
   const [pendingBlockUpdates, setPendingBlockUpdates] = useState<Record<string, Partial<{ pos_x: number; pos_y: number; scale_x: number; scale_y: number; rotation: number; blur: number; opacity: number }>>>({});
   const [showNavInternal, setShowNavInternal] = useState(() => getStoredBool(STORAGE_KEY_SHOW_NAV, true));
   const showNav = showNavProp ?? showNavInternal;
@@ -83,6 +93,8 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   const setShowChat = onShowChatChange ?? setShowChatInternal;
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [isSpriteBlock, setIsSpriteBlock] = useState(false);
+  const [isAudioBlock, setIsAudioBlock] = useState(false);
+  const [isComponentBlock, setIsComponentBlock] = useState(false);
   const [blockSettingsTab, setBlockSettingsTab] = useState<BlockSettingsTab>('base');
   const projectDir = project.project_dir;
   /** 仅在新块加载时设置默认 tab，避免 refreshKey 导致 loadBlock 重跑时覆盖用户选择 */
@@ -91,6 +103,8 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   useEffect(() => {
     if (!selectedBlockId) {
       setIsSpriteBlock(false);
+      setIsAudioBlock(false);
+      setIsComponentBlock(false);
       setBlockSettingsTab('base');
       lastBlockIdForTabRef.current = null;
     }
@@ -216,7 +230,13 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                     episodeCharacterRefs={currentEpisode?.character_refs ?? '[]'}
                     currentTime={currentTime}
                     onPlaced={() => setRefreshKey((k) => k + 1)}
+                    onAssetUpdated={(assetId) => {
+                      setRefreshKey((k) => k + 1);
+                      if (assetId) setAssetUpdatedId(assetId);
+                      onAssetUpdatedToProject?.();
+                    }}
                     refreshKey={refreshKey}
+                    assetRefreshKey={assetRefreshKeyFromProject}
                   />
                 {/* </div> */}
               </Splitter.Panel>
@@ -238,6 +258,11 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                 onPlayEnd={() => setPlaying(false)}
                 pendingBlockUpdates={pendingBlockUpdates}
                 setPendingBlockUpdates={setPendingBlockUpdates}
+                assetUpdatedId={assetUpdatedId}
+                onAssetUpdatedProcessed={() => {
+                  setAssetUpdatedId(null);
+                  setRefreshKey((k) => k + 1);
+                }}
               />
             </Splitter.Panel>
             {/* 列 3：功能面板（无选中显示当前场景设置，有选中显示基础设置/精灵图设置） */}
@@ -246,8 +271,10 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                 className="designer-panel-content"
                 header={
                   selectedBlockId ? (
-                    isSpriteBlock ? (
-                      <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
+                    isAudioBlock ? (
+                      '声音设置'
+                    ) : (
+                      <div className="designer-panel-content__header-tabs" style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
                         <Radio.Group
                           optionType="button"
                           buttonStyle="solid"
@@ -256,11 +283,11 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                           onChange={(e) => setBlockSettingsTab(e.target.value)}
                         >
                           <Radio value="base">基础设置</Radio>
-                          <Radio value="sprite">精灵图设置</Radio>
+                          {isSpriteBlock && <Radio value="sprite">精灵图设置</Radio>}
+                          {isComponentBlock && <Radio value="state">状态</Radio>}
+                          <Radio value="animation">动画</Radio>
                         </Radio.Group>
                       </div>
-                    ) : (
-                      '基础设置'
                     )
                   ) : (
                     '当前场景设置'
@@ -278,17 +305,20 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       currentTime={currentTime}
                       refreshKey={refreshKey}
                       onUpdate={() => setRefreshKey((k) => k + 1)}
-                      onJumpToTime={setCurrentTime}
+                      onJumpToTime={handleSetCurrentTime}
                       onBlockUpdate={(blockId, data) => setPendingBlockUpdates((prev) => ({ ...prev, [blockId]: { ...prev[blockId], ...data } }))}
                       onBlockInfo={(info) => {
                         setIsSpriteBlock(info.isSprite);
+                        setIsAudioBlock(info.isAudio ?? false);
+                        setIsComponentBlock(info.isComponent ?? false);
                         if (selectedBlockId && selectedBlockId !== lastBlockIdForTabRef.current) {
                           lastBlockIdForTabRef.current = selectedBlockId;
-                          setBlockSettingsTab(info.isSprite ? 'sprite' : 'base');
+                          setBlockSettingsTab(info.isAudio ? 'audio' : info.isSprite ? 'sprite' : 'base');
                         }
                       }}
                       settingsTab={blockSettingsTab}
                       isSpriteBlock={isSpriteBlock}
+                      isAudioBlock={isAudioBlock}
                     />
                   </div>
                 ) : (
@@ -313,7 +343,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
             project={project}
             sceneId={selectedSceneId}
             currentTime={currentTime}
-            setCurrentTime={setCurrentTime}
+            setCurrentTime={handleSetCurrentTime}
             selectedBlockId={selectedBlockId}
             onSelectBlock={setSelectedBlockId}
             onLayersChange={() => setRefreshKey((k) => k + 1)}

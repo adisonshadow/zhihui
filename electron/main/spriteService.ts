@@ -118,7 +118,7 @@ function normalizeUniformFrames(
   return result;
 }
 
-/** 自动识别每个帧的 x、y、宽、高，基于背景色列检测分隔列。返回原始帧与归一化帧。 */
+/** 自动识别每个帧的 x、y、宽、高，基于背景色检测分隔列与分隔行。支持多行多列，帧顺序先行后列（第1行第1列、第1行第2列…第2行第1列…）。返回原始帧与归一化帧。 */
 export async function getSpriteFrames(
   projectDir: string,
   relativePath: string,
@@ -158,6 +158,7 @@ export async function getSpriteFrames(
       return dist < threshold;
     };
 
+    /** 列中背景像素占比 */
     const columnBackgroundRatio = (x: number): number => {
       let bg = 0;
       for (let y = 0; y < height; y++) {
@@ -165,6 +166,16 @@ export async function getSpriteFrames(
         if (isBackground(i)) bg++;
       }
       return bg / height;
+    };
+
+    /** 行中背景像素占比（用于按行识别） */
+    const rowBackgroundRatio = (y: number): number => {
+      let bg = 0;
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * ch;
+        if (isBackground(i)) bg++;
+      }
+      return bg / width;
     };
 
     /** 在横向区域 [frameX, frameX+frameW) 内找有内容的行范围，返回 { contentTop, contentBottom } */
@@ -201,8 +212,85 @@ export async function getSpriteFrames(
       if (end - start + 1 >= minGapPixels) gaps.push({ start, end: end + 1 });
     }
 
-    const frames: SpriteFrameRect[] = [];
+    /** 行分隔：检测水平方向的分隔行 */
+    const separatorRows: number[] = [];
+    for (let y = 0; y < height; y++) {
+      if (rowBackgroundRatio(y) >= SEPARATOR_BACKGROUND_RATIO) separatorRows.push(y);
+    }
+
+    const rowGaps: { start: number; end: number }[] = [];
+    for (let i = 0; i < separatorRows.length; i++) {
+      const start = separatorRows[i];
+      let end = start;
+      while (i + 1 < separatorRows.length && separatorRows[i + 1] === end + 1) {
+        i++;
+        end = separatorRows[i];
+      }
+      if (end - start + 1 >= minGapPixels) rowGaps.push({ start, end: end + 1 });
+    }
+
+    const applyPadding = (x: number, y: number, w: number, h: number) => {
+      const pad = FRAME_PADDING;
+      const nx = Math.max(0, x - pad);
+      const ny = Math.max(0, y - pad);
+      const nw = Math.min(w + pad * 2, width - nx);
+      const nh = Math.min(h + pad * 2, height - ny);
+      return { x: nx, y: ny, width: nw, height: nh };
+    };
+
+    /** 构建列范围：每列 [left, right)；无列分隔时按 8 列均分 */
+    const colRanges: { left: number; right: number }[] = [];
     if (gaps.length === 0) {
+      const count = 8;
+      const fw = Math.floor(width / count);
+      for (let i = 0; i < count; i++) {
+        colRanges.push({ left: i * fw, right: i < count - 1 ? (i + 1) * fw : width });
+      }
+    } else {
+      if (gaps[0]!.start > 0) colRanges.push({ left: 0, right: gaps[0]!.start });
+      for (let i = 0; i < gaps.length; i++) {
+        const next = gaps[i + 1];
+        colRanges.push({ left: gaps[i]!.end, right: next ? next.start : width });
+      }
+    }
+
+    /** 构建行范围：每行 [top, bottom)；无行分隔时整图一行 */
+    const rowRanges: { top: number; bottom: number }[] = [];
+    if (rowGaps.length === 0) {
+      rowRanges.push({ top: 0, bottom: height });
+    } else {
+      if (rowGaps[0]!.start > 0) rowRanges.push({ top: 0, bottom: rowGaps[0]!.start });
+      for (let i = 0; i < rowGaps.length; i++) {
+        const next = rowGaps[i + 1];
+        rowRanges.push({ top: rowGaps[i]!.end, bottom: next ? next.start : height });
+      }
+    }
+
+    const frames: SpriteFrameRect[] = [];
+    if (rowRanges.length === 1 && colRanges.length >= 1) {
+      /** 单行：按列从左到右，用 getContentVerticalRange 裁剪垂直内容 */
+      for (const col of colRanges) {
+        const fw = col.right - col.left;
+        const { contentTop, contentBottom } = getContentVerticalRange(col.left, fw);
+        const r = applyPadding(col.left, contentTop, fw, contentBottom - contentTop + 1);
+        frames.push(r);
+      }
+    } else if (rowRanges.length >= 1 && colRanges.length >= 1) {
+      /** 多行多列：顺序先行后列（第1行第1列、第1行第2列…第2行第1列…） */
+      for (let rowIdx = 0; rowIdx < rowRanges.length; rowIdx++) {
+        const row = rowRanges[rowIdx]!;
+        const fh = row.bottom - row.top;
+        for (let colIdx = 0; colIdx < colRanges.length; colIdx++) {
+          const col = colRanges[colIdx]!;
+          const fw = col.right - col.left;
+          const r = applyPadding(col.left, row.top, fw, fh);
+          frames.push(r);
+        }
+      }
+    }
+
+    if (frames.length === 0) {
+      /** 回退：未检测到任何分隔，按 8 列单行均分 */
       const count = 8;
       const fw = Math.floor(width / count);
       for (let i = 0; i < count; i++) {
@@ -216,44 +304,8 @@ export async function getSpriteFrames(
           height: Math.min(contentBottom - contentTop + 1 + pad * 2, height - Math.max(0, contentTop - pad)),
         });
       }
-      const normalized = normalizeUniformFrames(frames, imgWidth, imgHeight);
-      return { raw: frames, normalized };
     }
 
-    const applyPadding = (x: number, y: number, w: number, h: number) => {
-      const pad = FRAME_PADDING;
-      const nx = Math.max(0, x - pad);
-      const ny = Math.max(0, y - pad);
-      const nw = Math.min(w + pad * 2, width - nx);
-      const nh = Math.min(h + pad * 2, height - ny);
-      return { x: nx, y: ny, width: nw, height: nh };
-    };
-    let prevEnd = 0;
-    for (const gap of gaps) {
-      if (gap.start > prevEnd) {
-        const fw = gap.start - prevEnd;
-        const { contentTop, contentBottom } = getContentVerticalRange(prevEnd, fw);
-        const r = applyPadding(prevEnd, contentTop, fw, contentBottom - contentTop + 1);
-        frames.push(r);
-      }
-      prevEnd = gap.end;
-    }
-    if (prevEnd < width) {
-      const fw = width - prevEnd;
-      const { contentTop, contentBottom } = getContentVerticalRange(prevEnd, fw);
-      const r = applyPadding(prevEnd, contentTop, fw, contentBottom - contentTop + 1);
-      frames.push(r);
-    }
-    if (frames.length === 0) {
-      const count = 8;
-      const fw = Math.floor(width / count);
-      for (let i = 0; i < count; i++) {
-        const fx = i * fw;
-        const { contentTop, contentBottom } = getContentVerticalRange(fx, fw);
-        const r = applyPadding(fx, contentTop, fw, contentBottom - contentTop + 1);
-        frames.push(r);
-      }
-    }
     const normalized = normalizeUniformFrames(frames, imgWidth, imgHeight);
     return { raw: frames, normalized };
   } catch {

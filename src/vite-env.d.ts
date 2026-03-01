@@ -32,6 +32,7 @@ declare global {
         deleteEpisode: (projectDir: string, id: string) => Promise<{ ok: boolean; error?: string }>;
         getCharacters: (projectDir: string) => Promise<unknown[]>;
         getOrCreateStandaloneSpritesCharacter: (projectDir: string) => Promise<{ id: string; sprite_sheets?: string | null }>;
+        getOrCreateStandaloneComponentsCharacter: (projectDir: string) => Promise<{ id: string; component_groups?: string | null }>;
         createCharacter: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         updateCharacter: (projectDir: string, id: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
         deleteCharacter: (projectDir: string, id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -63,7 +64,7 @@ declare global {
         exportSpriteSheet: (projectDir: string, item: unknown) => Promise<{ ok: boolean; error?: string }>;
         importSpriteSheet: (projectDir: string, zipPath: string) => Promise<{ ok: boolean; item?: unknown; error?: string }>;
         saveAssetFromFile: (projectDir: string, sourcePath: string, type?: string, options?: unknown) => Promise<{ ok: boolean; path?: string; error?: string }>;
-        saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+        saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
         getAiConfig: (projectDir: string) => Promise<unknown>;
         saveAiConfig: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
       };

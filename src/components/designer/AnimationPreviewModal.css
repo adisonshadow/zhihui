@@ -1,0 +1,30 @@
+/* 动画预览 Modal（见 docs/08-素材动画功能技术方案.md 6.4） */
+
+.animation-preview-modal__stage {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 160px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+}
+
+.animation-preview-modal__block {
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.animation-preview-modal__block-inner {
+  width: 40px;
+  height: 40px;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 4px;
+}
+
+.animation-preview-modal__block img,
+.animation-preview-modal__block video {
+  display: block;
+}

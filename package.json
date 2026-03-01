@@ -45,6 +45,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@volcengine/sdk-core": "^1.0.0",
+    "@wavesurfer/react": "^1.0.12",
     "adm-zip": "^0.5.16",
     "antd": "^6.2.2",
     "better-sqlite3": "^12.6.2",
@@ -57,7 +58,8 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "wavesurfer.js": "^7.12.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.18",

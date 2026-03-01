@@ -10,6 +10,14 @@ import { KeyframeButton } from './KeyframeButton';
 import { useKeyframeCRUD, type KeyframeProperty, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
 import { getInterpolatedTransform, getInterpolatedEffects } from '@/utils/keyframeTween';
 import { ASSET_CATEGORIES } from '@/constants/assetCategories';
+import { COMPONENT_BLOCK_PREFIX } from '@/constants/project';
+import type { BlockAnimationConfig } from '@/constants/animationRegistry';
+import { AnimationSettingsPanel } from './AnimationSettingsPanel';
+import { StateSettingsPanel } from './StateSettingsPanel';
+import { parseStateKeyframes } from '@/utils/stateKeyframes';
+import { STANDALONE_COMPONENTS_CHARACTER_ID, STANDALONE_SPRITES_CHARACTER_ID } from '@/constants/project';
+import type { GroupComponentItem } from '@/types/groupComponent';
+import type { SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
 
 const { Text } = Typography;
 
@@ -29,6 +37,8 @@ interface BlockRow {
   opacity?: number;
   playback_fps?: number;
   playback_count?: number;
+  animation_config?: string | null;
+  state_keyframes?: string | null;
 }
 
 interface AssetRow {
@@ -38,7 +48,7 @@ interface AssetRow {
   description: string | null;
 }
 
-export type BlockSettingsTab = 'base' | 'sprite';
+export type BlockSettingsTab = 'base' | 'sprite' | 'audio' | 'animation' | 'state';
 
 interface SelectedBlockSettingsProps {
   project: ProjectInfo;
@@ -47,14 +57,16 @@ interface SelectedBlockSettingsProps {
   refreshKey?: number;
   onUpdate?: () => void;
   onJumpToTime?: (t: number) => void;
-  /** 乐观更新 blur/opacity，画布立即反映 */
-  onBlockUpdate?: (blockId: string, data: Partial<{ blur: number; opacity: number }>) => void;
-  /** 选中素材时是否为精灵图（用于 header 切换基础设置/精灵图设置）；frameCount 用于精灵图时长计算 */
-  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number }) => void;
+  /** 乐观更新 blur/opacity/pos/scale，画布立即反映 */
+  onBlockUpdate?: (blockId: string, data: Partial<{ blur: number; opacity: number; pos_x: number; pos_y: number; scale_x: number; scale_y: number }>) => void;
+  /** 选中素材时是否为精灵图/音效音乐/元件（用于 header 切换）；frameCount 用于精灵图时长计算 */
+  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number; isAudio?: boolean; isComponent?: boolean }) => void;
   /** 当前设置 tab（基础设置 | 精灵图设置），由父组件控制 */
   settingsTab?: BlockSettingsTab;
   /** 是否为精灵图（精灵图基础设置无播放时间、素材条不可 resize） */
   isSpriteBlock?: boolean;
+  /** 是否为音效/音乐（仅显示声音设置：音量、渐入、渐出） */
+  isAudioBlock?: boolean;
 }
 
 const KF_TOLERANCE = 0.02;
@@ -62,6 +74,77 @@ const AUTO_SAVE_DEBOUNCE_MS = 400;
 /** 数值显示精度：时间 1 位，缩放/位置/旋转 2 位 */
 const PRECISION_TIME = 1;
 const PRECISION_TRANSFORM = 2;
+
+const DESIGN_WIDTH_LANDSCAPE = 1920;
+const DESIGN_HEIGHT_LANDSCAPE = 1080;
+const DESIGN_WIDTH_PORTRAIT = 1080;
+const DESIGN_HEIGHT_PORTRAIT = 1920;
+
+/** 获取素材显示尺寸（图片/视频用原始尺寸，精灵图用首帧尺寸） */
+async function getAssetDimensions(
+  projectDir: string,
+  asset: { path: string; type: string },
+  isSpriteBlock: boolean
+): Promise<{ w: number; h: number } | null> {
+  const api = window.yiman?.project;
+  if (!api?.getAssetDataUrl) return null;
+  const dataUrl = await api.getAssetDataUrl(projectDir, asset.path);
+  if (!dataUrl) return null;
+
+  const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(asset.path);
+  if (isVideo) {
+    return new Promise((resolve) => {
+      const video = document.createElement('video');
+      video.onloadedmetadata = () => {
+        resolve({ w: video.videoWidth, h: video.videoHeight });
+        video.src = '';
+      };
+      video.onerror = () => resolve(null);
+      video.src = dataUrl;
+    });
+  }
+
+  if (isSpriteBlock && api.getSpriteFrames) {
+    try {
+      const bg = await api.getSpriteBackgroundColor?.(projectDir, asset.path) ?? null;
+      const { raw } = await api.getSpriteFrames(projectDir, asset.path, bg, { minGapPixels: 6 });
+      if (raw?.length && raw[0].width > 0 && raw[0].height > 0) {
+        return { w: raw[0].width, h: raw[0].height };
+      }
+    } catch {
+      /* fallback to image */
+    }
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+/** cover 模式：保持比例铺满画布，返回 scale_x、scale_y（0–1 相对设计尺寸） */
+function computeCoverScale(
+  assetW: number,
+  assetH: number,
+  designW: number,
+  designH: number
+): { scale_x: number; scale_y: number } {
+  if (assetW <= 0 || assetH <= 0) return { scale_x: 1, scale_y: 1 };
+  const designAspect = designW / designH;
+  const assetAspect = assetW / assetH;
+  let scale_x: number;
+  let scale_y: number;
+  if (assetAspect >= designAspect) {
+    scale_x = 1;
+    scale_y = Math.max(1, (designW / designH) * (assetH / assetW));
+  } else {
+    scale_y = 1;
+    scale_x = Math.max(1, (designH / designW) * (assetW / assetH));
+  }
+  return { scale_x, scale_y };
+}
 
 /** 缩放控件：Slider + InputNumber（百分比），Form.Item 注入 value/onChange */
 function ScaleControl({
@@ -107,7 +190,7 @@ function ScaleControl({
   );
 }
 
-export function SelectedBlockSettings({ project, blockId, currentTime, refreshKey, onUpdate, onJumpToTime, onBlockUpdate, onBlockInfo, settingsTab = 'base', isSpriteBlock = false }: SelectedBlockSettingsProps) {
+export function SelectedBlockSettings({ project, blockId, currentTime, refreshKey, onUpdate, onJumpToTime, onBlockUpdate, onBlockInfo, settingsTab = 'base', isSpriteBlock = false, isAudioBlock = false }: SelectedBlockSettingsProps) {
   const { message } = App.useApp();
   const projectDir = project.project_dir;
   const { createKeyframe, updateKeyframe, deleteKeyframe, getKeyframes } = useKeyframeCRUD(projectDir);
@@ -117,13 +200,23 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
   const [asset, setAsset] = useState<AssetRow | null>(null);
   const [keyframes, setKeyframes] = useState<KeyframeRow[]>([]);
   const [savingDuration, setSavingDuration] = useState(false);
+  const [fitToCanvasLoading, setFitToCanvasLoading] = useState(false);
   const [addingKf, setAddingKf] = useState(false);
   const [duration, setDuration] = useState(0);
   const [lockAspect, setLockAspect] = useState(true);
   const [spriteFrameCount, setSpriteFrameCount] = useState(8);
+  const [componentInfo, setComponentInfo] = useState<{
+    characterId: string;
+    group: GroupComponentItem;
+    spriteSheets: SpriteSheetItem[];
+    componentGroups: GroupComponentItem[];
+    allCharactersData?: { characterId: string; spriteSheets: SpriteSheetItem[] }[];
+  } | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 防止时间轴移动时 form.setFieldsValue 触发 onValuesChange 导致误保存 */
   const isSyncingFromTimelineRef = useRef(false);
+  /** 用户刚编辑过 opacity/blur 的时间戳，避免 timeline 同步立即覆盖导致「跳回」 */
+  const lastUserEditEffectsRef = useRef(0);
 
   const handleLockAspectChange = useCallback(
     async (checked: boolean) => {
@@ -138,6 +231,49 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     [blockId, projectDir, onUpdate, message]
   );
 
+  /** 适合画布：cover 模式铺满画布，位置居中（见功能文档 6.8） */
+  const handleFitToCanvas = useCallback(async () => {
+    if (!blockId || !block || !asset || !window.yiman?.project?.updateTimelineBlock) return;
+    setFitToCanvasLoading(true);
+    try {
+      const dim = await getAssetDimensions(projectDir, asset, isSpriteBlock);
+      if (!dim || dim.w <= 0 || dim.h <= 0) {
+        message.warning('无法获取素材尺寸');
+        return;
+      }
+      const landscape = !!project.landscape;
+      const designW = landscape ? DESIGN_WIDTH_LANDSCAPE : DESIGN_WIDTH_PORTRAIT;
+      const designH = landscape ? DESIGN_HEIGHT_LANDSCAPE : DESIGN_HEIGHT_PORTRAIT;
+      const { scale_x, scale_y } = computeCoverScale(dim.w, dim.h, designW, designH);
+      const pos_x = 0.5;
+      const pos_y = 0.5;
+      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, {
+        pos_x,
+        pos_y,
+        scale_x,
+        scale_y,
+      });
+      if (res?.ok) {
+        form.setFieldsValue({ pos_x, pos_y, scale_x, scale_y });
+        onBlockUpdate?.(blockId, { pos_x, pos_y, scale_x, scale_y });
+        const kfList = await getKeyframes(blockId);
+        for (const prop of ['pos', 'scale'] as KeyframeProperty[]) {
+          const kf = kfList.find((k) => (k.property || 'pos') === prop && Math.abs(k.time - currentTime) < KF_TOLERANCE);
+          if (kf) {
+            const payload = prop === 'pos' ? { pos_x, pos_y } : { scale_x, scale_y };
+            await updateKeyframe(kf.id, payload);
+          }
+        }
+        onUpdate?.();
+      } else message.error(res?.error || '保存失败');
+    } finally {
+      setFitToCanvasLoading(false);
+    }
+  }, [blockId, block, asset, projectDir, project.landscape, isSpriteBlock, form, getKeyframes, updateKeyframe, currentTime, onUpdate, onBlockUpdate, message]);
+
+  /** 仅在新块加载时调用 onBlockInfo，避免 refresh 时触发 tab 切换（见开发计划 2.x 元件状态） */
+  const lastBlockIdForInfoRef = useRef<string | null>(null);
+
   const loadBlock = useCallback(async () => {
     if (!blockId || !window.yiman?.project?.getTimelineBlockById) return;
     const b = (await window.yiman.project.getTimelineBlockById(projectDir, blockId)) as BlockRow | null;
@@ -145,6 +281,9 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     setBlock(b);
     setKeyframes(kf);
     if (b) {
+      if (!b.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX)) {
+        setComponentInfo(null);
+      }
       setLockAspect((b.lock_aspect ?? 1) !== 0);
       const start = b.start_time ?? 0;
       const end = b.end_time ?? start + 5;
@@ -154,7 +293,53 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
         a = (await window.yiman.project.getAssetById(projectDir, b.asset_id)) as AssetRow | null;
         setAsset(a);
       } else setAsset(null);
-      if (onBlockInfo) {
+      if (b.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX) && window.yiman?.project?.getCharacters) {
+        const rest = b.asset_id.slice(COMPONENT_BLOCK_PREFIX.length);
+        const colonIdx = rest.indexOf(':');
+        if (colonIdx >= 0) {
+          const characterId = rest.slice(0, colonIdx);
+          const groupId = rest.slice(colonIdx + 1);
+          const chars = (await window.yiman.project.getCharacters(projectDir)) as { id: string; sprite_sheets?: string | null; component_groups?: string | null }[];
+          const char = chars.find((ch) => ch.id === characterId);
+          if (char?.component_groups) {
+            try {
+              const groups = JSON.parse(char.component_groups) as GroupComponentItem[];
+              const group = Array.isArray(groups) ? groups.find((g) => g.id === groupId) : null;
+              if (group) {
+                let spriteSheets: SpriteSheetItem[] = [];
+                if (characterId === STANDALONE_COMPONENTS_CHARACTER_ID) {
+                  const spritesChar = chars.find((ch) => ch.id === STANDALONE_SPRITES_CHARACTER_ID);
+                  if (spritesChar?.sprite_sheets) {
+                    try {
+                      spriteSheets = JSON.parse(spritesChar.sprite_sheets) as SpriteSheetItem[];
+                    } catch { /* ignore */ }
+                  }
+                } else if (char.sprite_sheets) {
+                  spriteSheets = JSON.parse(char.sprite_sheets) as SpriteSheetItem[];
+                }
+                const componentGroups = (Array.isArray(groups) ? groups : []).filter((g) => g.id !== groupId);
+                const allCharsData: { characterId: string; spriteSheets: SpriteSheetItem[] }[] = [];
+                for (const ch of chars) {
+                  if (ch.id === characterId || !ch.sprite_sheets) continue;
+                  try {
+                    const ss = JSON.parse(ch.sprite_sheets) as SpriteSheetItem[];
+                    if (Array.isArray(ss)) allCharsData.push({ characterId: ch.id, spriteSheets: ss });
+                  } catch { /* ignore */ }
+                }
+                setComponentInfo({
+                  characterId,
+                  group,
+                  spriteSheets: Array.isArray(spriteSheets) ? spriteSheets : [],
+                  componentGroups,
+                  allCharactersData: allCharsData.length > 0 ? allCharsData : undefined,
+                });
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      }
+      if (onBlockInfo && blockId !== lastBlockIdForInfoRef.current) {
+        lastBlockIdForInfoRef.current = blockId;
         let isSprite = false;
         let frameCount = 8;
         if (a?.path && window.yiman?.project?.getCharacters) {
@@ -171,13 +356,19 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
             } catch { /* ignore */ }
           }
         }
-        onBlockInfo({ isSprite, frameCount });
+        const isAudio = !!(a && ['sfx', 'music'].includes(a.type ?? ''));
+        const isComponent = !!b.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX);
+        onBlockInfo({ isSprite, frameCount, isAudio, isComponent });
         if (isSprite) setSpriteFrameCount(frameCount);
       }
     } else {
       setAsset(null);
       setDuration(0);
-      onBlockInfo?.({ isSprite: false });
+      setComponentInfo(null);
+      if (onBlockInfo) {
+        lastBlockIdForInfoRef.current = null;
+        onBlockInfo({ isSprite: false, isAudio: false, isComponent: false });
+      }
     }
   }, [blockId, projectDir, getKeyframes, onBlockInfo]);
 
@@ -201,6 +392,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     };
     const transform = getInterpolatedTransform(base, keyframes, currentTime);
     const effects = getInterpolatedEffects(base, keyframes, currentTime);
+    const skipEffects = Date.now() - lastUserEditEffectsRef.current < 600;
     isSyncingFromTimelineRef.current = true;
     form.setFieldsValue({
       pos_x: transform.pos_x,
@@ -208,8 +400,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
       scale_x: transform.scale_x,
       scale_y: transform.scale_y,
       rotation: transform.rotation,
-      blur: effects.blur,
-      opacity: effects.opacity,
+      ...(skipEffects ? {} : { blur: effects.blur, opacity: effects.opacity }),
     });
     queueMicrotask(() => { isSyncingFromTimelineRef.current = false; });
   }, [block, keyframes, currentTime, form]);
@@ -364,10 +555,11 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     );
   }
 
-  const assetName = asset?.description || asset?.path?.split(/[/\\]/).pop() || block.asset_id || '—';
-  const typeLabel = asset?.type
+  const isComponentBlock = block.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX);
+  const assetName = isComponentBlock ? '元件' : (asset?.description || asset?.path?.split(/[/\\]/).pop() || block.asset_id || '—');
+  const typeLabel = isComponentBlock ? '元件' : (asset?.type
     ? (ASSET_CATEGORIES.find((c) => c.value === asset.type)?.label ?? { character: '人物', scene_bg: '场景背景', prop: '情景道具', sticker: '贴纸' }[asset.type] ?? asset.type)
-    : '—';
+    : '—');
 
   const handlePlaybackFpsChange = async (v: number | null) => {
     if (v == null || v < 0.5) return;
@@ -380,6 +572,95 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     const fps = block?.playback_fps ?? 8;
     await updateSpriteDuration(fps, v);
   };
+
+  /** 音效/音乐：仅声音设置（音量、渐入、渐出），无基础设置（见功能文档 6.7） */
+  if (isAudioBlock) {
+    const volume = (block as { volume?: number }).volume ?? 1;
+    const fadeIn = (block as { fade_in?: number }).fade_in ?? 0;
+    const fadeOut = (block as { fade_out?: number }).fade_out ?? 0;
+    const saveAudio = async (data: { volume?: number; fade_in?: number; fade_out?: number }) => {
+      if (!blockId || !window.yiman?.project?.updateTimelineBlock) return;
+      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, data);
+      if (res?.ok) onUpdate?.();
+      else message.error(res?.error || '保存失败');
+    };
+    return (
+      <div className="selected-block-settings selected-block-settings--audio" style={{ padding: '4px 0' }}>
+        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>音量</Text>
+          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Slider
+              min={0}
+              max={1}
+              step={0.01}
+              value={volume}
+              onChange={(v) => saveAudio({ volume: v })}
+              style={{ flex: 1, margin: 0 }}
+            />
+            <Text type="secondary" style={{ fontSize: 12, width: 40 }}>{(volume * 100).toFixed(0)}%</Text>
+          </div>
+        </section>
+        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>渐入</Text>
+            <Switch size="small" checked={!!fadeIn} onChange={(v) => saveAudio({ fade_in: v ? 1 : 0 })} />
+          </div>
+        </section>
+        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>渐出</Text>
+            <Switch size="small" checked={!!fadeOut} onChange={(v) => saveAudio({ fade_out: v ? 1 : 0 })} />
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (settingsTab === 'state' && isComponentBlock && componentInfo && block) {
+    const stateKfs = parseStateKeyframes((block as { state_keyframes?: string | null }).state_keyframes);
+    return (
+      <div className="selected-block-settings selected-block-settings--state">
+        <StateSettingsPanel
+          projectDir={projectDir}
+          blockId={blockId}
+          blockStartTime={block.start_time ?? 0}
+          blockEndTime={block.end_time ?? 0}
+          currentTime={currentTime}
+          stateKeyframes={stateKfs}
+          characterId={componentInfo.characterId}
+          group={componentInfo.group}
+          spriteSheets={componentInfo.spriteSheets}
+          componentGroups={componentInfo.componentGroups}
+          allCharactersData={componentInfo.allCharactersData}
+          onUpdate={() => { loadBlock(); onUpdate?.(); }}
+          onJumpToTime={onJumpToTime}
+        />
+      </div>
+    );
+  }
+
+  if (settingsTab === 'animation') {
+    let animationConfig: BlockAnimationConfig | null = null;
+    try {
+      const raw = (block as { animation_config?: string | null }).animation_config;
+      if (raw) animationConfig = JSON.parse(raw) as BlockAnimationConfig;
+    } catch {
+      /* ignore */
+    }
+    return (
+      <div className="selected-block-settings selected-block-settings--animation">
+        <AnimationSettingsPanel
+          projectDir={projectDir}
+          blockId={blockId}
+          animationConfig={animationConfig}
+          assetPath={asset?.path}
+          assetType={asset?.type}
+          projectDirForAsset={projectDir}
+          onUpdate={() => { loadBlock(); onUpdate?.(); }}
+        />
+      </div>
+    );
+  }
 
   if (settingsTab === 'sprite') {
     const playbackFps = block.playback_fps ?? 8;
@@ -475,11 +756,14 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           onValuesChange={(changed, all) => {
             if (isSyncingFromTimelineRef.current) return;
             scheduleAutoSave();
-            // 即时乐观更新：blur/opacity 变化时立即反映到画布，不等防抖保存
-            if ((changed.blur !== undefined || changed.opacity !== undefined) && blockId) {
+            // 即时乐观更新：blur/opacity/scale 变化时立即反映到画布，不等防抖保存
+            if (blockId && (changed.blur !== undefined || changed.opacity !== undefined || changed.scale_x !== undefined || changed.scale_y !== undefined)) {
+              if (changed.blur !== undefined || changed.opacity !== undefined) lastUserEditEffectsRef.current = Date.now();
               const blurVal = all.blur ?? block?.blur ?? 0;
               const opacityVal = all.opacity ?? block?.opacity ?? 1;
-              onBlockUpdate?.(blockId, { blur: blurVal, opacity: opacityVal });
+              const scale_x = all.scale_x ?? block?.scale_x ?? 1;
+              const scale_y = all.scale_y ?? block?.scale_y ?? 1;
+              onBlockUpdate?.(blockId, { blur: blurVal, opacity: opacityVal, scale_x, scale_y });
             }
           }}
           className="selected-block-settings__transform-form"
@@ -514,6 +798,13 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
             <span className="selected-block-settings__param-label" style={{ width: 64, flexShrink: 0, fontSize: 12 }}>等比缩放</span>
             <div style={{ flex: 1 }} />
             <Switch size="small" checked={lockAspect} onChange={handleLockAspectChange} style={{ flexShrink: 0 }} />
+          </div>
+          {/* 适合画布：cover 模式铺满画布 */}
+          <div className="selected-block-settings__param-row" style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            <span className="selected-block-settings__param-label" style={{ width: 64, flexShrink: 0, fontSize: 12 }} />
+            <Button size="small" onClick={handleFitToCanvas} loading={fitToCanvasLoading} disabled={!asset}>
+              适合画布
+            </Button>
           </div>
           {/* 位置 X/Y */}
           <div className="selected-block-settings__param-row" style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>

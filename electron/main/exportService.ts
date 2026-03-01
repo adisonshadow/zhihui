@@ -3,7 +3,9 @@
  */
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { getLayers, getTimelineBlocks, getKeyframes, getAssetById, getProjectMeta, getExportsPath } from './projectDb';
+import { extractVideoFrame } from './videoCoverService';
 import type { LayerRow } from './projectDb';
 import type { TimelineBlockRow } from './projectDb';
 import type { KeyframeRow } from './projectDb';
@@ -15,8 +17,10 @@ const DESIGN_HEIGHT_LANDSCAPE = 1080;
 const DESIGN_WIDTH_PORTRAIT = 1080;
 const DESIGN_HEIGHT_PORTRAIT = 1920;
 
-/** 图片类素材类型（支持导出，视频类暂不参与帧合成） */
+/** 图片类素材类型（支持导出） */
 const IMAGE_ASSET_TYPES = new Set(['image', 'character', 'scene_bg', 'prop', 'sticker']);
+/** 视频类素材类型（支持导出，需用 ffmpeg 提取帧） */
+const VIDEO_ASSET_TYPES = new Set(['video', 'transparent_video']);
 
 export interface ExportOptions {
   /** 输出宽度 */
@@ -103,7 +107,10 @@ async function renderFrame(
       if (!block.asset_id) continue;
 
       const asset = getAssetById(projectDir, block.asset_id);
-      if (!asset || !IMAGE_ASSET_TYPES.has(asset.type)) continue;
+      if (!asset) continue;
+      const isImageAsset = IMAGE_ASSET_TYPES.has(asset.type);
+      const isVideoAsset = VIDEO_ASSET_TYPES.has(asset.type);
+      if (!isImageAsset && !isVideoAsset) continue;
 
       const assetPath = path.join(projectDir, asset.path);
       if (!fs.existsSync(assetPath)) continue;
@@ -132,9 +139,25 @@ async function renderFrame(
 
       if (width <= 0 || height <= 0) continue;
 
-      let img = sharp(assetPath)
-        .resize(width, height)
-        .rotate(transform.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+      let img: sharp.Sharp;
+      let tmpFramePath: string | undefined;
+      if (isVideoAsset) {
+        const localTime = Math.max(0, time - block.start_time);
+        tmpFramePath = path.join(os.tmpdir(), `yiman_export_frame_${block.id}_${Date.now()}.png`);
+        const preserveAlpha = asset.type === 'transparent_video';
+        try {
+          const frameRes = await extractVideoFrame(assetPath, tmpFramePath, localTime, preserveAlpha);
+          if (!frameRes.ok || !frameRes.path || !fs.existsSync(frameRes.path)) continue;
+          img = sharp(frameRes.path).resize(width, height).rotate(transform.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+        } catch {
+          try { if (fs.existsSync(tmpFramePath)) fs.unlinkSync(tmpFramePath); } catch { /* ignore */ }
+          continue;
+        }
+      } else {
+        img = sharp(assetPath)
+          .resize(width, height)
+          .rotate(transform.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
+      }
 
       if (effects.opacity < 1) {
         img = img.modulate({ brightness: 1, saturation: 1 }).ensureAlpha();
@@ -142,6 +165,9 @@ async function renderFrame(
       }
 
       const buf = await img.png().toBuffer();
+      if (tmpFramePath) {
+        try { if (fs.existsSync(tmpFramePath)) fs.unlinkSync(tmpFramePath); } catch { /* ignore */ }
+      }
       const meta = await sharp(buf).metadata();
       const rw = meta.width ?? width;
       const rh = meta.height ?? height;
@@ -232,11 +258,18 @@ export async function exportSceneVideo(
         /* 使用系统 ffmpeg */
       }
 
+      const framePattern = path.join(frameDir, 'frame_%05d.png');
+      const frameCount = fs.readdirSync(frameDir).filter((f) => /^frame_\d{5}\.png$/.test(f)).length;
+      if (frameCount === 0) {
+        throw new Error('未生成任何帧，请检查场景是否有有效素材');
+      }
+
       await new Promise<void>((resolve, reject) => {
         ffmpeg()
-          .input(path.join(frameDir, 'frame_%05d.png'))
-          .inputOptions(['-framerate', String(options.fps)])
+          .input(framePattern)
+          .inputOptions(['-framerate', String(options.fps), '-start_number', '0'])
           .outputOptions([
+            '-y',
             '-c:v libx264',
             '-pix_fmt yuv420p',
             '-preset medium',

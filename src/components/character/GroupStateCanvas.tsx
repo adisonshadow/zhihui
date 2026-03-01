@@ -1,5 +1,5 @@
 /**
- * 元件组状态画布：支持拖拽移动、四角缩放、旋转，参考设计器画布
+ * 元件状态画布：支持拖拽移动、四角缩放、旋转，参考设计器画布
  */
 import React, { useRef, useCallback, useState, useEffect } from 'react';
 import { Button, Dropdown, Modal, Input, Checkbox, Card } from 'antd';
@@ -36,13 +36,13 @@ interface GroupStateCanvasProps {
   characterId: string;
   getAssetDataUrl: (projectDir: string, path: string) => Promise<string | null>;
   saveAssetFromBase64?: (projectDir: string, base64Data: string, ext?: string, type?: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
-  /** 单图抠图并保存到素材库，用于元件组中图片的抠图替换 */
+  /** 单图抠图并保存到素材库，用于元件中图片的抠图替换 */
   matteImageAndSave?: (
     projectDir: string,
     path: string,
     options?: { mattingModel?: string; downsampleRatio?: number }
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
-  /** 从人物元件组打开时，可获取全部人物的精灵图/元件组以支持「仅查看本人物的」筛选 */
+  /** 从人物元件打开时，可获取全部人物的精灵图/元件以支持「仅查看本人物的」筛选 */
   getAllCharactersData?: () => Promise<
     { characterId: string; characterName?: string; spriteSheets: SpriteSheetItem[]; componentGroups: GroupComponentItem[] }[]
   >;
@@ -162,7 +162,7 @@ export function GroupStateCanvas({
   const addMenuItems: { key: string; label: string; icon: React.ReactNode; onClick: () => void }[] = [
     { key: 'img', label: '本机图片', icon: <PictureOutlined />, onClick: onAddImage },
     ...(onAddImageFromAssets ? [{ key: 'img-assets', label: '素材库中的图片', icon: <PictureOutlined />, onClick: onAddImageFromAssets }] : []),
-    { key: 'group', label: '元件组', icon: <AppstoreOutlined />, onClick: () => setGroupPickerOpen(true) },
+    { key: 'group', label: '元件', icon: <AppstoreOutlined />, onClick: () => setGroupPickerOpen(true) },
     { key: 'sprite', label: '精灵图', icon: <BgColorsOutlined />, onClick: () => setSpritePickerOpen(true) },
   ];
 
@@ -384,7 +384,7 @@ export function GroupStateCanvas({
         open={groupPickerOpen}
         onClose={() => setGroupPickerOpen(false)}
         type="group"
-        title="选择元件组"
+        title="选择元件"
         characterId={characterId}
         spriteSheets={spriteSheets}
         componentGroups={componentGroups}
@@ -496,7 +496,7 @@ function SpriteGroupPickerModal({
             checked={onlyCurrentCharacter}
             onChange={(e) => setOnlyCurrentCharacter(e.target.checked)}
           >
-            仅查看本人物的{type === 'sprite' ? '精灵图' : '元件组'}
+            仅查看本人物的{type === 'sprite' ? '精灵图' : '元件'}
           </Checkbox>
         )}
         <Input.Search
@@ -742,7 +742,7 @@ function CanvasItemBlock({
         showCheckerboard={false}
       />
     ) : (
-      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'rgba(255,255,255,0.7)' }}>元件组</div>
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'rgba(255,255,255,0.7)' }}>元件</div>
     );
   }
 

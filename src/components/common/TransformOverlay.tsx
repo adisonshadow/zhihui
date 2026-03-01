@@ -1,7 +1,7 @@
 /**
  * 通用变换叠加层：选中框、四角缩放把手、底部旋转把手
  * 支持拖拽移动、resize、旋转，使用 resizeLive 避免异步更新导致的显示跳变
- * 参考 CanvasSelectionOverlay，可复用于设计器画布、元件组画板等
+ * 参考 CanvasSelectionOverlay，可复用于设计器画布、元件画板等
  */
 import React, { useState, useCallback, useRef } from 'react';
 
@@ -43,7 +43,7 @@ export interface TransformOverlayProps {
   minSize?: number;
   /** 最大 scale */
   maxScale?: number;
-  /** 等比例缩放（scale_x = scale_y），用于元件组、精灵图 */
+  /** 等比例缩放（scale_x = scale_y），用于元件、精灵图 */
   uniformScale?: boolean;
 }
 

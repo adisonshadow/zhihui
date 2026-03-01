@@ -1,6 +1,9 @@
 /* 临时排除 Tailwind：若移除后页面正常，则问题在 Tailwind v4 */
 /* @import "tailwindcss"; */
 
+/* Magic 动画库，用于素材动画（见 docs/08-素材动画功能技术方案.md） */
+@import url("/magic.css");
+
 * {
   margin: 0;
   padding: 0;

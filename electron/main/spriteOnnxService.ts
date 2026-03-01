@@ -8,7 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import sharp from 'sharp';
-import { saveAssetFromFile } from './projectDb';
+import { saveAssetFromFile, saveAssetFromBase64 } from './projectDb';
 import {
   getSpriteBackgroundColor,
   getSpriteFrames,
@@ -169,13 +169,14 @@ export async function matteImageForContour(
 }
 
 /**
- * 对单张图片执行抠图并保存到项目素材库，供元件组设计器等复用
+ * 对单张图片执行抠图并保存到项目素材库，供元件设计器等复用
+ * @param replaceAssetId 指定时替换该素材的图片文件（不新建素材行）
  * @returns 成功时返回新素材路径（如 assets/xxx.png）
  */
 export async function matteImageAndSave(
   projectDir: string,
   relativePath: string,
-  options?: { mattingModel?: MattingModel | string; downsampleRatio?: number }
+  options?: { mattingModel?: MattingModel | string; downsampleRatio?: number; replaceAssetId?: string }
 ): Promise<{ ok: boolean; path?: string; error?: string }> {
   try {
     const matteRes = await matteImageForContour(projectDir, relativePath, options);
@@ -183,6 +184,11 @@ export async function matteImageAndSave(
       return { ok: false, error: matteRes.error ?? '抠图失败' };
     }
     const base64 = matteRes.dataUrl.replace(/^data:image\/png;base64,/, '');
+    if (options?.replaceAssetId) {
+      const saveRes = saveAssetFromBase64(projectDir, base64, '.png', 'character', { replaceAssetId: options.replaceAssetId });
+      if (!saveRes.ok || !saveRes.path) return { ok: false, error: saveRes.error ?? '保存失败' };
+      return { ok: true, path: saveRes.path };
+    }
     const buf = Buffer.from(base64, 'base64');
     const tmpDir = os.tmpdir();
     const tmpPath = path.join(tmpDir, `matte_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.png`);

@@ -1,9 +1,9 @@
 /**
- * 元件组类型：状态由 tag 构成，每个状态对应画板可放置图片、精灵动作、嵌套元件组
- * Tag 可向内传递，子元件组根据收到的 tag 选择自身状态
+ * 元件类型：状态由 tag 构成，每个状态对应画板可放置图片、精灵动作、嵌套元件
+ * Tag 可向内传递，子元件根据收到的 tag 选择自身状态
  */
 
-/** 元件组画布统一尺寸 1024x1024，设计、预览按此尺寸并自动 scale 适配显示 */
+/** 元件画布统一尺寸 1024x1024，设计、预览按此尺寸并自动 scale 适配显示 */
 export const GROUP_CANVAS_SIZE = 1024;
 
 /** 画板坐标：pos_x/pos_y 为归一化中心 (0-1)，scale_x/scale_y 为相对画布比例，rotation 为角度，flip_x 为水平翻转 */
@@ -44,7 +44,7 @@ export type GroupCanvasItem =
       flip_x?: boolean;
     };
 
-/** 元件组的一个状态：由 tags 定义，对应画板内容 */
+/** 元件的一个状态：由 tags 定义，对应画板内容 */
 export interface GroupComponentState {
   id: string;
   /** 该状态对应的 tag 列表，匹配时显示此状态 */
@@ -53,7 +53,7 @@ export interface GroupComponentState {
   items: GroupCanvasItem[];
 }
 
-/** 元件组：可包含多个状态，支持嵌套 */
+/** 元件：可包含多个状态，支持嵌套 */
 export interface GroupComponentItem {
   id: string;
   name?: string;

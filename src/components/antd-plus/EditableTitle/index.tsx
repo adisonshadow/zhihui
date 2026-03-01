@@ -11,7 +11,7 @@ export interface EditableTitleProps {
   onChange: (value: string) => void;
   /** 占位符 */
   placeholder?: string;
-  /** 前缀文案，如「编辑元件组：」 */
+  /** 前缀文案，如「编辑元件：」 */
   prefix?: string;
   /** Input 的 style */
   inputStyle?: React.CSSProperties;

@@ -4,8 +4,8 @@
  * 支持 AI 抠图（火山引擎）：配置了 aiMattingConfigs 时在模型列表中显示，选择后走云端
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Drawer, Button, Space, Typography, App, Modal, Slider } from 'antd';
-import { UploadOutlined, PictureOutlined, ExpandOutlined, ScissorOutlined } from '@ant-design/icons';
+import { Drawer, Button, Space, Typography, App, Modal, Slider, Switch, Tag, Input, Popover, Radio } from 'antd';
+import { UploadOutlined, PictureOutlined, BuildOutlined, ScissorOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { MattingSettingsPanel } from './MattingSettingsPanel';
 import { EditableTitle } from '@/components/antd-plus/EditableTitle';
 import { CHECKERBOARD_BACKGROUND } from '@/styles/checkerboardBackground';
@@ -37,6 +37,12 @@ export interface SpriteSheetItem {
   playback_fps?: number;
   /** 是否需要抠图：false 表示已抠好，仅识别帧 */
   need_matting?: boolean;
+  /** 是否为标签精灵：选中后支持属性 tag 与帧 tag */
+  is_tagged_sprite?: boolean;
+  /** 属性 tag 名称列表，如 ["表情", "状态"] */
+  property_tags?: string[];
+  /** 每帧的 tag 值：frame_tags[i][propertyName] = ["悲伤","伤心"] */
+  frame_tags?: Array<Record<string, string[]>>;
 }
 
 export interface SpriteSheetPanelProps {
@@ -87,6 +93,9 @@ const DEFAULT_FRAME_COUNT = 8;
 const DEFAULT_PLAYBACK_FPS = 8;
 const CHROMA_THRESHOLD = 120;
 
+/** Ant Design Tag preset 颜色，按顺序分配给属性 tag */
+const TAG_PRESET_COLORS = ['magenta', 'red', 'volcano', 'orange', 'gold', 'lime', 'green', 'cyan', 'blue', 'geekblue', 'purple'] as const;
+
 function applyChromaKey(
   imageData: ImageData,
   targetR: number,
@@ -123,7 +132,7 @@ export function SpriteSheetPanel({
   getSpriteFrames: _getSpriteFrames,
   extractSpriteCover,
 }: SpriteSheetPanelProps) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [item, setItem] = useState<SpriteSheetItem | null>(initialItem);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
@@ -133,6 +142,23 @@ export function SpriteSheetPanel({
   const [frames, setFrames] = useState<SpriteFrameRect[]>([]);
   const [rawFrames, setRawFrames] = useState<SpriteFrameRect[]>([]);
   const [frameInspectOpen, setFrameInspectOpen] = useState(false);
+  const [frameEditZoom, setFrameEditZoom] = useState(1);
+  const [selectedFrameIndex, setSelectedFrameIndex] = useState<number | null>(null);
+  const dragStateRef = useRef<{ frameIndex: number; startX: number; startY: number; rectX: number; rectY: number } | null>(null);
+  const resizeStateRef = useRef<{
+    handle: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+    frameIndex: number;
+    rectX: number;
+    rectY: number;
+    rectW: number;
+    rectH: number;
+  } | null>(null);
+  const resizeResultRef = useRef<{ width: number; height: number } | null>(null);
+  const didDragRef = useRef(false);
+  const frameEditContainerRef = useRef<HTMLDivElement>(null);
+
+  const RESIZE_HANDLE_SIZE = 8;
+  const MIN_FRAME_SIZE = 8;
   const [assetPickerOpen, setAssetPickerOpen] = useState(false);
   const [assets, setAssets] = useState<{ id: string; path: string; type: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -149,6 +175,15 @@ export function SpriteSheetPanel({
     if (!open) setMattingPanelOpen(false);
   }, [open]);
 
+  const [isTaggedSprite, setIsTaggedSprite] = useState(false);
+  const [propertyTags, setPropertyTags] = useState<string[]>([]);
+  const [frameTags, setFrameTags] = useState<Array<Record<string, string[]>>>([]);
+  /** 标签精灵模式下，按属性选中的 tag 值，用于过滤播放帧 */
+  const [selectedTagsByProperty, setSelectedTagsByProperty] = useState<Record<string, string>>({});
+  const [propertyTagInput, setPropertyTagInput] = useState('');
+  const [frameTagPopoverOpen, setFrameTagPopoverOpen] = useState<number | null>(null);
+  const [frameTagAddInputByProp, setFrameTagAddInputByProp] = useState<Record<string, string>>({});
+
   useEffect(() => {
     setItem(initialItem);
     if (initialItem) {
@@ -159,6 +194,9 @@ export function SpriteSheetPanel({
       setRawFrames([]);
       setSourceImagePathForOnnx(initialItem.image_path);
       setPlaybackFps(initialItem.playback_fps ?? DEFAULT_PLAYBACK_FPS);
+      setIsTaggedSprite(!!initialItem.is_tagged_sprite);
+      setPropertyTags(initialItem.property_tags ?? []);
+      setFrameTags(initialItem.frame_tags ?? []);
     } else {
       setFrameCount(DEFAULT_FRAME_COUNT);
       setChromaEnabled(true);
@@ -167,8 +205,36 @@ export function SpriteSheetPanel({
       setRawFrames([]);
       setSourceImagePathForOnnx(null);
       setPlaybackFps(DEFAULT_PLAYBACK_FPS);
+      setIsTaggedSprite(false);
+      setPropertyTags([]);
+      setFrameTags([]);
     }
   }, [initialItem, open]);
+
+  /** 标签精灵：默认选中第一个属性的第一个 tag 值 */
+  useEffect(() => {
+    if (!isTaggedSprite || propertyTags.length === 0) return;
+    const firstProp = propertyTags[0];
+    if (!firstProp || selectedTagsByProperty[firstProp] != null) return;
+    const values = new Set<string>();
+    for (const ft of frameTags) {
+      for (const v of ft[firstProp] ?? []) {
+        if (v?.trim()) values.add(v.trim());
+      }
+    }
+    const firstVal = [...values][0];
+    if (firstVal) setSelectedTagsByProperty((p) => ({ ...p, [firstProp]: firstVal }));
+  }, [isTaggedSprite, propertyTags, frameTags, selectedTagsByProperty]);
+
+  /** 帧数量变化时同步 frame_tags 数组长度 */
+  useEffect(() => {
+    if (frames.length === 0) return;
+    setFrameTags((prev) => {
+      const next = [...prev];
+      while (next.length < frames.length) next.push({});
+      return next.slice(0, frames.length);
+    });
+  }, [frames.length]);
 
   useEffect(() => {
     if (!open || !initialItem?.image_path) {
@@ -284,6 +350,137 @@ export function SpriteSheetPanel({
     }
   }, [projectDir, item, sourceImagePathForOnnx, _getSpriteFrames, extractSpriteCover, message]);
 
+  const handleFrameDelete = useCallback(() => {
+    if (selectedFrameIndex == null || frames.length <= 1) return;
+    setFrames((prev) => prev.filter((_, i) => i !== selectedFrameIndex));
+    setFrameCount((c) => Math.max(1, c - 1));
+    setSelectedFrameIndex(null);
+  }, [selectedFrameIndex, frames.length]);
+
+  const handleResizeApplyToAll = useCallback(
+    (newWidth: number, newHeight: number) => {
+      setFrames((prev) =>
+        prev.map((f) => ({ ...f, width: newWidth, height: newHeight }))
+      );
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!frameInspectOpen) return;
+    const onMouseMove = (e: MouseEvent) => {
+      const box = frameEditContainerRef.current?.getBoundingClientRect();
+      const scale = frameEditZoom;
+      const imgW = imageElement?.naturalWidth ?? 0;
+      const imgH = imageElement?.naturalHeight ?? 0;
+
+      const rs = resizeStateRef.current;
+      if (rs && box && imageElement) {
+        didDragRef.current = true;
+        const imageX = (e.clientX - box.left) / scale;
+        const imageY = (e.clientY - box.top) / scale;
+        let newX = rs.rectX;
+        let newY = rs.rectY;
+        let newW = rs.rectW;
+        let newH = rs.rectH;
+        const { handle } = rs;
+        if (handle.includes('e')) newW = Math.max(MIN_FRAME_SIZE, Math.min(imgW - newX, imageX - newX));
+        if (handle.includes('w')) {
+          newX = Math.max(0, Math.min(rs.rectX + rs.rectW - MIN_FRAME_SIZE, imageX));
+          newW = rs.rectX + rs.rectW - newX;
+        }
+        if (handle.includes('s')) newH = Math.max(MIN_FRAME_SIZE, Math.min(imgH - newY, imageY - newY));
+        if (handle.includes('n')) {
+          newY = Math.max(0, Math.min(rs.rectY + rs.rectH - MIN_FRAME_SIZE, imageY));
+          newH = rs.rectY + rs.rectH - newY;
+        }
+        resizeResultRef.current = { width: newW, height: newH };
+        setFrames((prev) => {
+          const next = [...prev];
+          if (next[rs.frameIndex]) next[rs.frameIndex] = { x: newX, y: newY, width: newW, height: newH };
+          return next;
+        });
+        return;
+      }
+
+      const ds = dragStateRef.current;
+      if (!ds || !imageElement) return;
+      didDragRef.current = true;
+      const dx = (e.clientX - ds.startX) / scale;
+      const dy = (e.clientY - ds.startY) / scale;
+      setFrames((prev) => {
+        const r = prev[ds.frameIndex];
+        if (!r) return prev;
+        const newX = Math.max(0, Math.min(imageElement.naturalWidth - r.width, ds.rectX + dx));
+        const newY = Math.max(0, Math.min(imageElement.naturalHeight - r.height, ds.rectY + dy));
+        const next = [...prev];
+        next[ds.frameIndex] = { ...r, x: newX, y: newY };
+        return next;
+      });
+    };
+    const onMouseUp = () => {
+      const rs = resizeStateRef.current;
+      if (rs) {
+        const result = resizeResultRef.current;
+        const changed = result && (result.width !== rs.rectW || result.height !== rs.rectH);
+        if (changed) {
+          modal.confirm({
+            title: '确认应用',
+            content: '改变帧宽高后将改变该精灵图的所有帧宽高，是否确认？',
+            okText: '确认',
+            cancelText: '取消',
+            onOk: () => {
+              handleResizeApplyToAll(result!.width, result!.height);
+            },
+            onCancel: () => {
+              setFrames((prev) => {
+                const next = [...prev];
+                if (next[rs.frameIndex])
+                  next[rs.frameIndex] = { x: rs.rectX, y: rs.rectY, width: rs.rectW, height: rs.rectH };
+                return next;
+              });
+            },
+          });
+        } else {
+          setFrames((prev) => {
+            const next = [...prev];
+            if (next[rs.frameIndex])
+              next[rs.frameIndex] = { x: rs.rectX, y: rs.rectY, width: rs.rectW, height: rs.rectH };
+            return next;
+          });
+        }
+        resizeStateRef.current = null;
+        resizeResultRef.current = null;
+      }
+      dragStateRef.current = null;
+      setTimeout(() => { didDragRef.current = false; }, 0);
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [frameInspectOpen, frameEditZoom, imageElement, modal, handleResizeApplyToAll]);
+
+  useEffect(() => {
+    if (!frameInspectOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+      const active = document.activeElement as HTMLElement | null;
+      const isEditable =
+        active?.tagName === 'INPUT' ||
+        active?.tagName === 'TEXTAREA' ||
+        active?.isContentEditable ||
+        active?.closest?.('input, textarea, [contenteditable="true"]');
+      if (isEditable) return;
+      e.preventDefault();
+      handleFrameDelete();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [frameInspectOpen, handleFrameDelete]);
+
   const handlePickAsset = useCallback(
     async (path: string) => {
       if (item) {
@@ -305,6 +502,38 @@ export function SpriteSheetPanel({
     [projectDir, getAssetDataUrl, message, item]
   );
 
+  const handleAddPropertyTag = useCallback(() => {
+    const v = propertyTagInput.trim();
+    if (!v || propertyTags.includes(v)) return;
+    setPropertyTags((p) => [...p, v]);
+    setPropertyTagInput('');
+  }, [propertyTagInput, propertyTags]);
+
+  const handleRemovePropertyTag = useCallback((name: string) => {
+    setPropertyTags((p) => p.filter((t) => t !== name));
+    setFrameTags((prev) =>
+      prev.map((ft) => {
+        const next = { ...ft };
+        delete next[name];
+        return next;
+      })
+    );
+    setSelectedTagsByProperty((p) => {
+      const next = { ...p };
+      delete next[name];
+      return next;
+    });
+  }, []);
+
+  const handleUpdateFrameTags = useCallback((frameIndex: number, prop: string, values: string[]) => {
+    setFrameTags((prev) => {
+      const next = [...prev];
+      if (!next[frameIndex]) next[frameIndex] = {};
+      next[frameIndex] = { ...next[frameIndex], [prop]: values.filter((v) => v?.trim()) };
+      return next;
+    });
+  }, []);
+
   const handleSave = useCallback(() => {
     if (!item) return;
     const next: SpriteSheetItem = {
@@ -315,23 +544,54 @@ export function SpriteSheetPanel({
       background_color: backgroundColor ?? undefined,
       frames: frames.length > 0 ? frames : undefined,
       playback_fps: playbackFps,
+      is_tagged_sprite: isTaggedSprite || undefined,
+      property_tags: isTaggedSprite && propertyTags.length > 0 ? propertyTags : undefined,
+      frame_tags: isTaggedSprite && frameTags.length > 0 ? frameTags : undefined,
     };
     setSaving(true);
     onSave(next);
     setSaving(false);
     message.success('已保存');
     onClose();
-  }, [item, frameCount, chromaEnabled, backgroundColor, frames, playbackFps, onSave, onClose, message]);
+  }, [item, frameCount, chromaEnabled, backgroundColor, frames, playbackFps, isTaggedSprite, propertyTags, frameTags, onSave, onClose, message]);
 
   const effectiveFrames = frames.length > 0 ? frames : null;
-  const frameCountForDraw = effectiveFrames ? effectiveFrames.length : Math.max(1, frameCount);
+
+  /** 标签精灵模式下，根据选中的 tag 过滤帧索引 */
+  const filteredFrameIndices = useCallback(() => {
+    if (!isTaggedSprite || !effectiveFrames || propertyTags.length === 0) return null;
+    const selected = selectedTagsByProperty;
+    const hasAnySelection = Object.values(selected).some((v) => v?.trim());
+    if (!hasAnySelection) return null;
+    return effectiveFrames
+      .map((_, i) => i)
+      .filter((i) => {
+        const ft = frameTags[i] ?? {};
+        for (const [prop, val] of Object.entries(selected)) {
+          if (!val?.trim()) continue;
+          const frameVals = ft[prop] ?? [];
+          if (!frameVals.some((v) => v?.trim() === val.trim())) return false;
+        }
+        return true;
+      });
+  }, [isTaggedSprite, effectiveFrames, propertyTags, selectedTagsByProperty, frameTags]);
+
+  const indices = filteredFrameIndices();
+  const effectiveFramesForPlayback =
+    indices != null && indices.length > 0
+      ? indices.map((i) => effectiveFrames![i]!)
+      : effectiveFrames;
+  const effectiveFrameIndicesForPlayback =
+    indices != null && indices.length > 0 ? indices : (effectiveFrames ? effectiveFrames.map((_, i) => i) : null);
+  const frameCountForDraw = effectiveFramesForPlayback ? effectiveFramesForPlayback.length : Math.max(1, frameCount);
 
   const drawPreviewFrame = useCallback(
     (ctx: CanvasRenderingContext2D, img: HTMLImageElement, frameIdx: number, size: number = PREVIEW_SIZE) => {
-      const rect = effectiveFrames?.[frameIdx];
+      const actualIdx = effectiveFrameIndicesForPlayback?.[frameIdx] ?? frameIdx;
+      const rect = effectiveFrames?.[actualIdx];
       const fw = rect ? rect.width : img.naturalWidth / Math.max(1, frameCount);
       const fh = rect ? rect.height : img.naturalHeight;
-      const sx = rect ? rect.x : frameIdx * fw;
+      const sx = rect ? rect.x : actualIdx * fw;
       const sy = rect ? rect.y : 0;
       const scale = Math.min(size / fw, size / fh, 1);
       const dw = fw * scale;
@@ -358,7 +618,7 @@ export function SpriteSheetPanel({
         ctx.drawImage(img, sx, sy, fw, fh, (size - dw) / 2, (size - dh) / 2, dw, dh);
       }
     },
-    [frameCount, chromaEnabled, backgroundColor, effectiveFrames]
+    [frameCount, chromaEnabled, backgroundColor, effectiveFrames, effectiveFrameIndicesForPlayback]
   );
 
   useEffect(() => {
@@ -384,7 +644,7 @@ export function SpriteSheetPanel({
     if (!open || !imageElement || !previewCanvasRef.current) return;
     const ctx = previewCanvasRef.current.getContext('2d');
     if (!ctx) return;
-    const count = frameCountForDraw;
+    const count = Math.max(1, frameCountForDraw);
     let last = performance.now();
     const interval = 1000 / playbackFps;
     const tick = () => {
@@ -462,6 +722,13 @@ export function SpriteSheetPanel({
                 )}
               </Text>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 8, flexWrap: 'wrap' }}>
+                <Space align="center">
+                  <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>标签精灵</Text>
+                  <Switch
+                    checked={isTaggedSprite}
+                    onChange={(v) => setIsTaggedSprite(v)}
+                  />
+                </Space>
                 <Space align="center" style={{ flex: 1, minWidth: 160 }}>
                   <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>播放速度</Text>
                   <Slider
@@ -490,6 +757,18 @@ export function SpriteSheetPanel({
                   >
                     识别帧
                   </Button>
+                  <Button
+                    type="primary"
+                    icon={<BuildOutlined />}
+                    onClick={() => {
+                      setFrameInspectOpen(true);
+                      setSelectedFrameIndex(null);
+                      setFrameEditZoom(1);
+                    }}
+                    disabled={!imageElement}
+                  >
+                    帧编辑
+                  </Button>
                 </Space>
               </div>
               <div
@@ -512,41 +791,165 @@ export function SpriteSheetPanel({
                   <Text type="secondary">请先导入精灵图</Text>
                 )}
               </div>
-              <Button
-                type="link"
-                icon={<ExpandOutlined />}
-                onClick={() => setFrameInspectOpen(true)}
-                disabled={!imageElement}
-                style={{ marginTop: 8, padding: 0 }}
-              >
-                查看帧范围
-              </Button>
+              {isTaggedSprite && (
+                <>
+                  <div style={{ marginTop: 8 }}>
+                    <Space wrap align="center">
+                      <Text strong>属性 tag</Text>
+                      {propertyTags.map((name, idx) => (
+                        <Tag
+                          key={name}
+                          color={TAG_PRESET_COLORS[idx % TAG_PRESET_COLORS.length]}
+                          closable
+                          onClose={() => handleRemovePropertyTag(name)}
+                        >
+                          {name}
+                        </Tag>
+                      ))}
+                      <Space.Compact size="small">
+                        <Input
+                          placeholder="添加属性"
+                          value={propertyTagInput}
+                          onChange={(e) => setPropertyTagInput(e.target.value)}
+                          onPressEnter={handleAddPropertyTag}
+                          style={{ width: 100 }}
+                        />
+                        <Button type="primary" icon={<PlusOutlined />} onClick={handleAddPropertyTag} />
+                      </Space.Compact>
+                    </Space>
+                  </div>
+                  {propertyTags.length > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      {/* <Text type="secondary" style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>
+                        按属性选择播放帧
+                      </Text> */}
+                      {propertyTags.map((prop) => {
+                        const values = new Set<string>();
+                        for (const ft of frameTags) {
+                          for (const v of ft[prop] ?? []) {
+                            if (v?.trim()) values.add(v.trim());
+                          }
+                        }
+                        const options = [...values];
+                        if (options.length === 0) return null;
+                        return (
+                          <div key={prop} style={{ marginBottom: 8 }}>
+                            <Text type="secondary" style={{ display: 'block', marginBottom: 4, fontSize: 12 }}>
+                              {prop}
+                            </Text>
+                            <Radio.Group
+                              value={selectedTagsByProperty[prop] ?? ''}
+                              optionType="button"
+                              buttonStyle="solid"
+                              onChange={(e) =>
+                                setSelectedTagsByProperty((p) => ({ ...p, [prop]: e.target.value }))
+                              }
+                              options={[{ label: '不限', value: '' }, ...options.map((t) => ({ label: t, value: t }))]}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
 
             <Modal
-              title="帧范围检测（蓝：原始 / 红：归一化）"
+              title={
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+                  <span>帧编辑</span>
+                  <Space align="center">
+                    <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>标签精灵</Text>
+                    <Switch checked={isTaggedSprite} onChange={(v) => setIsTaggedSprite(v)} />
+                  </Space>
+                  <Space align="center" style={{ minWidth: 200 }}>
+                    <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>缩放</Text>
+                    <Slider
+                      min={0.25}
+                      max={2}
+                      step={0.25}
+                      value={frameEditZoom}
+                      onChange={(v) => setFrameEditZoom(typeof v === 'number' ? v : v[0] ?? 1)}
+                      tooltip={{ formatter: (v) => `${Math.round((v ?? 1) * 100)}%` }}
+                      style={{ flex: 1, minWidth: 100 }}
+                    />
+                  </Space>
+                  {frames.length > 0 && selectedFrameIndex != null && (
+                    <Button
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={handleFrameDelete}
+                      disabled={frames.length <= 1}
+                    >
+                      删除选中帧
+                    </Button>
+                  )}
+                </div>
+              }
               open={frameInspectOpen}
               onCancel={() => setFrameInspectOpen(false)}
-              footer={null}
+              footer={
+                (isTaggedSprite || frames.length > 0) ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', flexWrap: 'wrap', gap: 8 }}>
+                    <div>
+                      {isTaggedSprite && (
+                        <Space wrap align="center">
+                          <Text type="secondary" style={{ fontSize: 12 }}>属性 tag</Text>
+                          {propertyTags.map((name, idx) => (
+                            <Tag
+                              key={name}
+                              color={TAG_PRESET_COLORS[idx % TAG_PRESET_COLORS.length]}
+                              closable
+                              onClose={() => handleRemovePropertyTag(name)}
+                            >
+                              {name}
+                            </Tag>
+                          ))}
+                          <Space.Compact>
+                            <Input
+                              placeholder="添加属性"
+                              value={propertyTagInput}
+                              onChange={(e) => setPropertyTagInput(e.target.value)}
+                              onPressEnter={handleAddPropertyTag}
+                              style={{ width: 100 }}
+                            />
+                            <Button type="primary" icon={<PlusOutlined />} onClick={handleAddPropertyTag} />
+                          </Space.Compact>
+                        </Space>
+                      )}
+                    </div>
+                    {frames.length > 0 && (
+                      <Text type="secondary" style={{ fontSize: 12 }}>绿框可选中、拖拽、调整大小、删除（Delete 键）；蓝虚线为原始识别；调整大小后将统一应用到所有帧</Text>
+                    )}
+                  </div>
+                ) : null
+              }
               width="100%"
               style={{ top: 0, paddingBottom: 0, maxWidth: '100%' }}
-              styles={{ body: { overflow: 'auto', maxHeight: 'calc(100vh - 110px)' } }}
+              styles={{ body: { overflow: 'auto', maxHeight: 'calc(100vh - 140px)', ...CHECKERBOARD_BACKGROUND } }}
             >
               {imageDataUrl && imageElement && (
                 <div
+                  ref={frameEditContainerRef}
+                  role="presentation"
                   style={{
                     position: 'relative',
                     display: 'inline-block',
                     lineHeight: 0,
+                    width: imageElement.naturalWidth * frameEditZoom,
+                    height: imageElement.naturalHeight * frameEditZoom,
                   }}
+                  onClick={() => setSelectedFrameIndex(null)}
                 >
                   <img
                     src={imageDataUrl}
                     alt="精灵图"
                     style={{
                       display: 'block',
-                      width: imageElement.naturalWidth,
-                      height: imageElement.naturalHeight,
+                      width: imageElement.naturalWidth * frameEditZoom,
+                      height: imageElement.naturalHeight * frameEditZoom,
                       maxWidth: 'none',
                     }}
                   />
@@ -555,31 +958,218 @@ export function SpriteSheetPanel({
                       key={`raw-${i}`}
                       style={{
                         position: 'absolute',
-                        left: r.x,
-                        top: r.y,
-                        width: r.width,
-                        height: r.height,
-                        border: '2px solid #1890ff',
+                        left: r.x * frameEditZoom,
+                        top: r.y * frameEditZoom,
+                        width: r.width * frameEditZoom,
+                        height: r.height * frameEditZoom,
+                        border: '2px dotted #1890ff',
                         boxSizing: 'border-box',
                         pointerEvents: 'none',
                       }}
                     />
                   ))}
-                  {frames.map((r, i) => (
-                    <div
-                      key={`norm-${i}`}
-                      style={{
-                        position: 'absolute',
-                        left: r.x,
-                        top: r.y,
-                        width: r.width,
-                        height: r.height,
-                        border: '2px solid #ff4d4f',
-                        boxSizing: 'border-box',
-                        pointerEvents: 'none',
-                      }}
-                    />
-                  ))}
+                  {frames.map((r, i) => {
+                    const w = r.width * frameEditZoom;
+                    const h = r.height * frameEditZoom;
+                    const hs = RESIZE_HANDLE_SIZE;
+                    const isSelected = selectedFrameIndex === i;
+                    const handles: { key: string; handle: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'; style: React.CSSProperties }[] = [
+                      { key: 'n', handle: 'n', style: { left: w / 2 - hs / 2, top: -hs / 2, width: hs, height: hs } },
+                      { key: 's', handle: 's', style: { left: w / 2 - hs / 2, top: h - hs / 2, width: hs, height: hs } },
+                      { key: 'e', handle: 'e', style: { left: w - hs / 2, top: h / 2 - hs / 2, width: hs, height: hs } },
+                      { key: 'w', handle: 'w', style: { left: -hs / 2, top: h / 2 - hs / 2, width: hs, height: hs } },
+                      { key: 'ne', handle: 'ne', style: { left: w - hs / 2, top: -hs / 2, width: hs, height: hs } },
+                      { key: 'nw', handle: 'nw', style: { left: -hs / 2, top: -hs / 2, width: hs, height: hs } },
+                      { key: 'se', handle: 'se', style: { left: w - hs / 2, top: h - hs / 2, width: hs, height: hs } },
+                      { key: 'sw', handle: 'sw', style: { left: -hs / 2, top: h - hs / 2, width: hs, height: hs } },
+                    ];
+                    const cursorMap: Record<string, string> = {
+                      n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+                      ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize',
+                    };
+                    const ft = frameTags[i] ?? {};
+                    const allTagsForFrame = propertyTags.flatMap((p) => (ft[p] ?? []).filter(Boolean));
+                    const frameContent = (
+                      <div
+                        key={`norm-${i}`}
+                        role="button"
+                        style={{
+                          position: 'absolute',
+                          left: r.x * frameEditZoom,
+                          top: r.y * frameEditZoom,
+                          width: w,
+                          height: h,
+                          border: `2px solid ${isSelected ? '#52c41a' : '#389e0d'}`,
+                          boxSizing: 'border-box',
+                          cursor: 'move',
+                          backgroundColor: isSelected ? 'rgba(82,196,26,0.15)' : 'transparent',
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!didDragRef.current) {
+                            setSelectedFrameIndex(i);
+                            if (isTaggedSprite && propertyTags.length > 0) setFrameTagPopoverOpen(i);
+                          }
+                          didDragRef.current = false;
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          didDragRef.current = false;
+                          if (!imageElement) return;
+                          const rect = frames[i];
+                          if (!rect) return;
+                          dragStateRef.current = {
+                            frameIndex: i,
+                            startX: e.clientX,
+                            startY: e.clientY,
+                            rectX: rect.x,
+                            rectY: rect.y,
+                          };
+                        }}
+                      >
+                        {isTaggedSprite && allTagsForFrame.length > 0 && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: 2,
+                              top: 2,
+                              right: 2,
+                              maxHeight: h - 4,
+                              overflow: 'hidden',
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              gap: 2,
+                              alignContent: 'flex-start',
+                              pointerEvents: 'none',
+                            }}
+                          >
+                            {allTagsForFrame.map((t) => (
+                              <Tag key={t} style={{ margin: 0, fontSize: 10, lineHeight: '16px' }}>
+                                {t}
+                              </Tag>
+                            ))}
+                          </div>
+                        )}
+                        {isSelected &&
+                          handles.map(({ key, handle, style }) => (
+                            <div
+                              key={key}
+                              role="presentation"
+                              style={{
+                                position: 'absolute',
+                                ...style,
+                                cursor: cursorMap[handle],
+                                backgroundColor: '#52c41a',
+                                border: '1px solid #fff',
+                                borderRadius: 2,
+                              }}
+                              onMouseDown={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                didDragRef.current = false;
+                                const rect = frames[i];
+                                if (!rect) return;
+                                resizeResultRef.current = { width: rect.width, height: rect.height };
+                                resizeStateRef.current = {
+                                  handle,
+                                  frameIndex: i,
+                                  rectX: rect.x,
+                                  rectY: rect.y,
+                                  rectW: rect.width,
+                                  rectH: rect.height,
+                                };
+                              }}
+                            />
+                          ))}
+                      </div>
+                    );
+                    return isTaggedSprite && propertyTags.length > 0 ? (
+                      <Popover
+                        key={`norm-popover-${i}`}
+                        open={frameTagPopoverOpen === i}
+                        onOpenChange={(open) => {
+                          if (!open) {
+                            setFrameTagPopoverOpen(null);
+                            setFrameTagAddInputByProp({});
+                          }
+                        }}
+                        getPopupContainer={(trigger) => trigger.parentElement ?? document.body}
+                        // getPopupContainer={(trigger) => trigger?.closest('.ant-modal') ?? document.body}
+                        styles={{ content: {backgroundColor: '#333', borderRadius: 8 }, arrow: { color: '#333' } }}
+                        trigger="click"
+                        // autoFocus={false}
+                        content={
+                          <div style={{ width: 260, maxHeight: 320, padding: 20, overflow: 'auto' }}>
+                            <Space orientation="vertical" style={{ width: '100%' }} size="small">
+                              {propertyTags.map((prop, pidx) => {
+                                const vals = ft[prop] ?? [];
+                                const addVal = frameTagAddInputByProp[prop] ?? '';
+                                return (
+                                  <div key={prop}>
+                                    <Text type="secondary" style={{ fontSize: 12 }}>{prop}</Text>
+                                    <div style={{ marginTop: 4 }}>
+                                      <Space wrap size={4} style={{ marginBottom: 4 }}>
+                                        {vals.map((v) => (
+                                          <Tag
+                                            key={v}
+                                            color={TAG_PRESET_COLORS[pidx % TAG_PRESET_COLORS.length]}
+                                            closable
+                                            onClose={() =>
+                                              handleUpdateFrameTags(
+                                                i,
+                                                prop,
+                                                vals.filter((x) => x !== v)
+                                              )
+                                            }
+                                          >
+                                            {v}
+                                          </Tag>
+                                        ))}
+                                      </Space>
+                                      <Space.Compact style={{ width: '100%' }}>
+                                        <Input
+                                          placeholder="输入后添加"
+                                          value={addVal}
+                                          onChange={(e) =>
+                                            setFrameTagAddInputByProp((p) => ({ ...p, [prop]: e.target.value }))
+                                          }
+                                          onPressEnter={() => {
+                                            const v = addVal.trim();
+                                            if (v && !vals.includes(v)) {
+                                              handleUpdateFrameTags(i, prop, [...vals, v]);
+                                              setFrameTagAddInputByProp((p) => ({ ...p, [prop]: '' }));
+                                            }
+                                          }}
+                                          size="small"
+                                        />
+                                        <Button
+                                          size="small"
+                                          type="primary"
+                                          onClick={() => {
+                                            const v = addVal.trim();
+                                            if (v && !vals.includes(v)) {
+                                              handleUpdateFrameTags(i, prop, [...vals, v]);
+                                              setFrameTagAddInputByProp((p) => ({ ...p, [prop]: '' }));
+                                            }
+                                          }}
+                                        >
+                                          添加
+                                        </Button>
+                                      </Space.Compact>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </Space>
+                          </div>
+                        }
+                      >
+                        {frameContent}
+                      </Popover>
+                    ) : (
+                      frameContent
+                    );
+                  })}
                 </div>
               )}
             </Modal>

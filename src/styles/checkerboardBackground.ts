@@ -1,5 +1,5 @@
 /**
- * 深色棋盘格背景：用于精灵图、元件组等设计/预览区域，展示透明通道
+ * 深色棋盘格背景：用于精灵图、元件等设计/预览区域，展示透明通道
  */
 export const CHECKERBOARD_BACKGROUND = {
   backgroundColor: '#1a1a1a',

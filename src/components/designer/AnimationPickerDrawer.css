@@ -1,0 +1,63 @@
+/* 动画选择 Drawer，语义化 class（见 docs/08-素材动画功能技术方案.md） */
+
+.animation-picker-drawer__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.animation-picker-drawer__item {
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.animation-picker-drawer__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.animation-picker-drawer__item--selected {
+  border-color: rgba(23, 119, 255, 0.6);
+  background: rgba(23, 119, 255, 0.1);
+}
+
+.animation-picker-drawer__item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.animation-picker-drawer__item-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.animation-picker-drawer__preview-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.animation-picker-drawer__preview {
+  width: 48px;
+  height: 48px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.animation-picker-drawer__preview-inner {
+  width: 24px;
+  height: 24px;
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 2px;
+}

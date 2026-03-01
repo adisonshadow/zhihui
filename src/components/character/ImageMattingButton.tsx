@@ -1,6 +1,6 @@
 /**
  * 可复用的单图抠图按钮：调用 matteImageAndSave 并将结果回调给父组件
- * 用于元件组设计器、精灵图编辑等场景
+ * 用于元件设计器、精灵图编辑等场景
  */
 import { useState } from 'react';
 import { Button, App } from 'antd';

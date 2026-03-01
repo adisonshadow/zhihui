@@ -1,0 +1,27 @@
+/* 动画设置面板，语义化 class（见 docs/08-素材动画功能技术方案.md） */
+
+.animation-settings-panel {
+  padding: 4px 0;
+}
+
+.animation-settings-panel__tabs {
+  min-height: 120px;
+}
+
+.animation-tab-content {
+  padding: 8px 0;
+}
+
+.animation-tab-content--empty {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+.animation-tab-content__add-btn {
+  min-width: 120px;
+}
+
+.animation-tab-content--configured .animation-tab-content__actions {
+  margin-bottom: 8px;
+}
