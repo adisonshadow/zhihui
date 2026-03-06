@@ -5,6 +5,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import ffmpeg from 'fluent-ffmpeg';
 import sharp from 'sharp';
 
@@ -83,8 +84,8 @@ export async function getVideoMetadata(
 }
 
 /** 从视频提取一帧为 PNG，默认取 0.5 秒处；返回临时文件路径
- * preserveAlpha：WebM VP9 透明视频需显式指定 libvpx-vp9 解码器与 rgba 输出，否则 alpha 丢失或提取失败。
- * 若 libvpx-vp9 不可用（如系统 ffmpeg 未编译该解码器），会回退到默认解码器以保证导出不中断。 */
+ * 使用 spawn 直接调用 ffmpeg（与 scripts/test-extract-frame.mjs 一致），避免 fluent-ffmpeg 兼容性问题。
+ * preserveAlpha：透明视频（WebM VP9 with alpha）需指定 rgba 输出格式以保留透明通道。 */
 export async function extractVideoFrame(
   videoPath: string,
   outputPath: string,
@@ -98,47 +99,40 @@ export async function extractVideoFrame(
     return { ok: false, error: '非视频格式' };
   }
 
+  let ffmpegPath: string | null = null;
   try {
-    // 若安装 ffmpeg-static 则使用内置二进制
-    try {
-      const mod = await import('ffmpeg-static');
-      const p = (mod as { default?: string }).default ?? (mod as { path?: string }).path;
-      if (p && typeof p === 'string') ffmpeg.setFfmpegPath(p);
-    } catch {
-      /* 使用系统 ffmpeg */
-    }
-
-    const runExtract = (useVp9: boolean) =>
-      new Promise<void>((resolve, reject) => {
-        const cmd = ffmpeg(videoPath).seekInput(timeSeconds);
-        if (useVp9) {
-          cmd.inputOptions(['-c:v', 'libvpx-vp9']);
-          cmd.outputOptions(['-vframes', '1', '-f', 'image2', '-pix_fmt', 'rgba']);
-        } else {
-          cmd.outputOptions(['-vframes', '1', '-f', 'image2']);
-        }
-        cmd
-          .output(outputPath)
-          .on('end', () => resolve())
-          .on('error', (err: Error) => reject(err))
-          .run();
-      });
-
-    if (preserveAlpha) {
-      try {
-        await runExtract(true);
-      } catch {
-        await runExtract(false);
-      }
-    } else {
-      await runExtract(false);
-    }
-
-    if (fs.existsSync(outputPath)) {
-      return { ok: true, path: outputPath };
-    }
-    return { ok: false, error: '提取失败' };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    const mod = await import('ffmpeg-static');
+    const p = (mod as { default?: string }).default ?? (mod as { path?: string }).path;
+    if (p && typeof p === 'string' && fs.existsSync(p)) ffmpegPath = p;
+  } catch {
+    /* 使用系统 ffmpeg */
   }
+
+  const runSpawn = (args: string[]): Promise<{ ok: boolean; stderr: string }> =>
+    new Promise((resolve) => {
+      let stderr = '';
+      const proc = spawn(ffmpegPath || 'ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+      proc.on('close', (code: number) => resolve({ ok: code === 0, stderr }));
+      proc.on('error', (err: Error) => resolve({ ok: false, stderr: err.message }));
+    });
+
+  const tryExtract = async (args: string[]): Promise<boolean> => {
+    const r = await runSpawn(args);
+    if (r.ok && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) return true;
+    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { /* ignore */ }
+    return false;
+  };
+
+  // 方法1：输入 seeking（与测试脚本一致），-y 覆盖已存在文件
+  const args1 = ['-y', '-ss', String(timeSeconds), '-i', videoPath, '-vframes', '1', '-f', 'image2'];
+  if (preserveAlpha) args1.push('-pix_fmt', 'rgba');
+  args1.push(outputPath);
+  if (await tryExtract(args1)) return { ok: true, path: outputPath };
+
+  // 方法2：输出 seeking
+  const args2 = ['-y', '-i', videoPath, '-ss', String(timeSeconds), '-vframes', '1', '-f', 'image2', outputPath];
+  if (await tryExtract(args2)) return { ok: true, path: outputPath };
+
+  return { ok: false, error: '提取失败' };
 }

@@ -787,18 +787,28 @@ export function updateTimelineBlock(
   }
 }
 
-/** 删除素材条（见功能文档 6.7、开发计划 2.11）；先删该块下关键帧再删块；若为主轨道则 compact */
+/** 删除素材条（见功能文档 6.7、开发计划 2.11）；先删该块下关键帧再删块；若为主轨道则 compact；
+ * 若非主层且删除后该层无任何素材，则同时删除该分层 */
 export function deleteTimelineBlock(projectDir: string, id: string): { ok: boolean; error?: string } {
   try {
+    ensureLayersIsMainColumn(projectDir);
     ensureTimelineBlocksTransformColumns(projectDir);
     ensureKeyframesTable(projectDir);
     const db = getDb(projectDir);
     const block = db.prepare('SELECT layer_id FROM timeline_blocks WHERE id = ?').get(id) as { layer_id: string } | undefined;
-    const sceneRow = block ? (db.prepare('SELECT scene_id FROM layers WHERE id = ? AND is_main = 1').get(block.layer_id) as { scene_id: string } | undefined) : undefined;
-    const sceneId = sceneRow?.scene_id;
+    if (!block) return { ok: true };
+    const layerRow = db.prepare('SELECT scene_id, is_main FROM layers WHERE id = ?').get(block.layer_id) as { scene_id: string; is_main: number } | undefined;
+    const isMain = layerRow?.is_main === 1;
+    const sceneId = layerRow?.scene_id;
     db.prepare('DELETE FROM keyframes WHERE block_id = ?').run(id);
     db.prepare('DELETE FROM timeline_blocks WHERE id = ?').run(id);
-    if (sceneId) compactMainTrack(projectDir, sceneId);
+    if (isMain && sceneId) compactMainTrack(projectDir, sceneId);
+    if (!isMain) {
+      const remaining = db.prepare('SELECT 1 FROM timeline_blocks WHERE layer_id = ? LIMIT 1').get(block.layer_id);
+      if (!remaining) {
+        db.prepare('DELETE FROM layers WHERE id = ?').run(block.layer_id);
+      }
+    }
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

@@ -166,28 +166,44 @@ export function CanvasContainer({
 
   const [fitToViewport, setFitToViewport] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenZoom, setFullscreenZoom] = useState(0.5);
   const [sliderValue, setSliderValue] = useState(0);
   const lastSliderUpdateRef = useRef(0);
+  const zoomBeforeFullscreenRef = useRef(0.5);
+  const fitToViewportBeforeFullscreenRef = useRef(false);
+  const prevFullscreenRef = useRef(false);
+  const fullscreenRef = useRef(false);
+  fullscreenRef.current = fullscreen;
 
   const handleFullscreenToggle = useCallback(() => {
     setFullscreen((prev) => {
       const next = !prev;
       if (next) {
+        zoomBeforeFullscreenRef.current = zoom;
+        fitToViewportBeforeFullscreenRef.current = fitToViewport;
         if (!playing) onPlayPause?.();
-        setFitToViewport(true);
       }
       return next;
     });
-  }, [playing, onPlayPause]);
+  }, [playing, onPlayPause, zoom, fitToViewport]);
+
+  useEffect(() => {
+    if (prevFullscreenRef.current && !fullscreen) {
+      setZoom(zoomBeforeFullscreenRef.current);
+      setFitToViewport(fitToViewportBeforeFullscreenRef.current);
+    }
+    prevFullscreenRef.current = fullscreen;
+  }, [fullscreen]);
 
   useEffect(() => {
     if (!fullscreen) return;
+    setFullscreenZoom(computeFitZoom(window.innerWidth, window.innerHeight));
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setFullscreen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [fullscreen]);
+  }, [fullscreen, computeFitZoom]);
 
   const handleFitToggle = useCallback(() => {
     setFitToViewport((prev) => {
@@ -211,7 +227,9 @@ export function CanvasContainer({
       if (!entry) return;
       const { width, height } = entry.contentRect;
       if (width > 0 && height > 0) {
-        if (fitToViewport) {
+        if (fullscreen) {
+          setFullscreenZoom(computeFitZoom(width, height));
+        } else if (fitToViewport) {
           setZoom(computeFitZoom(width, height));
         } else if (!initialFitDoneRef.current) {
           setZoom(computeFitZoom(width, height));
@@ -221,13 +239,13 @@ export function CanvasContainer({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [computeFitZoom, fitToViewport, sceneId]);
+  }, [computeFitZoom, fitToViewport, fullscreen, sceneId]);
 
   useEffect(() => {
     const el = workspaceViewportRef.current;
     if (!el) return;
     const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2 && pinchRef.current) {
+      if (e.touches.length === 2 && pinchRef.current && !fullscreenRef.current) {
         e.preventDefault();
         const d = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
         const scale = d / pinchRef.current.distance;
@@ -444,13 +462,16 @@ export function CanvasContainer({
 
   const visibleLayerIds = new Set(layers.filter((l) => l.visible).map((l) => l.id));
   const audioLayerIds = new Set(layers.filter((l) => l.layer_type === 'audio').map((l) => l.id));
+  const TIME_EPS_PRELOAD = 1e-5;
 
-  /** 预加载媒体：场景加载时为所有视频/音频块创建隐藏元素提前加载，保障播放流畅 */
+  /** 预加载媒体：场景加载时为所有视频/音频块创建隐藏元素提前加载，保障播放流畅。
+   * 视频块：仅预加载当前时间范围外的，避免与画布内可见的 video 元素重复解码同一视频导致卡顿或不可见（透明视频尤其明显） */
   useEffect(() => {
     const toPreload = blocks.filter(
       (b) => b.asset_id && blockDataUrls[b.id] && (
         (audioLayerIds.has(b.layer_id) && visibleLayerIds.has(b.layer_id))
-        || (visibleLayerIds.has(b.layer_id) && !audioLayerIds.has(b.layer_id) && /\.(mp4|webm|mov|avi|mkv)$/i.test(blockAssetPaths[b.id] ?? ''))
+        || (visibleLayerIds.has(b.layer_id) && !audioLayerIds.has(b.layer_id) && /\.(mp4|webm|mov|avi|mkv)$/i.test(blockAssetPaths[b.id] ?? '')
+          && !(currentTime >= b.start_time - TIME_EPS_PRELOAD && currentTime <= b.end_time + TIME_EPS_PRELOAD))
       )
     );
     if (toPreload.length === 0) return;
@@ -469,7 +490,7 @@ export function CanvasContainer({
     return () => {
       if (container.parentNode) container.parentNode.removeChild(container);
     };
-  }, [blocks, blockDataUrls, blockAssetPaths, audioLayerIds, visibleLayerIds]);
+  }, [blocks, blockDataUrls, blockAssetPaths, audioLayerIds, visibleLayerIds, currentTime]);
 
   /** 加载所有块的关键帧（用于画布按当前时间插值渲染） */
   useEffect(() => {
@@ -910,6 +931,8 @@ export function CanvasContainer({
     );
   }
 
+  const effectiveZoom = fullscreen ? fullscreenZoom : zoom;
+
   const playerContent = (
     <>
       {/* 工作区：视口 + 画布（缩放内，导出有效区域）+ 选中态叠加层（缩放外，固定像素把手） */}
@@ -926,7 +949,7 @@ export function CanvasContainer({
           position: 'relative',
         }}
         onTouchStart={(e) => {
-          if (e.touches.length === 2) {
+          if (e.touches.length === 2 && !fullscreen) {
             const d = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
             pinchRef.current = { distance: d, zoom };
           }
@@ -938,11 +961,11 @@ export function CanvasContainer({
           if (e.touches.length < 2) pinchRef.current = null;
         }}
       >
-        <div style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
+        <div style={{ transform: `scale(${effectiveZoom})`, transformOrigin: 'center center' }}>
           <Canvas
             designWidth={designWidth}
             designHeight={designHeight}
-            zoom={zoom}
+            zoom={effectiveZoom}
             blocks={blockItems}
             selectedBlockId={selectedBlockId}
             onSelectBlock={setSelectedBlockId}
@@ -953,7 +976,7 @@ export function CanvasContainer({
             getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
           />
         </div>
-        {!fullscreen && (
+        {!fullscreen && !playing && (
           <CanvasSelectionOverlay
             viewportRef={workspaceViewportRef}
             zoom={zoom}
@@ -1008,14 +1031,18 @@ export function CanvasContainer({
         >
           {playing ? '停止' : '播放'}
         </Button>
-        <Space>
-          <Button size="small" type="text" icon={<ZoomOutOutlined />} onClick={() => { setFitToViewport(false); setZoom((z) => Math.max(0.1, z - 0.05)); }} />
-          <Text style={{ minWidth: 48 }}>{Math.round(zoom * 100)}%</Text>
-          <Button size="small" type="text" icon={<ZoomInOutlined />} onClick={() => { setFitToViewport(false); setZoom((z) => Math.min(2, z + 0.05)); }} />
-        </Space>
-        <Tooltip title="适应视口">
-          <Button color="default" variant={fitToViewport ? 'filled' : 'text'} size="small" icon={<CompressOutlined />} onClick={handleFitToggle} />
-        </Tooltip>
+        {!fullscreen && (
+          <>
+            <Space>
+              <Button size="small" type="text" icon={<ZoomOutOutlined />} onClick={() => { setFitToViewport(false); setZoom((z) => Math.max(0.1, z - 0.05)); }} />
+              <Text style={{ minWidth: 48 }}>{Math.round(zoom * 100)}%</Text>
+              <Button size="small" type="text" icon={<ZoomInOutlined />} onClick={() => { setFitToViewport(false); setZoom((z) => Math.min(2, z + 0.05)); }} />
+            </Space>
+            <Tooltip title="适应视口">
+              <Button color="default" variant={fitToViewport ? 'filled' : 'text'} size="small" icon={<CompressOutlined />} onClick={handleFitToggle} />
+            </Tooltip>
+          </>
+        )}
         <Tooltip title={fullscreen ? '退出全屏' : '全屏播放'}>
           <Button type="text" size="small" icon={fullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={handleFullscreenToggle} />
         </Tooltip>

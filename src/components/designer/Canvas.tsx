@@ -81,8 +81,9 @@ interface CanvasProps {
   getAssetDataUrl?: (projectDir: string, path: string) => Promise<string | null>;
 }
 
-/** 视频块：播放模式用 play() 流畅播放；拖拽时仅 seek 显示帧；透明视频需容器透明（见功能文档 6.5） */
-function VideoBlock({
+/** 视频块：播放模式用 play() 流畅播放；拖拽时仅 seek 显示帧；透明视频需容器透明（见功能文档 6.5）
+ * 播放时用 memo 跳过仅 currentTime 变化的重渲染，避免 60fps 更新导致卡顿 */
+const VideoBlock = React.memo(function VideoBlock({
   dataUrl,
   currentTime = 0,
   startTime,
@@ -103,23 +104,29 @@ function VideoBlock({
   const duration = Math.max(0, endTime - startTime);
   const localTime = Math.max(0, Math.min(currentTime - startTime, duration));
   const lastPlayModeRef = useRef(false);
+  const localTimeRef = useRef(localTime);
+  localTimeRef.current = localTime;
 
   /** 拖拽模式：仅 seek 到当前帧，不播放 */
   const syncSeek = useCallback(() => {
     const video = videoRef.current;
     if (!video || !dataUrl) return;
-    if (Math.abs(video.currentTime - localTime) > 0.05) {
-      video.currentTime = localTime;
+    const lt = localTimeRef.current;
+    if (Math.abs(video.currentTime - lt) > 0.05) {
+      video.currentTime = lt;
     }
-  }, [localTime, dataUrl]);
+  }, [dataUrl]);
 
-  /** 播放模式：seek 到起始位置后 play()，由视频自然播放至结束 */
+  const syncSeekRef = useRef(syncSeek);
+  syncSeekRef.current = syncSeek;
+
+  /** 播放模式：seek 到起始位置后 play()，由视频自然播放至结束；用 ref 存 localTime 避免 currentTime 每帧更新时 effect 重复跑 */
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !dataUrl) return;
     if (playing) {
       if (!lastPlayModeRef.current) {
-        video.currentTime = localTime;
+        video.currentTime = localTimeRef.current;
         video.muted = false;
         video.play().catch(() => {});
       }
@@ -128,13 +135,15 @@ function VideoBlock({
       lastPlayModeRef.current = false;
       video.pause();
       video.muted = true;
-      syncSeek();
+      syncSeekRef.current();
     }
-  }, [playing, localTime, dataUrl, syncSeek]);
+  }, [playing, dataUrl]);
 
+  /** 非播放时随 currentTime 同步 seek；playing 时立即 return 避免每帧跑 */
   useEffect(() => {
-    if (!playing) syncSeek();
-  }, [playing, syncSeek]);
+    if (playing) return;
+    syncSeekRef.current();
+  }, [playing, currentTime]);
 
   return (
     <div style={{ width: '100%', height: '100%', background: isTransparentVideo ? 'transparent' : undefined }}>
@@ -150,7 +159,14 @@ function VideoBlock({
       />
     </div>
   );
-}
+}, (prev, next) => {
+  if (prev.playing && next.playing && prev.dataUrl === next.dataUrl
+    && prev.startTime === next.startTime && prev.endTime === next.endTime
+    && prev.lockAspect === next.lockAspect && prev.isTransparentVideo === next.isTransparentVideo) {
+    return true;
+  }
+  return false;
+});
 
 /** 精灵图单帧渲染：按帧 rect 从 sprite sheet 裁剪显示 */
 function SpriteFrame({ dataUrl, frame, width, height }: { dataUrl: string; frame: SpriteFrameRect; width: number; height: number }) {

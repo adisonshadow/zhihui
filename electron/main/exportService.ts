@@ -21,6 +21,11 @@ const DESIGN_HEIGHT_PORTRAIT = 1920;
 const IMAGE_ASSET_TYPES = new Set(['image', 'character', 'scene_bg', 'prop', 'sticker']);
 /** 视频类素材类型（支持导出，需用 ffmpeg 提取帧） */
 const VIDEO_ASSET_TYPES = new Set(['video', 'transparent_video']);
+const VIDEO_EXT = ['.mp4', '.webm', '.mov', '.avi', '.mkv'];
+
+function isVideoByPath(p: string): boolean {
+  return VIDEO_EXT.includes(path.extname(p || '').toLowerCase());
+}
 
 export interface ExportOptions {
   /** 输出宽度 */
@@ -107,12 +112,12 @@ async function renderFrame(
       if (!block.asset_id) continue;
 
       const asset = getAssetById(projectDir, block.asset_id);
-      if (!asset) continue;
+      if (!asset || !asset.path) continue;
       const isImageAsset = IMAGE_ASSET_TYPES.has(asset.type);
-      const isVideoAsset = VIDEO_ASSET_TYPES.has(asset.type);
+      const isVideoAsset = VIDEO_ASSET_TYPES.has(asset.type) || isVideoByPath(asset.path);
       if (!isImageAsset && !isVideoAsset) continue;
 
-      const assetPath = path.join(projectDir, asset.path);
+      const assetPath = path.normalize(path.join(projectDir, asset.path));
       if (!fs.existsSync(assetPath)) continue;
 
       const blockBase = {
@@ -132,11 +137,17 @@ async function renderFrame(
       const transform = getInterpolatedTransform(blockBase, keyframes, time);
       const effects = getInterpolatedEffects(blockBase, keyframes, time);
 
-      const width = Math.round(transform.scale_x * designWidth * scaleX);
-      const height = Math.round(transform.scale_y * designHeight * scaleY);
+      let width = Math.round(transform.scale_x * designWidth * scaleX);
+      let height = Math.round(transform.scale_y * designHeight * scaleY);
       const cx = transform.pos_x * designWidth * scaleX;
       const cy = transform.pos_y * designHeight * scaleY;
 
+      if (width <= 0 || height <= 0) continue;
+
+      // Sharp composite 要求叠加图必须 ≤ base 尺寸，否则行为异常；超出时按比例缩小到 fit
+      const scaleLimit = Math.min(outputWidth / Math.max(1, width), outputHeight / Math.max(1, height), 1);
+      width = Math.round(width * scaleLimit);
+      height = Math.round(height * scaleLimit);
       if (width <= 0 || height <= 0) continue;
 
       let img: sharp.Sharp;
@@ -145,8 +156,12 @@ async function renderFrame(
         const localTime = Math.max(0, time - block.start_time);
         tmpFramePath = path.join(os.tmpdir(), `yiman_export_frame_${block.id}_${Date.now()}.png`);
         const preserveAlpha = asset.type === 'transparent_video';
+        let frameRes = await extractVideoFrame(assetPath, tmpFramePath, localTime, preserveAlpha);
+        // 若指定时间提取失败（如视频过短），fallback 到 0 秒
+        if (!frameRes.ok && localTime > 0) {
+          frameRes = await extractVideoFrame(assetPath, tmpFramePath, 0, preserveAlpha);
+        }
         try {
-          const frameRes = await extractVideoFrame(assetPath, tmpFramePath, localTime, preserveAlpha);
           if (!frameRes.ok || !frameRes.path || !fs.existsSync(frameRes.path)) continue;
           img = sharp(frameRes.path).resize(width, height).rotate(transform.rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } });
         } catch {
@@ -171,8 +186,11 @@ async function renderFrame(
       const meta = await sharp(buf).metadata();
       const rw = meta.width ?? width;
       const rh = meta.height ?? height;
-      const left = Math.round(cx - rw / 2);
-      const top = Math.round(cy - rh / 2);
+      let left = Math.round(cx - rw / 2);
+      let top = Math.round(cy - rh / 2);
+      // Sharp 对负坐标或超出边界的 composite 可能异常，clamp 使叠加图至少部分在画布内
+      left = Math.max(0, Math.min(left, outputWidth - rw));
+      top = Math.max(0, Math.min(top, outputHeight - rh));
 
       composites.push({ input: buf, left, top });
     }
