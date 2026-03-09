@@ -59,6 +59,14 @@ const api = {
       ipcRenderer.invoke('app:project:updateLayer', projectDir, id, data),
     deleteLayer: (projectDir: string, layerId: string) =>
       ipcRenderer.invoke('app:project:deleteLayer', projectDir, layerId),
+    getCameraLayer: (projectDir: string, sceneId: string) =>
+      ipcRenderer.invoke('app:project:getCameraLayer', projectDir, sceneId),
+    getCameraBlock: (projectDir: string, sceneId: string) =>
+      ipcRenderer.invoke('app:project:getCameraBlock', projectDir, sceneId),
+    getSceneContentDuration: (projectDir: string, sceneId: string) =>
+      ipcRenderer.invoke('app:project:getSceneContentDuration', projectDir, sceneId),
+    ensureCameraLayerAndBlock: (projectDir: string, sceneId: string) =>
+      ipcRenderer.invoke('app:project:ensureCameraLayerAndBlock', projectDir, sceneId),
     getScene: (projectDir: string, sceneId: string) =>
       ipcRenderer.invoke('app:project:getScene', projectDir, sceneId),
     updateScene: (projectDir: string, id: string, data: unknown) =>
@@ -112,9 +120,15 @@ const api = {
     saveTransparentVideoAsset: (
       projectDir: string,
       sourcePath: string,
-      color: 'black' | 'green' | 'purple',
-      options?: { description?: string | null; is_favorite?: number }
+      color: 'auto' | 'black' | 'green' | 'purple',
+      options?: { description?: string | null; is_favorite?: number; tags?: string | null; tolerance?: number; contiguous?: boolean }
     ) => ipcRenderer.invoke('app:project:saveTransparentVideoAsset', projectDir, sourcePath, color, options),
+    reprocessTransparentVideo: (
+      projectDir: string,
+      assetId: string,
+      color: 'auto' | 'black' | 'green' | 'purple',
+      options?: { tolerance?: number; contiguous?: boolean }
+    ) => ipcRenderer.invoke('app:project:reprocessTransparentVideo', projectDir, assetId, color, options),
     saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) =>
       ipcRenderer.invoke('app:project:saveAssetFromBase64', projectDir, base64Data, ext, type, options),
     updateAsset: (projectDir: string, id: string, data: unknown) =>

@@ -10,6 +10,7 @@ import AppHeader from './components/AppHeader';
 import ProjectList from './pages/ProjectList';
 import ProjectEditor from './pages/ProjectEditor';
 import Settings from './pages/Settings';
+import AIChatPreview from './pages/AIChatPreview';
 
 const { Content } = Layout;
 
@@ -23,6 +24,7 @@ function App() {
             <Route path="/" element={<Content style={{ padding: '24px' }}><ProjectList /></Content>} />
             <Route path="/project/:id" element={<Content style={{ padding: '0px' }}><ProjectEditor /></Content>} />
             <Route path="/settings" element={<Content style={{ padding: '24px' }}><Settings /></Content>} />
+            <Route path="/aichat-preview" element={<Content style={{ padding: '24px' }}><AIChatPreview /></Content>} />
           </Routes>
         </Layout>
       </BrowserRouter>

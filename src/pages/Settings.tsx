@@ -19,6 +19,7 @@ import {
 import { PlusOutlined, EditOutlined, DeleteOutlined, ScissorOutlined } from '@ant-design/icons';
 import type { AISettings, AIModelConfig, AIMattingConfig, AIMattingProvider } from '@/types/settings';
 import { CAPABILITY_TAGS } from '@/types/settings';
+import { getAISettings, saveAISettings } from '@/utils/settingsStorage';
 
 const { Text } = Typography;
 
@@ -45,10 +46,9 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
   const [mattingForm] = Form.useForm<Partial<AIMattingConfig>>();
 
   const loadConfig = async () => {
-    if (!window.yiman?.settings?.get) return;
     setLoading(true);
     try {
-      const data = await window.yiman.settings.get();
+      const data = await getAISettings();
       setConfig(data);
     } catch (e) {
       message.error('加载配置失败');
@@ -183,9 +183,8 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
   };
 
   const saveConfig = async (data: AISettings) => {
-    if (!window.yiman?.settings?.save) return;
     try {
-      const res = await window.yiman.settings.save(data);
+      const res = await saveAISettings(data);
       if (res.ok) {
         message.success('已保存');
         onSaved?.(data);
@@ -247,7 +246,7 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
                         ) : null}
                       </Space>
                     }
-                    description={m.apiUrl || '未配置 API'}
+                    description={null}
                   />
                 </List.Item>
               )}

@@ -7,6 +7,8 @@ import { Button, Space, Typography, Modal, Form, Select, Checkbox, Input, App, T
 import { PlayCircleOutlined, PauseCircleOutlined, ZoomInOutlined, ZoomOutOutlined, CompressOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
 import { Canvas } from './Canvas';
 import { CanvasSelectionOverlay } from './CanvasSelectionOverlay';
+import { CameraFrameOverlay } from './CameraFrameOverlay';
+import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
 import type { ProjectInfo } from '@/hooks/useProject';
 import { ASSET_LIBRARY_CATEGORIES } from '@/constants/assetCategories';
 import { useKeyframeCRUD, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
@@ -48,6 +50,8 @@ interface BlockRow {
   blur?: number;
   opacity?: number;
   playback_fps?: number;
+  /** 左边 resize 累积偏移（秒），默认 0 */
+  clip_start?: number;
 }
 
 interface SpriteFrameRect {
@@ -152,6 +156,14 @@ export function CanvasContainer({
 
   const designWidth = landscape ? DESIGN_WIDTH_LANDSCAPE : DESIGN_WIDTH_PORTRAIT;
   const designHeight = landscape ? DESIGN_HEIGHT_LANDSCAPE : DESIGN_HEIGHT_PORTRAIT;
+
+  const [sceneCameraEnabled, setSceneCameraEnabled] = useState(false);
+  useEffect(() => {
+    if (!sceneId || !window.yiman?.project?.getScene) return;
+    window.yiman.project.getScene(projectDir, sceneId).then((row: { camera_enabled?: number } | null) => {
+      setSceneCameraEnabled(!!row?.camera_enabled);
+    });
+  }, [projectDir, sceneId, refreshKey]);
 
   const computeFitZoom = useCallback(
     (containerW: number, containerH: number) => {
@@ -462,17 +474,12 @@ export function CanvasContainer({
 
   const visibleLayerIds = new Set(layers.filter((l) => l.visible).map((l) => l.id));
   const audioLayerIds = new Set(layers.filter((l) => l.layer_type === 'audio').map((l) => l.id));
-  const TIME_EPS_PRELOAD = 1e-5;
 
-  /** 预加载媒体：场景加载时为所有视频/音频块创建隐藏元素提前加载，保障播放流畅。
-   * 视频块：仅预加载当前时间范围外的，避免与画布内可见的 video 元素重复解码同一视频导致卡顿或不可见（透明视频尤其明显） */
+  /** 预加载音频：为音频块创建隐藏 audio 元素提前缓冲，保障播放无延迟。
+   * 视频块不在此处预加载——Canvas 内 VideoBlock 始终挂载（preload="auto"），<video> 元素本身即负责全程预热。 */
   useEffect(() => {
     const toPreload = blocks.filter(
-      (b) => b.asset_id && blockDataUrls[b.id] && (
-        (audioLayerIds.has(b.layer_id) && visibleLayerIds.has(b.layer_id))
-        || (visibleLayerIds.has(b.layer_id) && !audioLayerIds.has(b.layer_id) && /\.(mp4|webm|mov|avi|mkv)$/i.test(blockAssetPaths[b.id] ?? '')
-          && !(currentTime >= b.start_time - TIME_EPS_PRELOAD && currentTime <= b.end_time + TIME_EPS_PRELOAD))
-      )
+      (b) => b.asset_id && blockDataUrls[b.id] && audioLayerIds.has(b.layer_id) && visibleLayerIds.has(b.layer_id)
     );
     if (toPreload.length === 0) return;
     const container = document.createElement('div');
@@ -480,8 +487,7 @@ export function CanvasContainer({
     toPreload.forEach((b) => {
       const url = blockDataUrls[b.id];
       if (!url) return;
-      const isAudio = audioLayerIds.has(b.layer_id);
-      const el = document.createElement(isAudio ? 'audio' : 'video');
+      const el = document.createElement('audio');
       el.preload = 'auto';
       el.src = url;
       container.appendChild(el);
@@ -490,7 +496,7 @@ export function CanvasContainer({
     return () => {
       if (container.parentNode) container.parentNode.removeChild(container);
     };
-  }, [blocks, blockDataUrls, blockAssetPaths, audioLayerIds, visibleLayerIds, currentTime]);
+  }, [blocks, blockDataUrls, audioLayerIds, visibleLayerIds]);
 
   /** 加载所有块的关键帧（用于画布按当前时间插值渲染） */
   useEffect(() => {
@@ -509,10 +515,45 @@ export function CanvasContainer({
   }, [blocks, getKeyframes, refreshKey]);
 
   const TIME_EPS = 1e-5;
-  /** 仅显示当前时间在块区间内的素材；音效/音乐不在画布显示、无选中框（见功能文档 6.7）；合并 pendingBlockUpdates 实现拖拽时乐观更新；精灵图按帧播放；TIME_EPS 避免浮点边界不可见 */
+  /** 视频块始终包含（即使不在时间范围内），visible:false 时 Canvas 用 visibility:hidden 隐藏但保持 <video> 挂载以预热解码器，消除透明视频冷启动卡顿（见功能文档 6.7）
+   * 非视频块仅在时间范围内渲染；音效/音乐不在画布显示；合并 pendingBlockUpdates 实现乐观更新；精灵图按帧播放 */
   const blockItems: import('./Canvas').BlockItem[] = blocks
-    .filter((b) => !audioLayerIds.has(b.layer_id) && visibleLayerIds.has(b.layer_id) && currentTime >= b.start_time - TIME_EPS && currentTime <= b.end_time + TIME_EPS)
+    .filter((b) => {
+      if (audioLayerIds.has(b.layer_id) || !visibleLayerIds.has(b.layer_id)) return false;
+      const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(blockAssetPaths[b.id] ?? '');
+      return isVideo || (currentTime >= b.start_time - TIME_EPS && currentTime <= b.end_time + TIME_EPS);
+    })
     .map((b) => {
+      const assetPath = blockAssetPaths[b.id] ?? '';
+      const assetType = blockAssetTypes[b.id] ?? '';
+      const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(assetPath);
+      const inRange = currentTime >= b.start_time - TIME_EPS && currentTime <= b.end_time + TIME_EPS;
+
+      // 视频块不在时间范围：返回最小数据，visible:false 让 Canvas 用 visibility:hidden 保持元素存活
+      if (isVideo && !inRange) {
+        return {
+          id: b.id,
+          layer_id: b.layer_id,
+          asset_id: b.asset_id,
+          start_time: b.start_time,
+          end_time: b.end_time,
+          pos_x: b.pos_x,
+          pos_y: b.pos_y,
+          scale_x: b.scale_x,
+          scale_y: b.scale_y,
+          rotation: b.rotation,
+          dataUrl: blockDataUrls[b.id] ?? null,
+          isVideo: true,
+          isTransparentVideo: assetType === 'transparent_video',
+          lock_aspect: (b as BlockRow).lock_aspect ?? 1,
+          opacity: 0,
+          blur: 0,
+          zIndex: -1,
+          visible: false,
+          currentTime,
+        } as import('./Canvas').BlockItem;
+      }
+
       const pending = pendingBlockUpdates[b.id];
       const kfs = keyframesByBlock[b.id] ?? [];
       const base = {
@@ -528,10 +569,7 @@ export function CanvasContainer({
       };
       const transform = getInterpolatedTransform(base, kfs, currentTime);
       const effects = getInterpolatedEffects(base, kfs, currentTime);
-      const assetPath = blockAssetPaths[b.id] ?? '';
-      const assetType = blockAssetTypes[b.id] ?? '';
       const spriteDef = assetPath ? spriteDefByPath[assetPath] : null;
-      const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(assetPath);
       const isTransparentVideo = assetType === 'transparent_video';
       const isSprite = !!spriteDef && !isVideo;
       return {
@@ -557,11 +595,12 @@ export function CanvasContainer({
                 playback_fps: (b as BlockRow).playback_fps ?? spriteDef.playback_fps,
                 start_time: b.start_time,
                 end_time: b.end_time,
+                clip_start: (b as BlockRow).clip_start ?? 0,
               },
               currentTime,
             }
           : {}),
-        ...(isVideo ? { currentTime, start_time: b.start_time, end_time: b.end_time } : {}),
+        ...(isVideo ? { currentTime, start_time: b.start_time, end_time: b.end_time, clip_start: (b as BlockRow).clip_start ?? 0 } : {}),
         animationConfig: (() => {
           try {
             const raw = (b as { animation_config?: string | null }).animation_config;
@@ -593,6 +632,34 @@ export function CanvasContainer({
           : {}),
       };
     });
+
+  /** 镜头变换：仅播放时生效；启用镜头且当前时间在镜头块内时，应用 pan/scale 到画布内容 */
+  const cameraTransform = React.useMemo(() => {
+    if (!playing || !sceneCameraEnabled) return null;
+    const cameraBlock = blocks.find((b) => (b as { asset_id?: string }).asset_id === CAMERA_BLOCK_ASSET_ID);
+    if (!cameraBlock || currentTime < cameraBlock.start_time - 1e-5 || currentTime > cameraBlock.end_time + 1e-5) return null;
+    const kfs = keyframesByBlock[cameraBlock.id] ?? [];
+    const base = {
+      start_time: cameraBlock.start_time,
+      end_time: cameraBlock.end_time,
+      pos_x: cameraBlock.pos_x ?? 0.5,
+      pos_y: cameraBlock.pos_y ?? 0.5,
+      scale_x: cameraBlock.scale_x ?? 1,
+      scale_y: cameraBlock.scale_y ?? 1,
+      rotation: 0,
+    };
+    const t = getInterpolatedTransform(base, kfs, currentTime);
+    const pending = pendingBlockUpdates[cameraBlock.id];
+    const pos_x = pending?.pos_x ?? t.pos_x;
+    const pos_y = pending?.pos_y ?? t.pos_y;
+    const scale_x = Math.max(0.1, pending?.scale_x ?? t.scale_x);
+    // 以镜头中心 (pos_x, pos_y) 为锚点缩放：先 scale 后 translate，使中心点落在视口中央
+    const centerX = pos_x * designWidth;
+    const centerY = pos_y * designHeight;
+    const tx = designWidth / 2 - centerX * scale_x;
+    const ty = designHeight / 2 - centerY * scale_x;
+    return { tx, ty, scale: scale_x };
+  }, [playing, sceneCameraEnabled, blocks, keyframesByBlock, currentTime, pendingBlockUpdates, designWidth, designHeight]);
 
   /** 最后一次 DB 更新的 Promise，drop 时需 await 确保写入完成再 load（见 drop 后位置不对） */
   const lastBlockUpdatePromiseRef = useRef<Promise<void> | null>(null);
@@ -729,7 +796,8 @@ export function CanvasContainer({
     onUpdate?.();
   }, [loadLayersAndBlocks, onUpdate, getKeyframes]);
 
-  /** 播放时播放声音素材（拖拽时间轴不播放）；仅在 playing 时播放当前时间范围内的声音块 */
+  /** 播放时播放声音素材（拖拽时间轴不播放）；仅在 playing 时播放当前时间范围内的声音块。
+   * 用 currentTimeRef + setInterval(50ms) 轮询检测块切换，避免依赖 currentTime 导致每帧重跑 */
   const playingAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   useEffect(() => {
     if (!playing) {
@@ -737,38 +805,45 @@ export function CanvasContainer({
       playingAudioRef.current.clear();
       return;
     }
-    const active = blocks.filter(
-      (b) => b.asset_id && audioLayerIds.has(b.layer_id) && visibleLayerIds.has(b.layer_id)
-        && currentTime >= b.start_time - TIME_EPS && currentTime <= b.end_time + TIME_EPS
-    );
-    const activeIds = new Set(active.map((b) => b.id));
-    playingAudioRef.current.forEach((el, id) => {
-      if (!activeIds.has(id)) {
-        el.pause();
-        el.src = '';
-        playingAudioRef.current.delete(id);
-      }
-    });
-    active.forEach((b) => {
-      const url = blockDataUrls[b.id];
-      if (!url) return;
-      let el = playingAudioRef.current.get(b.id);
-      const localTime = Math.max(0, currentTime - b.start_time);
-      const vol = (b as { volume?: number }).volume ?? 1;
-      if (!el) {
-        el = new Audio(url);
-        playingAudioRef.current.set(b.id, el);
-        el.onended = () => { /* 不删除，避免 effect 重跑时重建并重复播放 */ };
-        el.onerror = () => { playingAudioRef.current.delete(b.id); };
-        el.currentTime = localTime;
-        el.volume = Math.max(0, Math.min(1, vol));
-        el.play().catch(() => {});
-      } else {
-        el.volume = Math.max(0, Math.min(1, vol));
-        if (el.paused && !el.ended) el.play().catch(() => {});
-      }
-    });
-  }, [playing, currentTime, blocks, audioLayerIds, visibleLayerIds, blockDataUrls, TIME_EPS]);
+    const syncAudio = () => {
+      const t = currentTimeRef.current;
+      const active = blocks.filter(
+        (b) => b.asset_id && audioLayerIds.has(b.layer_id) && visibleLayerIds.has(b.layer_id)
+          && t >= b.start_time - TIME_EPS && t <= b.end_time + TIME_EPS
+      );
+      const activeIds = new Set(active.map((b) => b.id));
+      playingAudioRef.current.forEach((el, id) => {
+        if (!activeIds.has(id)) {
+          el.pause();
+          el.src = '';
+          playingAudioRef.current.delete(id);
+        }
+      });
+      active.forEach((b) => {
+        const url = blockDataUrls[b.id];
+        if (!url) return;
+        let el = playingAudioRef.current.get(b.id);
+        const clipStart = (b as BlockRow).clip_start ?? 0;
+        const localTime = Math.max(0, clipStart + (t - b.start_time));
+        const vol = (b as { volume?: number }).volume ?? 1;
+        if (!el) {
+          el = new Audio(url);
+          playingAudioRef.current.set(b.id, el);
+          el.onended = () => { /* 不删除，避免 effect 重跑时重建并重复播放 */ };
+          el.onerror = () => { playingAudioRef.current.delete(b.id); };
+          el.currentTime = localTime;
+          el.volume = Math.max(0, Math.min(1, vol));
+          el.play().catch(() => {});
+        } else {
+          el.volume = Math.max(0, Math.min(1, vol));
+          if (el.paused && !el.ended) el.play().catch(() => {});
+        }
+      });
+    };
+    syncAudio();
+    const timer = setInterval(syncAudio, 50);
+    return () => clearInterval(timer);
+  }, [playing, blocks, audioLayerIds, visibleLayerIds, blockDataUrls]);
 
   /** 播放时时间轴随进度向右移动（见功能文档 6.8）；壁钟 elapsed 保证匀速，避免 delta 累积导致卡顿 */
   const sceneDuration = blocks.length ? Math.max(...blocks.map((b) => b.end_time), 0) : 0;
@@ -948,6 +1023,9 @@ export function CanvasContainer({
           background: '#2e2e2e',
           position: 'relative',
         }}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setSelectedBlockId(null);
+        }}
         onTouchStart={(e) => {
           if (e.touches.length === 2 && !fullscreen) {
             const d = Math.hypot(e.touches[1].clientX - e.touches[0].clientX, e.touches[1].clientY - e.touches[0].clientY);
@@ -962,32 +1040,77 @@ export function CanvasContainer({
         }}
       >
         <div style={{ transform: `scale(${effectiveZoom})`, transformOrigin: 'center center' }}>
-          <Canvas
-            designWidth={designWidth}
-            designHeight={designHeight}
-            zoom={effectiveZoom}
-            blocks={blockItems}
-            selectedBlockId={selectedBlockId}
-            onSelectBlock={setSelectedBlockId}
-            onBlockMove={handleBlockMove}
-            onBlockMoveEnd={handleOverlayDragEnd}
-            playing={playing}
-            projectDir={projectDir}
-            getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
-          />
+          {cameraTransform ? (
+            <div
+              style={{
+                width: designWidth,
+                height: designHeight,
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: designWidth,
+                  height: designHeight,
+                  transform: `translate(${cameraTransform.tx}px, ${cameraTransform.ty}px) scale(${cameraTransform.scale})`,
+                  transformOrigin: '0 0',
+                }}
+              >
+                <Canvas
+                  designWidth={designWidth}
+                  designHeight={designHeight}
+                  zoom={effectiveZoom}
+                  blocks={blockItems}
+                  selectedBlockId={selectedBlockId}
+                  onSelectBlock={setSelectedBlockId}
+                  onBlockMove={handleBlockMove}
+                  onBlockMoveEnd={handleOverlayDragEnd}
+                  playing={playing}
+                  projectDir={projectDir}
+                  getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+                />
+              </div>
+            </div>
+          ) : (
+            <Canvas
+              designWidth={designWidth}
+              designHeight={designHeight}
+              zoom={effectiveZoom}
+              blocks={blockItems}
+              selectedBlockId={selectedBlockId}
+              onSelectBlock={setSelectedBlockId}
+              onBlockMove={handleBlockMove}
+              onBlockMoveEnd={handleOverlayDragEnd}
+              playing={playing}
+              projectDir={projectDir}
+              getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+            />
+          )}
         </div>
         {!fullscreen && !playing && (
-          <CanvasSelectionOverlay
-            viewportRef={workspaceViewportRef}
-            zoom={zoom}
-            designWidth={designWidth}
-            designHeight={designHeight}
-            selectedBlock={selectedBlockId ? (blockItems.find((b) => b.id === selectedBlockId) ?? null) : null}
-            onResize={handleBlockResize}
-            onRotate={handleBlockRotate}
-            onBlockMove={handleBlockMove}
-            onDragEnd={handleOverlayDragEnd}
-          />
+          <>
+            <CanvasSelectionOverlay
+              viewportRef={workspaceViewportRef}
+              zoom={zoom}
+              designWidth={designWidth}
+              designHeight={designHeight}
+              selectedBlock={selectedBlockId ? (blockItems.find((b) => b.id === selectedBlockId && (b as { asset_id?: string }).asset_id !== CAMERA_BLOCK_ASSET_ID && b.visible !== false) ?? null) : null}
+              onResize={handleBlockResize}
+              onRotate={handleBlockRotate}
+              onBlockMove={handleBlockMove}
+              onDragEnd={handleOverlayDragEnd}
+            />
+            <CameraFrameOverlay
+              viewportRef={workspaceViewportRef}
+              zoom={zoom}
+              designWidth={designWidth}
+              designHeight={designHeight}
+              selectedBlock={selectedBlockId ? (blockItems.find((b) => b.id === selectedBlockId) ?? null) : null}
+              onBlockMove={handleBlockMove}
+              onResize={handleBlockResize}
+              onDragEnd={handleOverlayDragEnd}
+            />
+          </>
         )}
         {fullscreen && (
           <div

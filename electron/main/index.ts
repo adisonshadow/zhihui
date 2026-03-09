@@ -25,6 +25,10 @@ import {
   createLayer,
   updateLayer,
   deleteLayer,
+  getCameraLayer,
+  getCameraBlock,
+  getSceneContentDuration,
+  ensureCameraLayerAndBlock,
   getScene,
   updateScene,
   getTimelineBlocks,
@@ -270,6 +274,10 @@ ipcMain.handle('app:project:getLayers', (_, projectDir: string, sceneId: string)
 ipcMain.handle('app:project:createLayer', (_, projectDir: string, data: unknown) => createLayer(projectDir, data as Parameters<typeof createLayer>[1]));
 ipcMain.handle('app:project:updateLayer', (_, projectDir: string, id: string, data: unknown) => updateLayer(projectDir, id, data as Parameters<typeof updateLayer>[2]));
 ipcMain.handle('app:project:deleteLayer', (_, projectDir: string, layerId: string) => deleteLayer(projectDir, layerId));
+ipcMain.handle('app:project:getCameraLayer', (_, projectDir: string, sceneId: string) => getCameraLayer(projectDir, sceneId));
+ipcMain.handle('app:project:getCameraBlock', (_, projectDir: string, sceneId: string) => getCameraBlock(projectDir, sceneId));
+ipcMain.handle('app:project:getSceneContentDuration', (_, projectDir: string, sceneId: string) => getSceneContentDuration(projectDir, sceneId));
+ipcMain.handle('app:project:ensureCameraLayerAndBlock', (_, projectDir: string, sceneId: string) => ensureCameraLayerAndBlock(projectDir, sceneId));
 ipcMain.handle('app:project:getScene', (_, projectDir: string, sceneId: string) => getScene(projectDir, sceneId));
 ipcMain.handle('app:project:updateScene', (_, projectDir: string, id: string, data: unknown) => updateScene(projectDir, id, data as Parameters<typeof updateScene>[2]));
 ipcMain.handle('app:project:getTimelineBlocks', (_, projectDir: string, layerId: string) => getTimelineBlocks(projectDir, layerId));
@@ -378,6 +386,44 @@ ipcMain.handle('app:project:deleteAsset', (_, projectDir: string, id: string) =>
 ipcMain.handle('app:project:getAssetDataUrl', (_, projectDir: string, relativePath: string) =>
   getAssetDataUrl(projectDir, relativePath)
 );
+/** 保存透明视频时更新封面 + 元数据的复用函数 */
+async function updateTransparentVideoMeta(
+  projectDir: string,
+  assetId: string,
+  webmPath: string
+): Promise<void> {
+  try {
+    const savedFullPath = path.join(projectDir, `assets/${assetId}.webm`);
+    const targetPath = fs.existsSync(savedFullPath) ? savedFullPath : webmPath;
+    const meta = await getVideoMetadata(targetPath);
+    if (meta.ok && (meta.duration != null || meta.width != null || meta.height != null)) {
+      updateAsset(projectDir, assetId, {
+        duration: meta.duration ?? null,
+        width: meta.width ?? null,
+        height: meta.height ?? null,
+      });
+    }
+  } catch {
+    /* 元数据提取失败不影响主流程 */
+  }
+  try {
+    const tmpCover = path.join(os.tmpdir(), `yiman_video_cover_${Date.now()}.png`);
+    const frameRes = await extractVideoFrame(webmPath, tmpCover, 0.5);
+    if (frameRes.ok && frameRes.path) {
+      try {
+        const assetsDir = getAssetsPath(projectDir);
+        const coverFileName = `${assetId}_cover.png`;
+        fs.copyFileSync(frameRes.path, path.join(assetsDir, coverFileName));
+        updateAsset(projectDir, assetId, { cover_path: `assets/${coverFileName}` });
+      } finally {
+        try { fs.unlinkSync(tmpCover); } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    /* 封面提取失败不影响主流程 */
+  }
+}
+
 ipcMain.handle(
   'app:project:saveTransparentVideoAsset',
   async (
@@ -385,56 +431,66 @@ ipcMain.handle(
     projectDir: string,
     sourcePath: string,
     color: ChromaKeyColor,
-    options?: { description?: string | null; is_favorite?: number; tags?: string | null }
+    options?: { description?: string | null; is_favorite?: number; tags?: string | null; tolerance?: number; contiguous?: boolean }
   ) => {
-    const proc = await processTransparentVideo(sourcePath, color);
+    const proc = await processTransparentVideo(sourcePath, color, {
+      tolerance: options?.tolerance,
+      contiguous: options?.contiguous,
+    });
     if (!proc.ok || !proc.path) return { ok: false, error: proc.error ?? '抠图处理失败' };
     const tempPath = proc.path;
     try {
       const res = saveAssetFromFile(projectDir, tempPath, 'transparent_video', options);
       if (!res.ok || !res.id || !res.path) return res;
+
+      // 保存原始视频（用于日后重新扣色）
       try {
-        const savedFullPath = path.join(projectDir, res.path);
-        const meta = await getVideoMetadata(savedFullPath);
-        if (meta.ok && (meta.duration != null || meta.width != null || meta.height != null)) {
-          updateAsset(projectDir, res.id, {
-            duration: meta.duration ?? null,
-            width: meta.width ?? null,
-            height: meta.height ?? null,
-          });
-        }
+        const assetsDir = getAssetsPath(projectDir);
+        const origExt = path.extname(sourcePath) || '.mp4';
+        const origFileName = `${res.id}_original${origExt}`;
+        const origDest = path.join(assetsDir, origFileName);
+        fs.copyFileSync(sourcePath, origDest);
+        updateAsset(projectDir, res.id, { original_path: `assets/${origFileName}` });
       } catch {
-        /* 元数据提取失败不影响主流程 */
+        /* 原始视频保存失败不影响主流程 */
       }
-      try {
-        const tmpCover = path.join(os.tmpdir(), `yiman_video_cover_${Date.now()}.png`);
-        const frameRes = await extractVideoFrame(tempPath, tmpCover, 0.5);
-        if (frameRes.ok && frameRes.path) {
-          try {
-            const assetsDir = getAssetsPath(projectDir);
-            const coverFileName = `${res.id}_cover.png`;
-            const coverFullPath = path.join(assetsDir, coverFileName);
-            fs.copyFileSync(frameRes.path, coverFullPath);
-            const coverRelative = `assets/${coverFileName}`;
-            updateAsset(projectDir, res.id, { cover_path: coverRelative });
-          } finally {
-            try {
-              fs.unlinkSync(tmpCover);
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-      } catch {
-        /* 封面提取失败不影响主流程 */
-      }
+
+      await updateTransparentVideoMeta(projectDir, res.id, tempPath);
       return res;
     } finally {
-      try {
-        fs.unlinkSync(tempPath);
-      } catch {
-        /* ignore */
-      }
+      try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+    }
+  }
+);
+
+ipcMain.handle(
+  'app:project:reprocessTransparentVideo',
+  async (
+    _,
+    projectDir: string,
+    assetId: string,
+    color: ChromaKeyColor,
+    options?: { tolerance?: number; contiguous?: boolean }
+  ) => {
+    const asset = getAssetById(projectDir, assetId);
+    if (!asset || !asset.original_path) return { ok: false, error: '未找到原始视频，无法重新扣色' };
+    const origFullPath = path.join(projectDir, asset.original_path);
+    if (!fs.existsSync(origFullPath)) return { ok: false, error: '原始视频文件不存在' };
+
+    const proc = await processTransparentVideo(origFullPath, color, {
+      tolerance: options?.tolerance,
+      contiguous: options?.contiguous,
+    });
+    if (!proc.ok || !proc.path) return { ok: false, error: proc.error ?? '重新扣色失败' };
+    const tempPath = proc.path;
+    try {
+      // 替换现有 webm 文件
+      const assetFullPath = path.join(projectDir, asset.path);
+      fs.copyFileSync(tempPath, assetFullPath);
+      await updateTransparentVideoMeta(projectDir, assetId, assetFullPath);
+      return { ok: true };
+    } finally {
+      try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
     }
   }
 );

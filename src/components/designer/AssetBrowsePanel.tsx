@@ -2,7 +2,7 @@
  * 素材浏览（列 1 素材面板）：本地/人物/特效/声效/音乐 Tabs；本地为 GrowCard（导入+模糊搜索+已导入列表）（见功能文档 6.4、开发计划 2.12）
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Typography, Button, Space, App, Modal, Form, Input, Radio } from 'antd';
+import { Typography, Button, Space, App, Modal, Form, Input, Radio, Slider, Checkbox } from 'antd';
 import { PlusOutlined, UploadOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { AdaptiveTabs } from '@/components/antd-plus/AdaptiveTabs';
 import { VideoTagInput } from '@/components/asset/VideoTagInput';
@@ -123,7 +123,7 @@ export function AssetBrowsePanel({
   const [videoUploadModalOpen, setVideoUploadModalOpen] = useState(false);
   const [videoUploadType, setVideoUploadType] = useState<'video' | 'transparent_video'>('video');
   const [videoUploading, setVideoUploading] = useState(false);
-  const [videoUploadForm] = Form.useForm<{ name: string; tags: string; chromaKeyColor?: 'auto' | 'black' | 'green' | 'purple' }>();
+  const [videoUploadForm] = Form.useForm<{ name: string; tags: string; chromaKeyColor?: 'auto' | 'black' | 'green' | 'purple'; tolerance?: number; contiguous?: boolean }>();
   const [audioUploadModalOpen, setAudioUploadModalOpen] = useState(false);
   const [audioUploadType, setAudioUploadType] = useState<'sfx' | 'music'>('sfx');
   const [audioUploading, setAudioUploading] = useState(false);
@@ -484,6 +484,8 @@ export function AssetBrowsePanel({
           description,
           is_favorite: 0,
           tags,
+          tolerance: values.tolerance ?? 80,
+          contiguous: values.contiguous ?? false,
         });
       } else {
         if (!window.yiman?.project?.saveAssetFromFile) return;
@@ -1500,21 +1502,29 @@ export function AssetBrowsePanel({
         confirmLoading={videoUploading}
         okText="选择视频并上传"
       >
-        <Form form={videoUploadForm} layout="vertical" initialValues={{ name: '', tags: '', chromaKeyColor: 'auto' }}>
+        <Form form={videoUploadForm} layout="vertical" initialValues={{ name: '', tags: '', chromaKeyColor: 'auto', tolerance: 80, contiguous: false }}>
           <Form.Item name="name" label="名称（可选，不填则用文件名）">
             <Input placeholder="素材名称" />
           </Form.Item>
           {videoUploadType === 'transparent_video' && (
-            <Form.Item name="chromaKeyColor" label="抠图背景色" rules={[{ required: true }]}>
-              <Radio.Group
-                options={[
-                  { value: 'auto', label: '自动检测（推荐）' },
-                  { value: 'black', label: '黑色' },
-                  { value: 'green', label: '绿色' },
-                  { value: 'purple', label: '紫色' },
-                ]}
-              />
-            </Form.Item>
+            <>
+              <Form.Item name="chromaKeyColor" label="抠图背景色" rules={[{ required: true }]}>
+                <Radio.Group
+                  options={[
+                    { value: 'auto', label: '自动检测（推荐）' },
+                    { value: 'black', label: '黑色' },
+                    { value: 'green', label: '绿色' },
+                    { value: 'purple', label: '紫色' },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item name="tolerance" label="容差（0–255）">
+                <Slider min={0} max={255} />
+              </Form.Item>
+              <Form.Item name="contiguous" valuePropName="checked">
+                <Checkbox>从边缘扩散去色（防止误删内部同色区域）</Checkbox>
+              </Form.Item>
+            </>
           )}
           <Form.Item name="tags" label="标签（可选）">
             <VideoTagInput />

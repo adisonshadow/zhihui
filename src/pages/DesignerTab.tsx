@@ -33,6 +33,8 @@ import { TimelinePanel } from '@/components/designer/TimelinePanel';
 import { SceneSettingsAccordion } from '@/components/designer/SceneSettingsAccordion';
 import { AssetBrowsePanel } from '@/components/designer/AssetBrowsePanel';
 import { SelectedBlockSettings, type BlockSettingsTab } from '@/components/designer/SelectedBlockSettings';
+import { CameraSettingsPanel } from '@/components/designer/CameraSettingsPanel';
+import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
 import { ExportModal } from '@/components/designer/ExportModal';
 import { GrowCard } from '@/components/GrowCard';
 
@@ -95,8 +97,17 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   const [isSpriteBlock, setIsSpriteBlock] = useState(false);
   const [isAudioBlock, setIsAudioBlock] = useState(false);
   const [isComponentBlock, setIsComponentBlock] = useState(false);
+  const [isCameraBlock, setIsCameraBlock] = useState(false);
   const [blockSettingsTab, setBlockSettingsTab] = useState<BlockSettingsTab>('base');
+  const [characters, setCharacters] = useState<{ id: string; name: string }[]>([]);
   const projectDir = project.project_dir;
+
+  useEffect(() => {
+    if (!window.yiman?.project?.getCharacters) return;
+    window.yiman.project.getCharacters(projectDir).then((list: { id: string; name: string }[]) => {
+      setCharacters(list?.filter((c) => c.id !== '__standalone_sprites__') ?? []);
+    }).catch(() => setCharacters([]));
+  }, [projectDir]);
   /** 仅在新块加载时设置默认 tab，避免 refreshKey 导致 loadBlock 重跑时覆盖用户选择 */
   const lastBlockIdForTabRef = useRef<string | null>(null);
 
@@ -105,10 +116,18 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
       setIsSpriteBlock(false);
       setIsAudioBlock(false);
       setIsComponentBlock(false);
+      setIsCameraBlock(false);
       setBlockSettingsTab('base');
       lastBlockIdForTabRef.current = null;
+      return;
     }
-  }, [selectedBlockId]);
+    let cancelled = false;
+    window.yiman?.project?.getTimelineBlockById?.(projectDir, selectedBlockId).then((b: { asset_id?: string | null } | null) => {
+      if (cancelled) return;
+      setIsCameraBlock(b?.asset_id === CAMERA_BLOCK_ASSET_ID);
+    });
+    return () => { cancelled = true; };
+  }, [selectedBlockId, projectDir]);
 
   useEffect(() => {
     try {
@@ -206,7 +225,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
         <Splitter.Panel defaultSize="60%" min={200}>
           <Splitter style={{ height: '100%' }} orientation="horizontal">
             {showNav && (
-              <Splitter.Panel defaultSize={240} min={160} max={400}>
+              <Splitter.Panel defaultSize={140} min={80} max={400}>
                 <EpisodeSceneNav
                   episodes={episodes}
                   scenesByEpisode={scenesByEpisode}
@@ -271,8 +290,10 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                 className="designer-panel-content"
                 header={
                   selectedBlockId ? (
-                    isAudioBlock ? (
-                      '声音设置'
+                    isCameraBlock ? (
+                      <span className='designer-panel-content__header-single-tab'>镜头设置</span>
+                    ) : isAudioBlock ? (
+                      <span className='designer-panel-content__header-single-tab'>声音设置</span>
                     ) : (
                       <div className="designer-panel-content__header-tabs" style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
                         <Radio.Group
@@ -290,15 +311,28 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       </div>
                     )
                   ) : (
-                    '当前场景设置'
+                    <span className='designer-panel-content__header-single-tab'>当前场景设置</span>
                   )
                 }
                 headerClassName="designer-panel-content__header"
                 bodyClassName="designer-panel-content__body"
                 bodyStyle={{ padding: 12 }}
+                headerHeight={30}
               >
                 {selectedBlockId ? (
                   <div className="designer-panel-section designer-panel-section--selected-block">
+                    {isCameraBlock ? (
+                      <CameraSettingsPanel
+                        project={project}
+                        sceneId={selectedSceneId}
+                        blockId={selectedBlockId}
+                        currentTime={currentTime}
+                        refreshKey={refreshKey}
+                        onUpdate={() => setRefreshKey((k) => k + 1)}
+                        onJumpToTime={handleSetCurrentTime}
+                        onBlockUpdate={(blockId, data) => setPendingBlockUpdates((prev) => ({ ...prev, [blockId]: { ...prev[blockId], ...data } }))}
+                      />
+                    ) : (
                     <SelectedBlockSettings
                       project={project}
                       blockId={selectedBlockId}
@@ -311,6 +345,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                         setIsSpriteBlock(info.isSprite);
                         setIsAudioBlock(info.isAudio ?? false);
                         setIsComponentBlock(info.isComponent ?? false);
+                        setIsCameraBlock(info.isCamera ?? false);
                         if (selectedBlockId && selectedBlockId !== lastBlockIdForTabRef.current) {
                           lastBlockIdForTabRef.current = selectedBlockId;
                           setBlockSettingsTab(info.isAudio ? 'audio' : info.isSprite ? 'sprite' : 'base');
@@ -320,10 +355,18 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       isSpriteBlock={isSpriteBlock}
                       isAudioBlock={isAudioBlock}
                     />
+                    )}
                   </div>
                 ) : (
                   <div className="designer-panel-section designer-panel-section--scene">
-                    <SceneSettingsAccordion project={project} sceneId={selectedSceneId} />
+                    <SceneSettingsAccordion
+                      project={project}
+                      sceneId={selectedSceneId}
+                      onCameraEnabledChange={(cameraBlockId) => {
+                        setSelectedBlockId(cameraBlockId ?? null);
+                      }}
+                      onUpdate={() => setRefreshKey((k) => k + 1)}
+                    />
                   </div>
                 )}
               </GrowCard>
@@ -349,6 +392,15 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
             onLayersChange={() => setRefreshKey((k) => k + 1)}
             refreshKey={refreshKey}
             onExportClick={() => setExportModalOpen(true)}
+            episodeId={selectedEpisodeId}
+            episode={currentEpisode}
+            sceneIndex={Math.max(0, scenes.findIndex((s) => s.id === selectedSceneId))}
+            epIndex={episodes.findIndex((e) => e.id === selectedEpisodeId)}
+            characters={characters}
+            onEpisodeScriptChange={async (epId, scriptStructured) => {
+              const res = await window.yiman?.project?.updateEpisode?.(projectDir, epId, { script_structured: scriptStructured });
+              if (res?.ok) loadEpisodes();
+            }}
           />
         </Splitter.Panel>
       </Splitter>

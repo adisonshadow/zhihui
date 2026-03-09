@@ -4,7 +4,7 @@
  * 使用 @dnd-kit 实现素材条 drag/drop，主轨道 horizontal sortable
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Typography, Checkbox, Select, Slider, Splitter, App, Space } from 'antd';
+import { Button, Typography, Checkbox, Select, Slider, Splitter, App, Space, Radio } from 'antd';
 import { LockOutlined, UnlockOutlined, ArrowUpOutlined, ArrowDownOutlined, ZoomOutOutlined, ZoomInOutlined, UndoOutlined, RedoOutlined, ExportOutlined } from '@ant-design/icons';
 import {
   DndContext,
@@ -24,6 +24,9 @@ import {
 import { restrictToParentElement } from '@dnd-kit/modifiers';
 import type { DragEndEvent, DragOverEvent, DragStartEvent } from '@dnd-kit/core';
 import type { ProjectInfo } from '@/hooks/useProject';
+import type { ScriptScene } from '@/types/script';
+import { DesignScriptPanel } from './DesignScriptPanel';
+import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
 import { TimelineBlockSortable } from './TimelineBlockSortable';
 import { TimelineBlockDraggable } from './TimelineBlockDraggable';
 import { BlockOverlay } from './BlockOverlay';
@@ -55,12 +58,24 @@ interface BlockRow {
   asset_id: string | null;
   start_time: number;
   end_time: number;
+  /** 左边 resize 累积偏移（秒），默认 0 */
+  clip_start?: number;
 }
 
 interface KeyframeRow {
   id: string;
   block_id: string;
   time: number;
+}
+
+interface ResizingState {
+  blockId: string;
+  layerId: string;
+  edge: 'left' | 'right';
+  currentStart: number;
+  currentEnd: number;
+  /** 主轨道右边缘 resize 时后续素材条的时间偏移量 */
+  cascadeOffsets?: Record<string, number>;
 }
 
 /** 根据图片实际尺寸更新 block 的 scale，使选中框与裁剪后图片一致（见功能文档 6.8） */
@@ -114,6 +129,33 @@ interface TimelinePanelProps {
   refreshKey?: number;
   /** 导出视频按钮点击 */
   onExportClick?: () => void;
+  /** 剧本模式：当前集（含 script_structured）、场景索引、人物列表、保存回调 */
+  episodeId?: string | null;
+  episode?: { script_structured?: string | null } | null;
+  sceneIndex?: number;
+  epIndex?: number;
+  characters?: { id: string; name: string }[];
+  onEpisodeScriptChange?: (episodeId: string, scriptStructured: string) => Promise<void>;
+}
+
+const STORAGE_KEY_TIMELINE_MODE = 'yiman:designer:timelineMode';
+
+function getStoredTimelineMode(): 'design' | 'script' {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY_TIMELINE_MODE);
+    if (v === 'script') return 'script';
+  } catch (_) {}
+  return 'design';
+}
+
+function parseScriptStructured(raw: string | null | undefined): { scenes: ScriptScene[] } | null {
+  if (!raw?.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw) as { scenes?: ScriptScene[] };
+    return { scenes: Array.isArray(parsed.scenes) ? parsed.scenes : [] };
+  } catch {
+    return null;
+  }
 }
 
 export function TimelinePanel({
@@ -126,9 +168,22 @@ export function TimelinePanel({
   onLayersChange,
   refreshKey,
   onExportClick,
+  episodeId,
+  episode,
+  sceneIndex = 0,
+  epIndex = 0,
+  characters = [],
+  onEpisodeScriptChange,
 }: TimelinePanelProps) {
   const { message } = App.useApp();
+  const [timelineMode, setTimelineMode] = useState<'design' | 'script'>(() => getStoredTimelineMode());
+  const scriptSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [pendingScriptScene, setPendingScriptScene] = useState<ScriptScene | null>(null);
   const [layers, setLayers] = useState<LayerRow[]>([]);
+
+  useEffect(() => {
+    setPendingScriptScene(null);
+  }, [episodeId, sceneId, episode?.script_structured]);
   const [blocksByLayer, setBlocksByLayer] = useState<Record<string, BlockRow[]>>({});
   const [keyframesByBlock, setKeyframesByBlock] = useState<Record<string, KeyframeRow[]>>({});
   const [timeZoom, setTimeZoom] = useState(50);
@@ -145,6 +200,8 @@ export function TimelinePanel({
 
   const [spriteBlockIds, setSpriteBlockIds] = useState<Set<string>>(new Set());
   const [blockAudioUrls, setBlockAudioUrls] = useState<Record<string, string>>({});
+  const [blockNativeDurations, setBlockNativeDurations] = useState<Record<string, number>>({});
+  const [resizingState, setResizingState] = useState<ResizingState | null>(null);
 
   const loadLayersAndBlocks = useCallback(async () => {
     if (!sceneId || !window.yiman?.project?.getLayers) return;
@@ -154,11 +211,26 @@ export function TimelinePanel({
       await window.yiman.project.createLayer(projectDir, { id: layerId, scene_id: sceneId, name: '主轨道', z_index: 0, is_main: 1 });
       layerList = (await window.yiman.project.getLayers(projectDir, sceneId)) as LayerRow[];
     }
-    setLayers(layerList.sort((a, b) => a.z_index - b.z_index));
+    const scene = (await window.yiman?.project?.getScene?.(projectDir, sceneId)) as { camera_enabled?: number } | null;
+    const cameraEnabled = !!scene?.camera_enabled;
+    if (cameraEnabled && window.yiman?.project?.ensureCameraLayerAndBlock) {
+      await window.yiman.project.ensureCameraLayerAndBlock(projectDir, sceneId);
+      layerList = (await window.yiman.project.getLayers(projectDir, sceneId)) as LayerRow[];
+    }
+    const filtered = cameraEnabled ? layerList : layerList.filter((l) => (l.layer_type ?? 'video') !== 'camera');
+    const sorted = filtered.sort((a, b) => {
+      const aCam = (a.layer_type ?? 'video') === 'camera';
+      const bCam = (b.layer_type ?? 'video') === 'camera';
+      if (aCam && !bCam) return -1;
+      if (!aCam && bCam) return 1;
+      return a.z_index - b.z_index;
+    });
+    setLayers(sorted);
     const blocks: Record<string, BlockRow[]> = {};
     const keyframes: Record<string, KeyframeRow[]> = {};
     const spriteIds = new Set<string>();
     const audioUrls: Record<string, string> = {};
+    const nativeDurations: Record<string, number> = {};
     if (window.yiman.project.getTimelineBlocks && window.yiman.project.getKeyframes) {
       for (const layer of layerList) {
         const list = (await window.yiman.project.getTimelineBlocks(projectDir, layer.id)) as BlockRow[];
@@ -191,8 +263,12 @@ export function TimelinePanel({
         for (const list of Object.values(blocks)) {
           for (const b of list) {
             if (b.asset_id) {
-              const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id);
+              const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id) as { path?: string; type?: string; duration?: number } | null;
               if (asset?.path && spritePaths.has(asset.path)) spriteIds.add(b.id);
+              // 收集视频/精灵图原始时长，用于循环分隔线显示
+              if (asset && typeof asset.duration === 'number' && asset.duration > 0) {
+                nativeDurations[b.id] = asset.duration;
+              }
             }
           }
         }
@@ -202,6 +278,7 @@ export function TimelinePanel({
     setKeyframesByBlock(keyframes);
     setSpriteBlockIds(spriteIds);
     setBlockAudioUrls(audioUrls);
+    setBlockNativeDurations(nativeDurations);
   }, [projectDir, sceneId]);
 
   useEffect(() => {
@@ -239,9 +316,14 @@ export function TimelinePanel({
     } else message.error(resA?.error || resB?.error || '操作失败');
   };
 
-  /** 删除素材条（见功能文档 6.7）；关键帧仅在功能面板创建 */
+  /** 删除素材条（见功能文档 6.7）；关键帧仅在功能面板创建；镜头块不可删除 */
   const handleDeleteBlock = useCallback(async () => {
     if (!selectedBlockId || !window.yiman?.project?.deleteTimelineBlock) return;
+    const block = Object.values(blocksByLayer).flat().find((b) => b.id === selectedBlockId);
+    if (block?.asset_id === CAMERA_BLOCK_ASSET_ID) {
+      message.warning('镜头块不可删除');
+      return;
+    }
     const res = await window.yiman.project.deleteTimelineBlock(projectDir, selectedBlockId);
     if (res?.ok) {
       message.success('已删除素材条');
@@ -249,7 +331,7 @@ export function TimelinePanel({
       loadLayersAndBlocks();
       onLayersChange?.();
     } else message.error(res?.error || '删除失败');
-  }, [projectDir, selectedBlockId, message, onSelectBlock, loadLayersAndBlocks, onLayersChange]);
+  }, [projectDir, selectedBlockId, blocksByLayer, message, onSelectBlock, loadLayersAndBlocks, onLayersChange]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -327,38 +409,142 @@ export function TimelinePanel({
 
   const mainLayerId = layers.find((l) => l.is_main)?.id ?? null;
 
-  /** 调整右边缘时级联后移后续素材（见功能文档 6.7） */
+  const SNAP_THRESHOLD = 0.2;
+  /** Shift+resize 时，从其他层（不含镜头层）找对齐点：时间 A 与某素材条 start/end 相差 <0.2s 则对齐；多选时取离当前层最近的，上下各一个则取下 */
+  const findShiftSnapTime = useCallback(
+    (timeA: number, currentLayerId: string): number | null => {
+      const currentLayerIdx = layers.findIndex((l) => l.id === currentLayerId);
+      if (currentLayerIdx < 0) return null;
+      const cameraLayerIds = new Set(layers.filter((l) => (l.layer_type ?? 'video') === 'camera').map((l) => l.id));
+      const candidates: { time: number; layerIdx: number }[] = [];
+      for (const layer of layers) {
+        if (layer.id === currentLayerId || cameraLayerIds.has(layer.id)) continue;
+        const layerIdx = layers.findIndex((l) => l.id === layer.id);
+        for (const b of blocksByLayer[layer.id] ?? []) {
+          if (Math.abs(b.start_time - timeA) < SNAP_THRESHOLD) candidates.push({ time: b.start_time, layerIdx });
+          if (Math.abs(b.end_time - timeA) < SNAP_THRESHOLD) candidates.push({ time: b.end_time, layerIdx });
+        }
+      }
+      if (candidates.length === 0) return null;
+      candidates.sort((a, b) => {
+        const distA = Math.abs(a.layerIdx - currentLayerIdx);
+        const distB = Math.abs(b.layerIdx - currentLayerIdx);
+        if (distA !== distB) return distA - distB;
+        return b.layerIdx - a.layerIdx;
+      });
+      return candidates[0].time;
+    },
+    [layers, blocksByLayer]
+  );
+
+  /**
+   * 素材条 resize 处理（见功能文档 6.7）
+   * - 实时预览：通过 resizingState 驱动视觉，mouseup 时才写入 DB
+   * - 非主轨道/音效/音乐：遇相邻素材条自动停止（碰撞检测）
+   * - 主轨道左边缘：被左侧素材条阻挡，不可穿透
+   * - 主轨道右边缘：双向级联后续素材条
+   * - Shift 按住时：对齐其他层（不含镜头层）素材条的 start/end，0.2s 内自动吸附
+   */
   const handleResizeBlock = useCallback(
     (blockId: string, edge: 'left' | 'right', initialStart: number, initialEnd: number, layerId: string) => {
       const trackRect = tracksScrollRef.current?.getBoundingClientRect();
       if (!trackRect) return;
       const minDur = 0.5;
       const isMainTrack = layerId === mainLayerId;
+
+      // 同层其他素材条，按 start_time 排序，用于碰撞检测
+      const layerBlocksSorted = (blocksByLayer[layerId] ?? [])
+        .filter((b) => b.id !== blockId)
+        .sort((a, b) => a.start_time - b.start_time);
+      // 左侧紧邻素材条（end_time <= initialStart）
+      const blockToLeft = [...layerBlocksSorted].reverse().find((b) => b.end_time <= initialStart + 0.001);
+      // 右侧紧邻素材条（start_time >= initialEnd）
+      const blockToRight = layerBlocksSorted.find((b) => b.start_time >= initialEnd - 0.001);
+
+      // 主轨道右边缘级联：当前 block 之后的所有素材条
+      const mainBlocksSorted = isMainTrack
+        ? (blocksByLayer[mainLayerId ?? ''] ?? []).slice().sort((a, b) => a.start_time - b.start_time)
+        : [];
+      const mainBlockIdx = mainBlocksSorted.findIndex((b) => b.id === blockId);
+      const blocksAfterForCascade = mainBlockIdx >= 0 ? mainBlocksSorted.slice(mainBlockIdx + 1) : [];
+
+      // 记录当前 block 的 clip_start 初始值（供左边 resize 时计算偏移量）
+      const initialClipStart = (blocksByLayer[layerId] ?? []).find((b) => b.id === blockId)?.clip_start ?? 0;
+
+      // 闭包变量：记录最终值，供 mouseup 时写入 DB
+      let lastNewStart = initialStart;
+      let lastNewEnd = initialEnd;
+
       const onMove = (e: MouseEvent) => {
         const x = e.clientX - trackRect.left + (tracksScrollRef.current?.scrollLeft ?? 0);
-        const t = xToTime(x);
-        if (edge === 'right') {
-          const newEnd = Math.max(initialStart + minDur, t);
-          if (isMainTrack && window.yiman?.project?.resizeTimelineBlockWithCascade) {
-            window.yiman.project.resizeTimelineBlockWithCascade(projectDir, blockId, newEnd);
-          } else if (!isMainTrack && window.yiman?.project?.updateTimelineBlock) {
-            window.yiman.project.updateTimelineBlock(projectDir, blockId, { end_time: newEnd });
-          }
-        } else if (edge === 'left' && window.yiman?.project?.updateTimelineBlock) {
-          const newStart = Math.max(0, Math.min(t, initialEnd - minDur));
-          window.yiman.project.updateTimelineBlock(projectDir, blockId, { start_time: newStart });
+        let t = xToTime(x);
+        if (e.shiftKey) {
+          const snap = findShiftSnapTime(t, layerId);
+          if (snap != null) t = snap;
         }
+        let newStart = initialStart;
+        let newEnd = initialEnd;
+        const cascadeOffsets: Record<string, number> = {};
+
+        if (edge === 'right') {
+          if (isMainTrack) {
+            // 主轨道右边缘：无硬性右限，但级联后续素材条
+            newEnd = Math.max(initialStart + minDur, t);
+            const delta = newEnd - initialEnd;
+            for (const b of blocksAfterForCascade) {
+              cascadeOffsets[b.id] = delta;
+            }
+          } else {
+            // 非主轨道/音频：右边缘不超过右侧素材条的起始位置
+            const maxEnd = blockToRight ? blockToRight.start_time : Infinity;
+            newEnd = Math.max(initialStart + minDur, Math.min(t, maxEnd));
+          }
+        } else {
+          // 左边缘：不超过左侧素材条的结束位置（主轨道同样限制）
+          const minStart = blockToLeft ? blockToLeft.end_time : 0;
+          newStart = Math.max(minStart, Math.min(t, initialEnd - minDur));
+        }
+
+        lastNewStart = newStart;
+        lastNewEnd = newEnd;
+        setResizingState({
+          blockId,
+          layerId,
+          edge,
+          currentStart: newStart,
+          currentEnd: newEnd,
+          cascadeOffsets: Object.keys(cascadeOffsets).length > 0 ? cascadeOffsets : undefined,
+        });
       };
-      const onUp = () => {
+
+      const onUp = async () => {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
-        loadLayersAndBlocks();
+        if (edge === 'right') {
+          if (isMainTrack && window.yiman?.project?.resizeTimelineBlockWithCascade) {
+            await window.yiman.project.resizeTimelineBlockWithCascade(projectDir, blockId, lastNewEnd);
+          } else if (!isMainTrack && window.yiman?.project?.updateTimelineBlock) {
+            await window.yiman.project.updateTimelineBlock(projectDir, blockId, { end_time: lastNewEnd });
+          }
+        } else if (window.yiman?.project?.updateTimelineBlock) {
+          // 左边 resize：同步更新 clip_start，实现"从视频对应位置播放"
+          const clipStartDelta = lastNewStart - initialStart;
+          const newClipStart = initialClipStart + clipStartDelta;
+          await window.yiman.project.updateTimelineBlock(projectDir, blockId, {
+            start_time: lastNewStart,
+            clip_start: newClipStart,
+          });
+        }
+        // 先等数据刷新完毕，再清除 resizingState，避免素材条先闪回原始位置
+        await loadLayersAndBlocks();
+        setResizingState(null);
         onLayersChange?.();
       };
+
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
     },
-    [projectDir, xToTime, mainLayerId, loadLayersAndBlocks, onLayersChange]
+    [projectDir, xToTime, mainLayerId, blocksByLayer, loadLayersAndBlocks, onLayersChange, findShiftSnapTime]
   );
 
   /** 检查非主轨道上 [start, end] 是否与已有块重叠（排除 blockId） */
@@ -454,9 +640,23 @@ export function TimelinePanel({
   const handleDropBlockData = useCallback(
     async (blockId: string, fromLayerId: string, toLayerId: string, dropTime: number) => {
       const block = (blocksByLayer[fromLayerId] ?? []).find((b) => b.id === blockId);
+      if (block?.asset_id === CAMERA_BLOCK_ASSET_ID) {
+        message.warning('镜头块不可移动到其他轨道');
+        return;
+      }
+      const fromLayer = layers.find((l) => l.id === fromLayerId);
+      const toLayer = layers.find((l) => l.id === toLayerId);
+      if ((toLayer?.layer_type ?? 'video') === 'camera') {
+        message.warning('镜头层仅可放置镜头块');
+        return;
+      }
       const duration = block ? block.end_time - block.start_time : 10;
 
       if (fromLayerId === toLayerId) {
+        if ((toLayer?.layer_type ?? 'video') === 'camera') {
+          message.warning('镜头块时长与场景一致，不可拖动');
+          return;
+        }
         if (toLayerId === mainLayerId && window.yiman?.project?.moveBlockToMainTrack) {
           const insertAt = getMainTrackInsertAt(dropTime, blockId);
           const res = await window.yiman.project.moveBlockToMainTrack(projectDir, sceneId!, blockId, insertAt);
@@ -520,15 +720,18 @@ export function TimelinePanel({
         onLayersChange?.();
       } else message.error(res?.error || '移动失败');
     },
-    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message]
+    [projectDir, sceneId, mainLayerId, blocksByLayer, layers, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message]
   );
 
   const getAssetDuration = useCallback(async (aid: string, fallback: number): Promise<number> => {
-    if (!window.yiman?.project?.getAssetById || !window.yiman?.project?.getAssetDataUrl) return fallback;
-    const a = (await window.yiman.project.getAssetById(projectDir, aid)) as { path?: string; type?: string } | null;
+    if (!window.yiman?.project?.getAssetById) return fallback;
+    const a = (await window.yiman.project.getAssetById(projectDir, aid)) as { path?: string; type?: string; duration?: number } | null;
     if (!a?.path) return fallback;
     const isVideo = /\.(mp4|webm|mov|avi|mkv)$/i.test(a.path) || ['video', 'transparent_video'].includes(a.type || '');
     if (!isVideo) return fallback;
+    // 优先使用素材记录中存储的 duration（与 getPlaceDuration 逻辑一致，见 AssetBrowsePanel.tsx）
+    if (typeof a.duration === 'number' && a.duration > 0) return Math.max(0.5, a.duration);
+    if (!window.yiman?.project?.getAssetDataUrl) return fallback;
     const url = await window.yiman.project.getAssetDataUrl(projectDir, a.path);
     if (!url) return fallback;
     return new Promise<number>((resolve) => {
@@ -1115,21 +1318,42 @@ export function TimelinePanel({
       {/* 行1：timeline-header 固定高度 */}
       <div className="timeline-header" style={{ flexShrink: 0, padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <Space>
+          <Radio.Group
+            optionType="button"
+            buttonStyle="solid"
+            size="small"
+            value={timelineMode}
+            onChange={(e) => {
+              const v = e.target.value as 'design' | 'script';
+              setTimelineMode(v);
+              try {
+                localStorage.setItem(STORAGE_KEY_TIMELINE_MODE, v);
+              } catch (_) {}
+            }}
+            options={[
+              { value: 'design', label: '设计' },
+              { value: 'script', label: '剧本' },
+            ]}
+            style={{ marginRight: 8 }}
+          />
           <Button type="text" icon={<UndoOutlined />} disabled title="撤销" />
           <Button type="text" icon={<RedoOutlined />} disabled title="重做" />
-          <Text style={{ fontSize: 12, minWidth: 88 }}>当前时间 <strong>{currentTime.toFixed(1)}</strong> / <strong>{sceneTotalTime.toFixed(1)}</strong> s</Text>
-          {selectedBlockId && (
-            <Text type="secondary" style={{ fontSize: 12 }}>Delete 删除素材条 · 关键帧在右侧功能面板创建</Text>
+          {timelineMode === 'design' && (
+            <>
+              <Text style={{ fontSize: 12, minWidth: 88 }}>当前时间 <strong>{currentTime.toFixed(1)}</strong> / <strong>{sceneTotalTime.toFixed(1)}</strong> s</Text>
+              {selectedBlockId && (
+                <Text type="secondary" style={{ fontSize: 12 }}>Delete 删除素材条 · 关键帧在右侧功能面板创建</Text>
+              )}
+            </>
           )}
         </Space>
         <Space>
-          {onExportClick && (
+          {onExportClick && timelineMode === 'design' && (
             <Button color="default" variant='filled' size="small" icon={<ExportOutlined />} onClick={onExportClick}>
               导出
             </Button>
           )}
-        
-          {/* 时间线精度放缩：参考图样式，左缩小图标 + 滑块 + 右放大图标 */}
+          {timelineMode === 'design' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <Button
               type="text"
@@ -1184,10 +1408,49 @@ export function TimelinePanel({
               title="放大"
             />
           </div>
+          )}
           {/* <Button type={compact ? 'primary' : 'default'} size="small" onClick={() => setCompact(!compact)}>紧凑</Button> */}
           
         </Space>
       </div>
+      {timelineMode === 'script' && episodeId && sceneId && episode && onEpisodeScriptChange ? (
+        (() => {
+          const parsed = parseScriptStructured(episode.script_structured);
+          const scenes = parsed?.scenes ?? [];
+          const scriptSceneFromEpisode = scenes.find((s) => s.id === sceneId) ?? scenes[sceneIndex] ?? null;
+          const displayScene = pendingScriptScene ?? scriptSceneFromEpisode;
+          return (
+            <DesignScriptPanel
+              key={`${episodeId}-${sceneId}`}
+              projectDir={projectDir}
+              episodeId={episodeId}
+              sceneId={sceneId}
+              sceneIndex={sceneIndex}
+              epIndex={epIndex}
+              scriptScene={displayScene}
+              characters={characters}
+              onUpdate={(patch) => {
+                const baseScene = displayScene ?? scriptSceneFromEpisode;
+                if (!baseScene) return;
+                const next = typeof patch === 'function' ? patch(baseScene) : { ...baseScene, ...patch };
+                setPendingScriptScene(next);
+                const parsed = parseScriptStructured(episode.script_structured);
+                const scenesArr = [...(parsed?.scenes ?? [])];
+                const idx = scriptSceneFromEpisode ? scenesArr.findIndex((s) => s.id === scriptSceneFromEpisode.id) : -1;
+                const targetIdx = idx >= 0 ? idx : Math.min(sceneIndex, scenesArr.length);
+                if (targetIdx < scenesArr.length) scenesArr[targetIdx] = next;
+                else scenesArr.push(next);
+                const payload = JSON.stringify({ scenes: scenesArr });
+                if (scriptSaveTimerRef.current) clearTimeout(scriptSaveTimerRef.current);
+                scriptSaveTimerRef.current = setTimeout(() => {
+                  scriptSaveTimerRef.current = null;
+                  onEpisodeScriptChange(episodeId, payload);
+                }, 400);
+              }}
+            />
+          );
+        })()
+      ) : (
       <DndContext
         sensors={sensors}
         collisionDetection={pointerWithin}
@@ -1241,6 +1504,7 @@ export function TimelinePanel({
                       gap: 2,
                       borderBottom: '1px solid rgba(255,255,255,0.06)',
                       borderRight: '1px solid rgba(255,255,255,0.06)',
+                      background: (layer.layer_type ?? 'video') === 'camera' ? 'rgba(255,77,79,0.08)' : undefined,
                     }}
                   >
                     <Checkbox
@@ -1253,6 +1517,8 @@ export function TimelinePanel({
                     <Button type="text" size="small" icon={<ArrowDownOutlined />} disabled={index === layers.length - 1} onClick={() => moveLayer(index, 1)} title="下移" />
                     {layer.is_main ? (
                       <Text ellipsis style={{ flex: 1, fontSize: 12, minWidth: 0 }}>主层</Text>
+                    ) : (layer.layer_type ?? 'video') === 'camera' ? (
+                      <Text ellipsis style={{ flex: 1, fontSize: 12, minWidth: 0, color: 'rgba(255,100,100,0.9)' }}>镜头层</Text>
                     ) : (
                       <Select
                         size="small"
@@ -1375,10 +1641,11 @@ export function TimelinePanel({
                         position: 'relative',
                         minWidth: axisWidth,
                         borderBottom: '1px solid rgba(255,255,255,0.06)',
-                        background: 'rgba(0,0,0,0.2)',
+                        background: (layer.layer_type ?? 'video') === 'camera' ? 'rgba(255,77,79,0.05)' : 'rgba(0,0,0,0.2)',
                         display: 'block',
                       }}
                 onClick={(e) => {
+                  onSelectBlock(null);
                   const rect = e.currentTarget.getBoundingClientRect();
                   const x = e.clientX - rect.left;
                   let t = xToTime(x);
@@ -1407,10 +1674,41 @@ export function TimelinePanel({
                     items={(blocksByLayer[layer.id] ?? []).map((b) => b.id)}
                     strategy={horizontalListSortingStrategy}
                   >
-                    {(blocksByLayer[layer.id] ?? []).map((block) => (
-                      <TimelineBlockSortable
+                    {(blocksByLayer[layer.id] ?? []).map((block) => {
+                      // resize 实时预览：用 resizingState 覆盖当前 block 或级联偏移
+                      const displayBlock = resizingState?.blockId === block.id
+                        ? { ...block, start_time: resizingState.currentStart, end_time: resizingState.currentEnd }
+                        : resizingState?.cascadeOffsets?.[block.id] != null
+                          ? { ...block, start_time: block.start_time + resizingState.cascadeOffsets![block.id], end_time: block.end_time + resizingState.cascadeOffsets![block.id] }
+                          : block;
+                      return (
+                        <TimelineBlockSortable
+                          key={block.id}
+                          block={displayBlock}
+                          keyframes={keyframesByBlock[block.id] ?? []}
+                          trackRowHeight={trackRowHeight}
+                          timeToX={timeToX}
+                          currentTime={currentTime}
+                          selectedBlockId={selectedBlockId}
+                          onSelectBlock={(id) => onSelectBlock(id)}
+                          onResizeBlock={handleResizeBlock}
+                          onKeyframeClick={(t) => setCurrentTimeClamped(t)}
+                          resizable={block.asset_id !== CAMERA_BLOCK_ASSET_ID}
+                          nativeDuration={blockNativeDurations[block.id]}
+                        />
+                      );
+                    })}
+                  </SortableContext>
+                ) : (
+                  (blocksByLayer[layer.id] ?? []).map((block) => {
+                    // resize 实时预览：用 resizingState 覆盖当前 block
+                    const displayBlock = resizingState?.blockId === block.id
+                      ? { ...block, start_time: resizingState.currentStart, end_time: resizingState.currentEnd }
+                      : block;
+                    return (
+                      <TimelineBlockDraggable
                         key={block.id}
-                        block={block}
+                        block={displayBlock}
                         keyframes={keyframesByBlock[block.id] ?? []}
                         trackRowHeight={trackRowHeight}
                         timeToX={timeToX}
@@ -1419,27 +1717,13 @@ export function TimelinePanel({
                         onSelectBlock={(id) => onSelectBlock(id)}
                         onResizeBlock={handleResizeBlock}
                         onKeyframeClick={(t) => setCurrentTimeClamped(t)}
-                        resizable={!spriteBlockIds.has(block.id)}
+                        resizable={block.asset_id !== CAMERA_BLOCK_ASSET_ID}
+                        draggable={block.asset_id !== CAMERA_BLOCK_ASSET_ID}
+                        audioUrl={(layer.layer_type ?? 'video') === 'audio' ? blockAudioUrls[block.id] : undefined}
+                        nativeDuration={blockNativeDurations[block.id]}
                       />
-                    ))}
-                  </SortableContext>
-                ) : (
-                  (blocksByLayer[layer.id] ?? []).map((block) => (
-                    <TimelineBlockDraggable
-                      key={block.id}
-                      block={block}
-                      keyframes={keyframesByBlock[block.id] ?? []}
-                      trackRowHeight={trackRowHeight}
-                      timeToX={timeToX}
-                      currentTime={currentTime}
-                      selectedBlockId={selectedBlockId}
-                      onSelectBlock={(id) => onSelectBlock(id)}
-                      onResizeBlock={handleResizeBlock}
-                      onKeyframeClick={(t) => setCurrentTimeClamped(t)}
-                      resizable={!spriteBlockIds.has(block.id)}
-                      audioUrl={(layer.layer_type ?? 'video') === 'audio' ? blockAudioUrls[block.id] : undefined}
-                    />
-                  ))
+                    );
+                  })
                 )}
                 {dragOver?.type === 'track' && dragOver.layerId === layer.id && (
                   <div
@@ -1527,6 +1811,7 @@ export function TimelinePanel({
         ) : null}
       </DragOverlay>
       </DndContext>
+      )}
     </div>
   );
 }

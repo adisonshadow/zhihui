@@ -23,8 +23,10 @@ interface TimelineBlockSortableProps {
   onSelectBlock: (id: string) => void;
   onResizeBlock: (blockId: string, edge: 'left' | 'right', start: number, end: number, layerId: string) => void;
   onKeyframeClick?: (time: number) => void;
-  /** 精灵图不可 resize */
+  /** 摄像机块不可 resize */
   resizable?: boolean;
+  /** 视频/精灵图原始时长（秒），超出时在素材条上显示循环分隔线 */
+  nativeDuration?: number;
 }
 
 export function TimelineBlockSortable({
@@ -38,6 +40,7 @@ export function TimelineBlockSortable({
   onResizeBlock,
   onKeyframeClick,
   resizable = true,
+  nativeDuration,
 }: TimelineBlockSortableProps) {
   const left = timeToX(block.start_time);
   const width = Math.max(12, timeToX(block.end_time - block.start_time));
@@ -101,16 +104,41 @@ export function TimelineBlockSortable({
           aria-hidden
         />
       ))}
+      {/* 视频/精灵图循环分隔线：block 时长超出原始素材时长时显示 */}
+      {nativeDuration && nativeDuration > 0 && (block.end_time - block.start_time) > nativeDuration + 0.1 && (
+        Array.from({ length: Math.ceil((block.end_time - block.start_time) / nativeDuration) - 1 }).map((_, i) => {
+          const loopTime = block.start_time + nativeDuration * (i + 1);
+          const pct = ((loopTime - block.start_time) / (block.end_time - block.start_time)) * 100;
+          if (pct <= 0 || pct >= 100) return null;
+          return (
+            <div
+              key={`loop_${i}`}
+              aria-hidden
+              style={{
+                position: 'absolute',
+                left: `${pct}%`,
+                top: 0,
+                bottom: 0,
+                width: 1,
+                background: 'rgba(255,255,255,0.35)',
+                pointerEvents: 'none',
+              }}
+            />
+          );
+        })
+      )}
       {resizable && (
         <>
           <div
-            style={{ position: 'absolute', left: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize' }}
+            style={{ position: 'absolute', left: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize', zIndex: 2 }}
             onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeBlock(block.id, 'left', block.start_time, block.end_time, block.layer_id); }}
           />
           <div
-            style={{ position: 'absolute', right: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize' }}
+            style={{ position: 'absolute', right: 0, top: 0, width: resizerW, height: '100%', cursor: 'ew-resize', zIndex: 2 }}
             onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onResizeBlock(block.id, 'right', block.start_time, block.end_time, block.layer_id); }}
           />
         </>

@@ -6,3 +6,6 @@ export const STANDALONE_COMPONENTS_CHARACTER_ID = '__standalone_components__';
 
 /** 元件块 asset_id 前缀，格式：component:${characterId}:${groupId} */
 export const COMPONENT_BLOCK_PREFIX = 'component:';
+
+/** 镜头块 asset_id（镜头层上唯一的虚拟素材条，无真实素材） */
+export const CAMERA_BLOCK_ASSET_ID = '__camera__';

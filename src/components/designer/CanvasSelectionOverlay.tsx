@@ -5,6 +5,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { UndoOutlined } from '@ant-design/icons';
 import type { BlockItem } from './Canvas';
+import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
 
 const HANDLE_RADIUS = 7;
 const ROTATION_HANDLE_OFFSET = 28;
@@ -254,7 +255,8 @@ export function CanvasSelectionOverlay({
     ]
   );
 
-  if (!selectedBlock || viewportSize.width <= 0 || viewportSize.height <= 0) return null;
+  const isCameraBlock = selectedBlock && (selectedBlock as { asset_id?: string }).asset_id === CAMERA_BLOCK_ASSET_ID;
+  if (!selectedBlock || viewportSize.width <= 0 || viewportSize.height <= 0 || isCameraBlock) return null;
 
   const { cornersScreen, centerScreen, rotationHandleScreen, cx, cy, w, h } = blockCornersInViewport(
     selectedBlock,

@@ -4,9 +4,12 @@
  */
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { SettingOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { SettingOutlined, VideoCameraOutlined, CommentOutlined } from '@ant-design/icons';
 import { useConfigModal } from '@/contexts/ConfigContext';
 import './AppHeader.css';
+
+/** 开发模式：显示 AI 对话预览入口 */
+const isDevMode = import.meta.env.DEV;
 
 const AppHeader: React.FC = () => {
   const navigate = useNavigate();
@@ -55,6 +58,21 @@ const AppHeader: React.FC = () => {
             </span>
             <span className="yiman-header-label">设置</span>
           </a>
+          {isDevMode && (
+            <a
+              className={`yiman-header-link ${location.pathname === '/aichat-preview' ? 'active' : ''}`}
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                navigate('/aichat-preview');
+              }}
+            >
+              <span className="yiman-header-icon">
+                <CommentOutlined />
+              </span>
+              <span className="yiman-header-label">AI 对话预览</span>
+            </a>
+          )}
         </nav>
       </div>
     </div>

@@ -4,13 +4,14 @@
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Form, Input, InputNumber, Button, Typography, Space, Switch, Slider, App, Radio } from 'antd';
+import { EyeOutlined } from '@ant-design/icons';
 import type { FormInstance } from 'antd';
 import type { ProjectInfo } from '@/hooks/useProject';
 import { KeyframeButton } from './KeyframeButton';
 import { useKeyframeCRUD, type KeyframeProperty, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
 import { getInterpolatedTransform, getInterpolatedEffects } from '@/utils/keyframeTween';
 import { ASSET_CATEGORIES } from '@/constants/assetCategories';
-import { COMPONENT_BLOCK_PREFIX } from '@/constants/project';
+import { COMPONENT_BLOCK_PREFIX, CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
 import { AnimationSettingsPanel } from './AnimationSettingsPanel';
 import { StateSettingsPanel } from './StateSettingsPanel';
@@ -18,6 +19,8 @@ import { parseStateKeyframes } from '@/utils/stateKeyframes';
 import { STANDALONE_COMPONENTS_CHARACTER_ID, STANDALONE_SPRITES_CHARACTER_ID } from '@/constants/project';
 import type { GroupComponentItem } from '@/types/groupComponent';
 import type { SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
+import { ImagePreviewDrawer } from '@/components/asset/ImagePreviewDrawer';
+import { VideoPreviewDrawer } from '@/components/asset/VideoPreviewDrawer';
 
 const { Text } = Typography;
 
@@ -59,14 +62,16 @@ interface SelectedBlockSettingsProps {
   onJumpToTime?: (t: number) => void;
   /** 乐观更新 blur/opacity/pos/scale，画布立即反映 */
   onBlockUpdate?: (blockId: string, data: Partial<{ blur: number; opacity: number; pos_x: number; pos_y: number; scale_x: number; scale_y: number }>) => void;
-  /** 选中素材时是否为精灵图/音效音乐/元件（用于 header 切换）；frameCount 用于精灵图时长计算 */
-  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number; isAudio?: boolean; isComponent?: boolean }) => void;
+  /** 选中素材时是否为精灵图/音效音乐/元件/镜头（用于 header 切换）；frameCount 用于精灵图时长计算 */
+  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number; isAudio?: boolean; isComponent?: boolean; isCamera?: boolean }) => void;
   /** 当前设置 tab（基础设置 | 精灵图设置），由父组件控制 */
   settingsTab?: BlockSettingsTab;
   /** 是否为精灵图（精灵图基础设置无播放时间、素材条不可 resize） */
   isSpriteBlock?: boolean;
   /** 是否为音效/音乐（仅显示声音设置：音量、渐入、渐出） */
   isAudioBlock?: boolean;
+  /** 点击精灵图编辑按钮的回调（打开 SpriteSheetPanel） */
+  onEditSprite?: () => void;
 }
 
 const KF_TOLERANCE = 0.02;
@@ -190,7 +195,7 @@ function ScaleControl({
   );
 }
 
-export function SelectedBlockSettings({ project, blockId, currentTime, refreshKey, onUpdate, onJumpToTime, onBlockUpdate, onBlockInfo, settingsTab = 'base', isSpriteBlock = false, isAudioBlock = false }: SelectedBlockSettingsProps) {
+export function SelectedBlockSettings({ project, blockId, currentTime, refreshKey, onUpdate, onJumpToTime, onBlockUpdate, onBlockInfo, settingsTab = 'base', isSpriteBlock = false, isAudioBlock = false, onEditSprite }: SelectedBlockSettingsProps) {
   const { message } = App.useApp();
   const projectDir = project.project_dir;
   const { createKeyframe, updateKeyframe, deleteKeyframe, getKeyframes } = useKeyframeCRUD(projectDir);
@@ -205,6 +210,8 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
   const [duration, setDuration] = useState(0);
   const [lockAspect, setLockAspect] = useState(true);
   const [spriteFrameCount, setSpriteFrameCount] = useState(8);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [videoPreviewOpen, setVideoPreviewOpen] = useState(false);
   const [componentInfo, setComponentInfo] = useState<{
     characterId: string;
     group: GroupComponentItem;
@@ -281,6 +288,15 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     setBlock(b);
     setKeyframes(kf);
     if (b) {
+      if (b.asset_id === CAMERA_BLOCK_ASSET_ID) {
+        setComponentInfo(null);
+        setAsset(null);
+        if (onBlockInfo && blockId !== lastBlockIdForInfoRef.current) {
+          lastBlockIdForInfoRef.current = blockId;
+          onBlockInfo({ isSprite: false, isAudio: false, isComponent: false, isCamera: true });
+        }
+        return;
+      }
       if (!b.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX)) {
         setComponentInfo(null);
       }
@@ -358,7 +374,8 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
         }
         const isAudio = !!(a && ['sfx', 'music'].includes(a.type ?? ''));
         const isComponent = !!b.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX);
-        onBlockInfo({ isSprite, frameCount, isAudio, isComponent });
+        const isCamera = b.asset_id === CAMERA_BLOCK_ASSET_ID;
+        onBlockInfo({ isSprite, frameCount, isAudio, isComponent, isCamera });
         if (isSprite) setSpriteFrameCount(frameCount);
       }
     } else {
@@ -367,7 +384,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
       setComponentInfo(null);
       if (onBlockInfo) {
         lastBlockIdForInfoRef.current = null;
-        onBlockInfo({ isSprite: false, isAudio: false, isComponent: false });
+        onBlockInfo({ isSprite: false, isAudio: false, isComponent: false, isCamera: false });
       }
     }
   }, [blockId, projectDir, getKeyframes, onBlockInfo]);
@@ -519,24 +536,17 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
     } else message.error(res?.error || '删除失败');
   };
 
-  /** 精灵图：根据播放速度、播放次数、帧数计算 duration 并更新 end_time；必须在早期 return 前声明（hooks 规则） */
-  const updateSpriteDuration = useCallback(
-    async (fps: number, count: number) => {
-      if (!blockId || !block || !window.yiman?.project?.updateTimelineBlock || spriteFrameCount <= 0) return;
-      const duration = (spriteFrameCount / fps) * count;
-      const newEnd = block.start_time + duration;
-      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, {
-        playback_fps: fps,
-        playback_count: count,
-        end_time: newEnd,
-      });
+  /** 精灵图：仅更新播放速度；时长由用户 resize 素材条得出，不在此计算 */
+  const updateSpriteFps = useCallback(
+    async (fps: number) => {
+      if (!blockId || !block || !window.yiman?.project?.updateTimelineBlock) return;
+      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, { playback_fps: fps });
       if (res?.ok) {
-        setBlock((prev) => (prev ? { ...prev, playback_fps: fps, playback_count: count, end_time: newEnd } : prev));
-        setDuration(duration);
+        setBlock((prev) => (prev ? { ...prev, playback_fps: fps } : prev));
         onUpdate?.();
       } else message.error(res?.error || '保存失败');
     },
-    [blockId, block, projectDir, spriteFrameCount, onUpdate]
+    [blockId, block, projectDir, onUpdate]
   );
 
   if (!blockId) {
@@ -563,14 +573,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
 
   const handlePlaybackFpsChange = async (v: number | null) => {
     if (v == null || v < 0.5) return;
-    const count = (block?.playback_count ?? 1);
-    await updateSpriteDuration(v, count);
-  };
-
-  const handlePlaybackCountChange = async (v: number | null) => {
-    if (v == null || v < 1) return;
-    const fps = block?.playback_fps ?? 8;
-    await updateSpriteDuration(fps, v);
+    await updateSpriteFps(v);
   };
 
   /** 音效/音乐：仅声音设置（音量、渐入、渐出），无基础设置（见功能文档 6.7） */
@@ -664,8 +667,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
 
   if (settingsTab === 'sprite') {
     const playbackFps = block.playback_fps ?? 8;
-    const playbackCount = block.playback_count ?? 1;
-    const computedDuration = spriteFrameCount > 0 ? (spriteFrameCount / playbackFps) * playbackCount : 0;
+    const duration = (block.end_time ?? 0) - (block.start_time ?? 0);
     return (
       <div className="selected-block-settings selected-block-settings--sprite" style={{ padding: '4px 0' }}>
         <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
@@ -684,24 +686,9 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           </div>
         </section>
         <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
-          <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">播放次数</Text>
-          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <InputNumber
-              size="small"
-              min={1}
-              max={999}
-              step={1}
-              value={playbackCount}
-              onChange={(v) => handlePlaybackCountChange(typeof v === 'number' ? v : null)}
-              style={{ width: 80 }}
-            />
-            <Text type="secondary" style={{ fontSize: 12 }}>次</Text>
-          </div>
-        </section>
-        <section className="selected-block-settings__section" style={{ marginBottom: 12 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>时长</Text>
+          <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">时长</Text>
           <div style={{ marginTop: 4, fontSize: 13 }}>
-            {computedDuration.toFixed(1)} 秒（自动计算）
+            {duration.toFixed(1)} 秒
           </div>
         </section>
       </div>
@@ -714,14 +701,52 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
       <section className="selected-block-settings__section selected-block-settings__asset-info" style={{ marginBottom: 12 }}>
         <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">素材信息</Text>
         <div className="selected-block-settings__asset-detail" style={{ marginTop: 4 }}>
-          <Text strong className="selected-block-settings__asset-name">{assetName}</Text>
-          <br />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <Text strong className="selected-block-settings__asset-name" style={{ flex: 1, minWidth: 0 }}>{assetName}</Text>
+            {/* 预览/编辑按钮，样式参照素材面板 card 右上角按钮 */}
+            {isSpriteBlock && onEditSprite && (
+              <span
+                role="button"
+                tabIndex={0}
+                title="编辑精灵图"
+                onClick={onEditSprite}
+                onKeyDown={(e) => e.key === 'Enter' && onEditSprite()}
+                style={{ width: 24, height: 24, borderRadius: 4, background: 'rgba(255,255,255,0.12)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, flexShrink: 0, color: 'rgba(255,255,255,0.75)' }}
+              >
+                ✎
+              </span>
+            )}
+            {!isSpriteBlock && asset && asset.type === 'image' && (
+              <span
+                role="button"
+                tabIndex={0}
+                title="预览/编辑"
+                onClick={() => setImagePreviewOpen(true)}
+                onKeyDown={(e) => e.key === 'Enter' && setImagePreviewOpen(true)}
+                style={{ width: 24, height: 24, borderRadius: 4, background: 'rgba(255,255,255,0.12)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, flexShrink: 0, color: 'rgba(255,255,255,0.75)' }}
+              >
+                <EyeOutlined />
+              </span>
+            )}
+            {!isSpriteBlock && asset && ['video', 'transparent_video'].includes(asset.type) && (
+              <span
+                role="button"
+                tabIndex={0}
+                title="预览/编辑"
+                onClick={() => setVideoPreviewOpen(true)}
+                onKeyDown={(e) => e.key === 'Enter' && setVideoPreviewOpen(true)}
+                style={{ width: 24, height: 24, borderRadius: 4, background: 'rgba(255,255,255,0.12)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: 13, flexShrink: 0, color: 'rgba(255,255,255,0.75)' }}
+              >
+                <EyeOutlined />
+              </span>
+            )}
+          </div>
           <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__asset-type">类型：{typeLabel}</Text>
         </div>
       </section>
 
-      {/* 播放时间（精灵图不可调，由播放速度+播放次数自动计算） */}
-      {!isSpriteBlock && (
+      {/* 播放时间：仅图片类型可手动调整，视频/精灵图/元件由系统控制 */}
+      {asset?.type === 'image' && !isSpriteBlock && (
       <section className="selected-block-settings__section selected-block-settings__duration" style={{ marginBottom: 12 }}>
         <Text type="secondary" style={{ fontSize: 12 }} className="selected-block-settings__label">播放时间</Text>
         <div className="selected-block-settings__duration-controls" style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -898,6 +923,30 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           </div>
         </Form>
       </section>
+
+      {/* 图片预览/编辑 Drawer（与素材面板统一：getAssetDataUrl、裁剪、抠图） */}
+      {asset && asset.type === 'image' && (
+        <ImagePreviewDrawer
+          open={imagePreviewOpen}
+          onClose={() => setImagePreviewOpen(false)}
+          projectDir={projectDir}
+          asset={asset}
+          onUpdate={(opts) => { loadBlock(); onUpdate?.(); }}
+          getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+          saveAssetFromBase64={(dir, base64, ext, type, opt) => window.yiman?.project?.saveAssetFromBase64?.(dir, base64, ext, type, opt) ?? Promise.resolve({ ok: false })}
+          matteImageAndSave={(dir, path, opt) => window.yiman?.project?.matteImageAndSave?.(dir, path, opt) ?? Promise.resolve({ ok: false })}
+        />
+      )}
+      {/* 视频预览/编辑 Drawer */}
+      {asset && ['video', 'transparent_video'].includes(asset.type) && (
+        <VideoPreviewDrawer
+          open={videoPreviewOpen}
+          onClose={() => setVideoPreviewOpen(false)}
+          projectDir={projectDir}
+          asset={asset}
+          onUpdate={() => { loadBlock(); onUpdate?.(); }}
+        />
+      )}
     </div>
   );
 }

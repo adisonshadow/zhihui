@@ -64,3 +64,14 @@ body {
   transform: translateY(-2px);
   background-color: rgba(255, 255, 255, 0.06);
 }
+
+
+.designer-panel-content__header-single-tab {
+  background-color: #424242;
+  display: inline-block;
+  padding: 0 8px;
+  height: 24px;
+  line-height: 24px;
+  border-radius: 4px;
+  color: #fff;
+}

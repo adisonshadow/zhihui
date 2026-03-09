@@ -57,6 +57,9 @@ export function GrowCard({
           height: headerHeight,
           minHeight: headerHeight,
           overflow: 'hidden',
+          display: 'flex',
+          justifyContent: 'space-around',
+          alignItems: 'center',
           ...headerStyle,
         }}
       >

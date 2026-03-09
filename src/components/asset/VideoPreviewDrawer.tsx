@@ -1,11 +1,11 @@
 /**
  * 视频/透明视频预览 Drawer：预览视频、修改 tags、删除素材
- * 透明视频使用深色棋盘格背景以展示透明通道
+ * 透明视频使用深色棋盘格背景以展示透明通道；支持容差+连续选项重新扣色
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CHECKERBOARD_BACKGROUND } from '@/styles/checkerboardBackground';
-import { Drawer, Input, Button, App, Space, Typography, Tag, theme } from 'antd';
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { Drawer, Input, Button, App, Space, Typography, Tag, theme, Slider, Checkbox, Radio, Divider } from 'antd';
+import { DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { InputRef } from 'antd';
 import { EditableTitle } from '@/components/antd-plus/EditableTitle';
 
@@ -17,6 +17,7 @@ interface AssetRow {
   type: string;
   description: string | null;
   tags?: string | null;
+  original_path?: string | null;
 }
 
 function parseTags(tagsStr: string | null | undefined): string[] {
@@ -46,10 +47,16 @@ export function VideoPreviewDrawer({ open, onClose, projectDir, asset, onUpdate 
   const [inputValue, setInputValue] = useState('');
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
   const [name, setName] = useState('');
+  const [reprocessColor, setReprocessColor] = useState<'auto' | 'black' | 'green' | 'purple'>('auto');
+  const [reprocessTolerance, setReprocessTolerance] = useState(80);
+  const [reprocessContiguous, setReprocessContiguous] = useState(false);
   const inputRef = useRef<InputRef>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const isTransparent = asset?.type === 'transparent_video';
+  const canReprocess = isTransparent && !!asset?.original_path;
 
   useEffect(() => {
     if (!open || !asset?.path || !window.yiman?.project?.getAssetDataUrl) {
@@ -117,6 +124,32 @@ export function VideoPreviewDrawer({ open, onClose, projectDir, asset, onUpdate 
       .finally(() => setDeleting(false));
   }, [projectDir, asset, message, onClose, onUpdate]);
 
+  const handleReprocess = useCallback(async () => {
+    if (!asset || !window.yiman?.project?.reprocessTransparentVideo) return;
+    setReprocessing(true);
+    try {
+      const res = await window.yiman.project.reprocessTransparentVideo(projectDir, asset.id, reprocessColor, {
+        tolerance: reprocessTolerance,
+        contiguous: reprocessContiguous,
+      });
+      if (res?.ok) {
+        message.success('重新扣色完成');
+        // 刷新视频预览（重置 src 让浏览器重新加载）
+        const newUrl = await window.yiman.project.getAssetDataUrl?.(projectDir, asset.path);
+        setVideoUrl(newUrl ?? null);
+        if (videoRef.current && newUrl) {
+          videoRef.current.src = newUrl;
+          videoRef.current.load();
+        }
+        onUpdate();
+      } else {
+        message.error(res?.error || '重新扣色失败');
+      }
+    } finally {
+      setReprocessing(false);
+    }
+  }, [projectDir, asset, reprocessColor, reprocessTolerance, reprocessContiguous, message, onUpdate]);
+
   return (
     <Drawer
       title={
@@ -167,6 +200,7 @@ export function VideoPreviewDrawer({ open, onClose, projectDir, asset, onUpdate 
             )}
             {videoUrl ? (
               <video
+                ref={videoRef}
                 src={videoUrl}
                 controls
                 autoPlay
@@ -187,6 +221,60 @@ export function VideoPreviewDrawer({ open, onClose, projectDir, asset, onUpdate 
               </div>
             )}
           </div>
+
+          {canReprocess && (
+            <>
+              <Divider style={{ margin: '4px 0' }} />
+              <div>
+                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 10 }}>
+                  重新扣色
+                </Text>
+                <div style={{ marginBottom: 8 }}>
+                  <Text style={{ fontSize: 12 }}>背景色</Text>
+                  <Radio.Group
+                    value={reprocessColor}
+                    onChange={(e) => setReprocessColor(e.target.value)}
+                    size="small"
+                    style={{ display: 'block', marginTop: 4 }}
+                    options={[
+                      { value: 'auto', label: '自动' },
+                      { value: 'black', label: '黑色' },
+                      { value: 'green', label: '绿色' },
+                      { value: 'purple', label: '紫色' },
+                    ]}
+                  />
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <Text style={{ fontSize: 12 }}>容差（0–255）：{reprocessTolerance}</Text>
+                  <Slider
+                    min={0}
+                    max={255}
+                    value={reprocessTolerance}
+                    onChange={setReprocessTolerance}
+                    style={{ marginTop: 2, marginBottom: 0 }}
+                  />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <Checkbox
+                    checked={reprocessContiguous}
+                    onChange={(e) => setReprocessContiguous(e.target.checked)}
+                  >
+                    <Text style={{ fontSize: 12 }}>从边缘扩散去色（防止误删内部同色区域）</Text>
+                  </Checkbox>
+                </div>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={reprocessing}
+                  onClick={handleReprocess}
+                >
+                  重新扣色
+                </Button>
+              </div>
+              <Divider style={{ margin: '12px 0 4px' }} />
+            </>
+          )}
 
           <div>
             <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>

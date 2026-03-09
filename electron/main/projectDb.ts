@@ -551,6 +551,88 @@ export function deleteLayer(projectDir: string, layerId: string): { ok: boolean;
   }
 }
 
+/** 镜头块 asset_id 常量，与 src/constants/project.ts 保持一致 */
+const CAMERA_BLOCK_ASSET_ID = '__camera__';
+
+/** 获取场景的镜头层（layer_type='camera'）；见功能文档 6.6 镜头层 */
+export function getCameraLayer(projectDir: string, sceneId: string): LayerRow | null {
+  ensureLayersLayerTypeColumn(projectDir);
+  const db = getDb(projectDir);
+  const row = db.prepare("SELECT * FROM layers WHERE scene_id = ? AND layer_type = 'camera' LIMIT 1").get(sceneId) as LayerRow | undefined;
+  return row ?? null;
+}
+
+/** 获取镜头块（asset_id='__camera__'） */
+export function getCameraBlock(projectDir: string, sceneId: string): TimelineBlockRow | null {
+  const layer = getCameraLayer(projectDir, sceneId);
+  if (!layer) return null;
+  const blocks = getTimelineBlocks(projectDir, layer.id);
+  return blocks.find((b) => b.asset_id === CAMERA_BLOCK_ASSET_ID) ?? null;
+}
+
+/** 获取场景内容时长（秒），排除镜头块；用于镜头条 end_time 同步 */
+export function getSceneContentDuration(projectDir: string, sceneId: string): number {
+  const layers = getLayers(projectDir, sceneId);
+  const cameraLayer = getCameraLayer(projectDir, sceneId);
+  let maxEnd = 0;
+  for (const layer of layers) {
+    if (layer.id === cameraLayer?.id) continue;
+    const blocks = getTimelineBlocks(projectDir, layer.id);
+    for (const block of blocks) {
+      if (block.end_time > maxEnd) maxEnd = block.end_time;
+    }
+  }
+  return maxEnd;
+}
+
+/** 启用镜头时确保镜头层与镜头块存在；镜头条与场景时长一致；返回镜头块 id */
+export function ensureCameraLayerAndBlock(projectDir: string, sceneId: string): { ok: boolean; cameraBlockId?: string; error?: string } {
+  try {
+    ensureLayersLayerTypeColumn(projectDir);
+    ensureTimelineBlocksTransformColumns(projectDir);
+    const now = new Date().toISOString();
+    const db = getDb(projectDir);
+    let layer = getCameraLayer(projectDir, sceneId);
+    if (!layer) {
+      const maxZ = db.prepare('SELECT COALESCE(MAX(z_index), -1) + 1 AS z FROM layers WHERE scene_id = ?').get(sceneId) as { z: number };
+      const layerId = `layer_camera_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      createLayer(projectDir, {
+        id: layerId,
+        scene_id: sceneId,
+        name: '镜头层',
+        z_index: maxZ.z,
+        is_main: 0,
+        layer_type: 'camera',
+      } as { id: string; scene_id: string; name?: string; z_index?: number; is_main?: number; layer_type?: string });
+      layer = getCameraLayer(projectDir, sceneId)!;
+    }
+    const contentDuration = Math.max(1, getSceneContentDuration(projectDir, sceneId));
+    let block = getCameraBlock(projectDir, sceneId);
+    if (!block) {
+      const blockId = `block_camera_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      createTimelineBlock(projectDir, {
+        id: blockId,
+        layer_id: layer.id,
+        asset_id: CAMERA_BLOCK_ASSET_ID,
+        start_time: 0,
+        end_time: contentDuration,
+        pos_x: 0.5,
+        pos_y: 0.5,
+        scale_x: 1,
+        scale_y: 1,
+        rotation: 0,
+      });
+      return { ok: true, cameraBlockId: blockId };
+    }
+    if (Math.abs(block.end_time - contentDuration) > 0.01) {
+      updateTimelineBlock(projectDir, block.id, { end_time: contentDuration });
+    }
+    return { ok: true, cameraBlockId: block.id };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // ---------- timeline_blocks（见功能文档 6.7、开发计划 2.10；位置/缩放/旋转归一化存储）----------
 export interface TimelineBlockRow {
   id: string;
@@ -580,6 +662,8 @@ export interface TimelineBlockRow {
   animation_config?: string | null;
   /** 状态关键帧 JSON，元件/标签精灵用：[{ time, selectedTagsByGroupId?, selectedTagsBySpriteItemId? }] */
   state_keyframes?: string | null;
+  /** 视频/精灵图/音频裁剪起始点（秒），左边 resize 时更新；播放公式：(clip_start + (t - start_time)) % nativeDuration */
+  clip_start?: number;
   created_at: string;
   updated_at: string;
 }
@@ -642,11 +726,20 @@ function ensureTimelineBlocksStateKeyframesColumn(projectDir: string): void {
   }
 }
 
+function ensureTimelineBlocksClipStartColumn(projectDir: string): void {
+  const db = getDb(projectDir);
+  const columns = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('clip_start')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN clip_start REAL NOT NULL DEFAULT 0').run();
+  }
+}
+
 export function getTimelineBlocks(projectDir: string, layerId: string): TimelineBlockRow[] {
   ensureTimelineBlocksTransformColumns(projectDir);
   ensureTimelineBlocksAudioColumns(projectDir);
   ensureTimelineBlocksAnimationColumn(projectDir);
   ensureTimelineBlocksStateKeyframesColumn(projectDir);
+  ensureTimelineBlocksClipStartColumn(projectDir);
   const db = getDb(projectDir);
   const rows = db.prepare('SELECT * FROM timeline_blocks WHERE layer_id = ? ORDER BY start_time ASC').all(layerId) as TimelineBlockRow[];
   return rows.map((r) => ({
@@ -1406,6 +1499,8 @@ export interface AssetRow {
   height?: number | null;
   /** 视频/透明视频/音效/音乐：播放时长（秒） */
   duration?: number | null;
+  /** 透明视频：扣色前保留的原始视频相对路径（用于重新扣色） */
+  original_path?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1434,6 +1529,9 @@ function ensureAssetsVideoMetadataColumns(db: Database.Database): void {
   }
   if (!info.some((c) => c.name === 'duration')) {
     db.prepare('ALTER TABLE assets_index ADD COLUMN duration REAL').run();
+  }
+  if (!info.some((c) => c.name === 'original_path')) {
+    db.prepare('ALTER TABLE assets_index ADD COLUMN original_path TEXT').run();
   }
 }
 
@@ -1541,6 +1639,7 @@ export function updateAsset(
     width?: number | null;
     height?: number | null;
     duration?: number | null;
+    original_path?: string | null;
   }
 ): { ok: boolean; error?: string } {
   try {
@@ -1557,8 +1656,9 @@ export function updateAsset(
     const widthVal = data.width !== undefined ? data.width : (row as AssetRow).width ?? null;
     const heightVal = data.height !== undefined ? data.height : (row as AssetRow).height ?? null;
     const durationVal = data.duration !== undefined ? data.duration : (row as AssetRow).duration ?? null;
+    const originalPathVal = data.original_path !== undefined ? data.original_path : (row as AssetRow).original_path ?? null;
     db.prepare(
-      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, path = ?, width = ?, height = ?, duration = ?, updated_at = ? WHERE id = ?`
+      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, path = ?, width = ?, height = ?, duration = ?, original_path = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.description !== undefined ? data.description : row.description,
       data.is_favorite !== undefined ? data.is_favorite : row.is_favorite,
@@ -1568,6 +1668,7 @@ export function updateAsset(
       widthVal,
       heightVal,
       durationVal,
+      originalPathVal,
       now,
       id
     );

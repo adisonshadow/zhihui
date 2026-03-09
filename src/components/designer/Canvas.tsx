@@ -7,6 +7,7 @@ import React, { useRef, useCallback, useState, useEffect } from 'react';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
 import { getBlockAnimationState } from '@/hooks/useBlockAnimation';
 import { GroupPreview } from '@/components/character/GroupPreview';
+import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
 
 export interface SpriteFrameRect {
   x: number;
@@ -30,6 +31,8 @@ export interface BlockItem {
   isVideo?: boolean;
   /** 透明视频（WebM 带 alpha），画布需支持透明通道显示 */
   isTransparentVideo?: boolean;
+  /** false = 不在时间范围内，<video> 元素仍保持 DOM 挂载以预热解码器，用 visibility:hidden 隐藏；默认（undefined）为可见 */
+  visible?: boolean;
   /** 等比缩放：1=等比，0=自由；画布 resize 时据此决定是否拉伸到区域 */
   lock_aspect?: number;
   /** 关键帧插值效果（见功能文档 6.8） */
@@ -45,7 +48,11 @@ export interface BlockItem {
     playback_fps: number;
     start_time: number;
     end_time: number;
+    /** 左边 resize 累积的起始偏移（秒），用于帧循环定位 */
+    clip_start?: number;
   };
+  /** 视频/音频的裁剪起始偏移（秒），左边 resize 时更新 */
+  clip_start?: number;
   /** 当前时间（秒），用于精灵帧计算 */
   currentTime?: number;
   /** 动画配置，见 docs/08-素材动画功能技术方案.md */
@@ -82,6 +89,7 @@ interface CanvasProps {
 }
 
 /** 视频块：播放模式用 play() 流畅播放；拖拽时仅 seek 显示帧；透明视频需容器透明（见功能文档 6.5）
+ * visible=false 时 <video> 元素仍保持挂载（preload="auto"），解码器全程预热；进入可见范围时直接 seek+play，消除透明视频冷启动卡顿
  * 播放时用 memo 跳过仅 currentTime 变化的重渲染，避免 60fps 更新导致卡顿 */
 const VideoBlock = React.memo(function VideoBlock({
   dataUrl,
@@ -91,6 +99,8 @@ const VideoBlock = React.memo(function VideoBlock({
   lockAspect,
   isTransparentVideo,
   playing = false,
+  visible = true,
+  clipStart = 0,
 }: {
   dataUrl: string;
   currentTime?: number;
@@ -99,15 +109,27 @@ const VideoBlock = React.memo(function VideoBlock({
   lockAspect?: number;
   isTransparentVideo?: boolean;
   playing?: boolean;
+  visible?: boolean;
+  /** 左边 resize 的累积偏移（秒） */
+  clipStart?: number;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const duration = Math.max(0, endTime - startTime);
-  const localTime = Math.max(0, Math.min(currentTime - startTime, duration));
+  const blockDuration = Math.max(0, endTime - startTime);
+  /** 视频原始时长（metadata 加载后设置），用于循环播放 */
+  const nativeDurRef = useRef<number>(0);
+
+  /** 循环后的本地播放时间：clip_start 偏移 + 超出原始时长时从头循环 */
+  const localTimeRaw = clipStart + Math.max(0, currentTime - startTime);
+  const effectiveDur = nativeDurRef.current > 0 ? nativeDurRef.current : blockDuration;
+  // 正数取模，支持 clipStart 为负（移左边）
+  const localTime = effectiveDur > 0 ? ((localTimeRaw % effectiveDur) + effectiveDur) % effectiveDur : 0;
+
   const lastPlayModeRef = useRef(false);
+  const lastVisibleRef = useRef(visible);
   const localTimeRef = useRef(localTime);
   localTimeRef.current = localTime;
 
-  /** 拖拽模式：仅 seek 到当前帧，不播放 */
+  /** 拖拽模式：仅 seek 到当前帧（已做循环处理），不播放 */
   const syncSeek = useCallback(() => {
     const video = videoRef.current;
     if (!video || !dataUrl) return;
@@ -120,47 +142,69 @@ const VideoBlock = React.memo(function VideoBlock({
   const syncSeekRef = useRef(syncSeek);
   syncSeekRef.current = syncSeek;
 
-  /** 播放模式：seek 到起始位置后 play()，由视频自然播放至结束；用 ref 存 localTime 避免 currentTime 每帧更新时 effect 重复跑 */
+  /** 播放/可见状态管理：
+   * - playing && visible: 首次进入播放或从隐藏变可见时，seek 到正确位置并 play()
+   * - playing && !visible: 暂停（保持 <video> 在 DOM 中持续预热）
+   * - !playing: 暂停并 seek 到当前帧 */
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !dataUrl) return;
     if (playing) {
-      if (!lastPlayModeRef.current) {
+      // 当 block 时长超出原始视频时长时，启用循环播放
+      const nativeDur = nativeDurRef.current;
+      video.loop = nativeDur > 0 && blockDuration > nativeDur;
+      const justEnteredPlayMode = !lastPlayModeRef.current;
+      const justBecameVisible = visible && !lastVisibleRef.current;
+      if (visible && (justEnteredPlayMode || justBecameVisible)) {
         video.currentTime = localTimeRef.current;
         video.muted = false;
         video.play().catch(() => {});
+      } else if (!visible) {
+        video.pause();
       }
       lastPlayModeRef.current = true;
     } else {
+      video.loop = false;
       lastPlayModeRef.current = false;
       video.pause();
       video.muted = true;
-      syncSeekRef.current();
+      if (visible) syncSeekRef.current();
     }
-  }, [playing, dataUrl]);
+    lastVisibleRef.current = visible;
+  }, [playing, dataUrl, visible, blockDuration]);
 
-  /** 非播放时随 currentTime 同步 seek；playing 时立即 return 避免每帧跑 */
+  /** 非播放且可见时随 currentTime 同步 seek；playing 或 !visible 时立即 return */
   useEffect(() => {
-    if (playing) return;
+    if (playing || !visible) return;
     syncSeekRef.current();
-  }, [playing, currentTime]);
+  }, [playing, visible, currentTime]);
 
   return (
     <div style={{ width: '100%', height: '100%', background: isTransparentVideo ? 'transparent' : undefined }}>
       <video
         ref={videoRef}
         src={dataUrl}
-        muted={!playing}
+        muted={!playing || !visible}
         playsInline
         preload="auto"
-        onLoadedMetadata={() => { if (!playing) syncSeek(); }}
-        onLoadedData={() => { if (!playing) syncSeek(); }}
+        onLoadedMetadata={() => {
+          const video = videoRef.current;
+          if (video && isFinite(video.duration) && video.duration > 0) {
+            nativeDurRef.current = video.duration;
+            // metadata 加载后立即更新 loop 状态
+            if (playing) video.loop = blockDuration > video.duration;
+          }
+          if (!playing || !visible) syncSeek();
+        }}
+        onLoadedData={() => { if (!playing || !visible) syncSeek(); }}
         style={{ width: '100%', height: '100%', objectFit: (lockAspect !== 0) ? 'contain' : 'fill', pointerEvents: 'none' }}
       />
     </div>
   );
 }, (prev, next) => {
-  if (prev.playing && next.playing && prev.dataUrl === next.dataUrl
+  if (prev.playing && next.playing
+    && prev.visible === next.visible
+    && prev.dataUrl === next.dataUrl
     && prev.startTime === next.startTime && prev.endTime === next.endTime
     && prev.lockAspect === next.lockAspect && prev.isTransparentVideo === next.isTransparentVideo) {
     return true;
@@ -253,7 +297,7 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
     >
-      {blocks.map((block) => {
+      {blocks.filter((b) => (b as { asset_id?: string }).asset_id !== CAMERA_BLOCK_ASSET_ID).map((block) => {
         const left = block.pos_x * designWidth - (block.scale_x * designWidth) / 2;
         const top = block.pos_y * designHeight - (block.scale_y * designHeight) / 2;
         const width = block.scale_x * designWidth;
@@ -291,6 +335,7 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
               ...filterStyle,
               cursor: dragging?.blockId === block.id ? 'grabbing' : 'grab',
               boxSizing: 'border-box',
+              ...(block.visible === false ? { visibility: 'hidden' as const, pointerEvents: 'none' as const } : {}),
             }}
             onPointerDown={(e) => handlePointerDown(e, block)}
           >
@@ -323,14 +368,13 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
                 dataUrl={block.dataUrl}
                 frame={
                   (() => {
-                    const { frames, frame_count, playback_fps, start_time, end_time } = block.spriteInfo!;
+                    const { frames, frame_count, playback_fps, start_time, clip_start: spriteClipStart } = block.spriteInfo!;
                     const t = block.currentTime ?? 0;
-                    const elapsed = Math.max(0, Math.min(t - start_time, end_time - start_time));
-                    const idx = Math.min(
-                      Math.floor(elapsed * playback_fps) % Math.max(1, frame_count),
-                      frames.length - 1
-                    );
-                    return frames[Math.max(0, idx)] ?? frames[0] ?? { x: 0, y: 0, width: 100, height: 100 };
+                    // clip_start 偏移后循环取帧，正数取模保证非负
+                    const rawElapsed = (spriteClipStart ?? 0) + Math.max(0, t - start_time);
+                    const totalFrames = Math.max(1, frame_count);
+                    const frameIdx = ((Math.floor(rawElapsed * playback_fps) % totalFrames) + totalFrames) % totalFrames;
+                    return frames[Math.min(frameIdx, frames.length - 1)] ?? frames[0] ?? { x: 0, y: 0, width: 100, height: 100 };
                   })()
                 }
                 width={width}
@@ -347,6 +391,8 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
                 lockAspect={block.lock_aspect}
                 isTransparentVideo={block.isTransparentVideo}
                 playing={playing}
+                visible={block.visible !== false}
+                clipStart={block.clip_start ?? 0}
               />
             ) : (
               <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>
