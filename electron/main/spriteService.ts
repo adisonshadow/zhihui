@@ -85,6 +85,74 @@ function filterOutliers(values: number[]): number[] {
 }
 
 /**
+ * 过滤并合并过窄的列范围（由帧内透明间隙引起的误识别）。
+ * 将宽度小于中位数 40% 的列范围合并到相邻列范围，反复迭代直至稳定。
+ */
+function mergeNarrowColRanges(
+  colRanges: { left: number; right: number }[]
+): { left: number; right: number }[] {
+  if (colRanges.length <= 1) return colRanges;
+  const ranges = colRanges.map((r) => ({ ...r }));
+  for (let pass = 0; pass < 20; pass++) {
+    const widths = ranges.map((r) => r.right - r.left);
+    const sorted = [...widths].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+    const minWidth = Math.max(1, Math.floor(median * 0.4));
+    let changed = false;
+    for (let i = 0; i < ranges.length; i++) {
+      if (ranges[i]!.right - ranges[i]!.left < minWidth) {
+        if (i === 0 && ranges.length > 1) {
+          ranges[1]!.left = ranges[0]!.left;
+          ranges.splice(0, 1);
+          i--;
+        } else if (i > 0) {
+          ranges[i - 1]!.right = ranges[i]!.right;
+          ranges.splice(i, 1);
+          i--;
+        }
+        changed = true;
+      }
+    }
+    if (!changed || ranges.length <= 1) break;
+  }
+  return ranges;
+}
+
+/**
+ * 过滤并合并过窄的行范围（由帧内透明间隙引起的误识别）。
+ * 将高度小于中位数 40% 的行范围合并到相邻行范围，反复迭代直至稳定。
+ */
+function mergeNarrowRowRanges(
+  rowRanges: { top: number; bottom: number }[]
+): { top: number; bottom: number }[] {
+  if (rowRanges.length <= 1) return rowRanges;
+  const ranges = rowRanges.map((r) => ({ ...r }));
+  for (let pass = 0; pass < 20; pass++) {
+    const heights = ranges.map((r) => r.bottom - r.top);
+    const sorted = [...heights].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+    const minHeight = Math.max(1, Math.floor(median * 0.4));
+    let changed = false;
+    for (let i = 0; i < ranges.length; i++) {
+      if (ranges[i]!.bottom - ranges[i]!.top < minHeight) {
+        if (i === 0 && ranges.length > 1) {
+          ranges[1]!.top = ranges[0]!.top;
+          ranges.splice(0, 1);
+          i--;
+        } else if (i > 0) {
+          ranges[i - 1]!.bottom = ranges[i]!.bottom;
+          ranges.splice(i, 1);
+          i--;
+        }
+        changed = true;
+      }
+    }
+    if (!changed || ranges.length <= 1) break;
+  }
+  return ranges;
+}
+
+/**
  * 宽高归一化：宽度取所有帧的最大值（避免裁剪）；高度排除异常值后取最大，用于过滤描述文字（如底部）。
  * x/y 计算：利用原始 xy、宽高 与 归一化宽高，按帧中心对齐得到新坐标（水平非等分网格）。
  */
@@ -158,24 +226,28 @@ export async function getSpriteFrames(
       return dist < threshold;
     };
 
-    /** 列中背景像素占比 */
-    const columnBackgroundRatio = (x: number): number => {
+    /** 列中（在 scanTop..scanBottom 范围内）背景像素占比 */
+    const columnBackgroundRatio = (x: number, scanTop: number, scanBottom: number): number => {
+      const scanH = scanBottom - scanTop;
+      if (scanH <= 0) return 1;
       let bg = 0;
-      for (let y = 0; y < height; y++) {
+      for (let y = scanTop; y < scanBottom; y++) {
         const i = (y * width + x) * ch;
         if (isBackground(i)) bg++;
       }
-      return bg / height;
+      return bg / scanH;
     };
 
-    /** 行中背景像素占比（用于按行识别） */
-    const rowBackgroundRatio = (y: number): number => {
+    /** 行中（在 scanLeft..scanRight 范围内）背景像素占比（用于按行识别） */
+    const rowBackgroundRatio = (y: number, scanLeft: number, scanRight: number): number => {
+      const scanW = scanRight - scanLeft;
+      if (scanW <= 0) return 1;
       let bg = 0;
-      for (let x = 0; x < width; x++) {
+      for (let x = scanLeft; x < scanRight; x++) {
         const i = (y * width + x) * ch;
         if (isBackground(i)) bg++;
       }
-      return bg / width;
+      return bg / scanW;
     };
 
     /** 在横向区域 [frameX, frameX+frameW) 内找有内容的行范围，返回 { contentTop, contentBottom } */
@@ -196,35 +268,56 @@ export async function getSpriteFrames(
       return { contentTop, contentBottom };
     };
 
+    /** 计算内容包围盒（全图扫描所有非背景像素），避免将边缘透明区域误判为分隔 */
+    let bboxLeft = width, bboxRight = -1, bboxTop = height, bboxBottom = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * ch;
+        if (!isBackground(i)) {
+          if (x < bboxLeft) bboxLeft = x;
+          if (x > bboxRight) bboxRight = x;
+          if (y < bboxTop) bboxTop = y;
+          if (y > bboxBottom) bboxBottom = y;
+        }
+      }
+    }
+    if (bboxLeft > bboxRight || bboxTop > bboxBottom) return { raw: [], normalized: [] };
+    /** 内容区域（exclusive 右/下边界） */
+    const contentL = bboxLeft;
+    const contentR = bboxRight + 1;
+    const contentT = bboxTop;
+    const contentB = bboxBottom + 1;
+
+    /** 只在内容区域内扫描分隔列，避免将边缘空白列误判为分隔 */
     const separatorColumns: number[] = [];
-    for (let x = 0; x < width; x++) {
-      if (columnBackgroundRatio(x) >= SEPARATOR_BACKGROUND_RATIO) separatorColumns.push(x);
+    for (let x = contentL; x < contentR; x++) {
+      if (columnBackgroundRatio(x, contentT, contentB) >= SEPARATOR_BACKGROUND_RATIO) separatorColumns.push(x);
     }
 
     const gaps: { start: number; end: number }[] = [];
     for (let i = 0; i < separatorColumns.length; i++) {
-      const start = separatorColumns[i];
+      const start = separatorColumns[i]!;
       let end = start;
       while (i + 1 < separatorColumns.length && separatorColumns[i + 1] === end + 1) {
         i++;
-        end = separatorColumns[i];
+        end = separatorColumns[i]!;
       }
       if (end - start + 1 >= minGapPixels) gaps.push({ start, end: end + 1 });
     }
 
-    /** 行分隔：检测水平方向的分隔行 */
+    /** 只在内容区域内扫描分隔行 */
     const separatorRows: number[] = [];
-    for (let y = 0; y < height; y++) {
-      if (rowBackgroundRatio(y) >= SEPARATOR_BACKGROUND_RATIO) separatorRows.push(y);
+    for (let y = contentT; y < contentB; y++) {
+      if (rowBackgroundRatio(y, contentL, contentR) >= SEPARATOR_BACKGROUND_RATIO) separatorRows.push(y);
     }
 
     const rowGaps: { start: number; end: number }[] = [];
     for (let i = 0; i < separatorRows.length; i++) {
-      const start = separatorRows[i];
+      const start = separatorRows[i]!;
       let end = start;
       while (i + 1 < separatorRows.length && separatorRows[i + 1] === end + 1) {
         i++;
-        end = separatorRows[i];
+        end = separatorRows[i]!;
       }
       if (end - start + 1 >= minGapPixels) rowGaps.push({ start, end: end + 1 });
     }
@@ -238,32 +331,44 @@ export async function getSpriteFrames(
       return { x: nx, y: ny, width: nw, height: nh };
     };
 
-    /** 构建列范围：每列 [left, right)；无列分隔时按 8 列均分 */
-    const colRanges: { left: number; right: number }[] = [];
+    /** 构建列范围：每列 [left, right)；以内容区域为边界，无列分隔时按 8 列均分内容区域 */
+    const rawColRanges: { left: number; right: number }[] = [];
     if (gaps.length === 0) {
       const count = 8;
-      const fw = Math.floor(width / count);
+      const fw = Math.floor((contentR - contentL) / count);
       for (let i = 0; i < count; i++) {
-        colRanges.push({ left: i * fw, right: i < count - 1 ? (i + 1) * fw : width });
+        rawColRanges.push({ left: contentL + i * fw, right: i < count - 1 ? contentL + (i + 1) * fw : contentR });
       }
     } else {
-      if (gaps[0]!.start > 0) colRanges.push({ left: 0, right: gaps[0]!.start });
+      if (gaps[0]!.start > contentL) rawColRanges.push({ left: contentL, right: gaps[0]!.start });
       for (let i = 0; i < gaps.length; i++) {
         const next = gaps[i + 1];
-        colRanges.push({ left: gaps[i]!.end, right: next ? next.start : width });
+        const right = next ? next.start : contentR;
+        if (gaps[i]!.end < right) rawColRanges.push({ left: gaps[i]!.end, right });
       }
     }
+    /** 合并因帧内透明间隙（如角色腿部之间）误分割出的过窄列范围 */
+    const colRanges = mergeNarrowColRanges(rawColRanges.filter((c) => c.right > c.left));
+    if (colRanges.length !== rawColRanges.length) {
+      console.log(`[getSpriteFrames] 列合并：${rawColRanges.length} → ${colRanges.length} 列`);
+    }
 
-    /** 构建行范围：每行 [top, bottom)；无行分隔时整图一行 */
-    const rowRanges: { top: number; bottom: number }[] = [];
+    /** 构建行范围：每行 [top, bottom)；以内容区域为边界，无行分隔时整图内容区一行 */
+    const rawRowRanges: { top: number; bottom: number }[] = [];
     if (rowGaps.length === 0) {
-      rowRanges.push({ top: 0, bottom: height });
+      rawRowRanges.push({ top: contentT, bottom: contentB });
     } else {
-      if (rowGaps[0]!.start > 0) rowRanges.push({ top: 0, bottom: rowGaps[0]!.start });
+      if (rowGaps[0]!.start > contentT) rawRowRanges.push({ top: contentT, bottom: rowGaps[0]!.start });
       for (let i = 0; i < rowGaps.length; i++) {
         const next = rowGaps[i + 1];
-        rowRanges.push({ top: rowGaps[i]!.end, bottom: next ? next.start : height });
+        const bottom = next ? next.start : contentB;
+        if (rowGaps[i]!.end < bottom) rawRowRanges.push({ top: rowGaps[i]!.end, bottom });
       }
+    }
+    /** 合并因帧内透明间隙误分割出的过窄行范围 */
+    const rowRanges = mergeNarrowRowRanges(rawRowRanges.filter((r) => r.bottom > r.top));
+    if (rowRanges.length !== rawRowRanges.length) {
+      console.log(`[getSpriteFrames] 行合并：${rawRowRanges.length} → ${rowRanges.length} 行`);
     }
 
     const frames: SpriteFrameRect[] = [];
@@ -303,6 +408,24 @@ export async function getSpriteFrames(
           width: Math.min(fw + pad * 2, width - Math.max(0, fx - pad)),
           height: Math.min(contentBottom - contentTop + 1 + pad * 2, height - Math.max(0, contentTop - pad)),
         });
+      }
+    }
+
+    /** 帧级兜底过滤：移除宽度或高度明显偏小的异常帧（相对阈值：中位数的 30%，绝对最小：FRAME_PADDING*2） */
+    if (frames.length > 1) {
+      const fws = frames.map((f) => f.width);
+      const fhs = frames.map((f) => f.height);
+      const sortedW = [...fws].sort((a, b) => a - b);
+      const sortedH = [...fhs].sort((a, b) => a - b);
+      const medW = sortedW[Math.floor(sortedW.length / 2)] ?? 1;
+      const medH = sortedH[Math.floor(sortedH.length / 2)] ?? 1;
+      const minW = Math.max(FRAME_PADDING * 2, medW * 0.3);
+      const minH = Math.max(FRAME_PADDING * 2, medH * 0.3);
+      const kept = frames.filter((f) => f.width >= minW && f.height >= minH);
+      if (kept.length > 0 && kept.length !== frames.length) {
+        console.log(`[getSpriteFrames] 帧级过滤：${frames.length} → ${kept.length} 帧（移除了 ${frames.length - kept.length} 个异常帧）`);
+        frames.length = 0;
+        frames.push(...kept);
       }
     }
 

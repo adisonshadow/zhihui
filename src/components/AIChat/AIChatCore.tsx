@@ -8,9 +8,9 @@ import { Tag } from 'antd';
 import { LinkOutlined } from '@ant-design/icons';
 import { Bubble, Sender, Attachments, Prompts } from '@ant-design/x';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
-import XMarkdown from '@ant-design/x-markdown';
-import { useXChat, OpenAIChatProvider, XRequest } from '@ant-design/x-sdk';
+import { useXChat } from '@ant-design/x-sdk';
 import OpenAIImagesProvider from './providers/OpenAIImagesProvider';
+import { ReasoningChatProvider } from './providers/ReasoningChatProvider';
 import type { AIModelConfig } from '@/types/settings';
 import type { AIChatContextTag, PromptItem } from './types';
 import { useAgentModel } from './hooks/useAgentModel';
@@ -26,25 +26,21 @@ import { DRAWER_ASPECT_OPTIONS } from './types/drawerOptions';
 import { fileToBase64 } from './utils/fileToBase64';
 import '@ant-design/x-markdown/themes/dark.css';
 
-function buildChatProvider(modelConfig: AIModelConfig | null) {
-  const baseURL = (modelConfig?.apiUrl?.trim() || 'https://api.openai.com/v1').replace(/\/$/, '') + '/chat/completions';
-  return new OpenAIChatProvider({
-    request: XRequest(baseURL, {
-      manual: true,
-      params: {
-        stream: true,
-        model: modelConfig?.model?.trim() || 'gpt-3.5-turbo',
-      },
-      headers: modelConfig?.apiKey ? { Authorization: `Bearer ${modelConfig.apiKey}` } : undefined,
-    }),
-  });
-}
-
-function buildProvider(agentKey: string, modelConfig: AIModelConfig | null) {
-  if (agentKey === 'drawer') {
+/**
+ * 根据 Agent 配置的 providerType 选择对应 Provider。
+ * 所有对话类 Agent 统一使用 ReasoningChatProvider（向下兼容无推理的普通模型）。
+ * enableReasoning=false 时，Provider 向火山引擎等 API 发送 thinking.type=disabled。
+ * 见功能文档 06 § 4.1
+ */
+function buildProvider(
+  providerType: import('./types').AgentProviderType | undefined,
+  modelConfig: AIModelConfig | null,
+  enableReasoning: boolean
+) {
+  if (providerType === 'images') {
     return new OpenAIImagesProvider(modelConfig);
   }
-  return buildChatProvider(modelConfig);
+  return new ReasoningChatProvider(modelConfig, enableReasoning);
 }
 
 const CONV_STORAGE_PREFIX = 'yiman:aichat:conversations:';
@@ -52,7 +48,7 @@ const CONV_STORAGE_PREFIX = 'yiman:aichat:conversations:';
 interface ConversationItem {
   key: string;
   label: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; reasoningContent?: string }>;
   /** 最后活跃时间戳，用于分组显示（今日/昨日） */
   lastActive?: number;
 }
@@ -107,6 +103,13 @@ export interface AIChatCoreProps {
   onAgentChange?: (key: string) => void;
   /** 画布比例（绘图师用，画布比例时使用），如 "16:9" | "9:16" */
   canvasAspectRatio?: string;
+  /**
+   * 是否启用推理内容展示。
+   * 启用后，若模型返回 reasoning_content（如火山引擎 doubao-seed 等），
+   * 将以 Cursor 风格展示推理过程（流式滚动 → 折叠首行）。
+   * 见功能文档 06 § enableReasoning
+   */
+  enableReasoning?: boolean;
 }
 
 export function useAIChatCore({
@@ -123,6 +126,7 @@ export function useAIChatCore({
   storageKeySuffix = 'default',
   onAgentChange,
   canvasAspectRatio,
+  enableReasoning = false,
 }: AIChatCoreProps) {
   const storageKey = `${CONV_STORAGE_PREFIX}${agentKey}:${storageKeySuffix}`;
   const [conversations, setConversations] = useState<ConversationItem[]>(() => loadConversations(storageKey));
@@ -139,7 +143,10 @@ export function useAIChatCore({
 
   const { agent, hasValidModel, model, missingCapabilityLabels } = useAgentModel(agentKey, models);
   const promptsDef = agentKey ? AGENT_PROMPTS_MAP[agentKey] : null;
-  const provider = React.useMemo(() => buildProvider(agentKey, model), [agentKey, model]);
+  const provider = React.useMemo(
+    () => buildProvider(agent?.providerType, model, enableReasoning),
+    [agent?.providerType, model, enableReasoning]
+  );
 
   const { onRequest, messages, isRequesting, setMessages } = useXChat({
     provider,
@@ -158,7 +165,14 @@ export function useAIChatCore({
     const simplified = messages
       .filter((m) => m.message?.role && m.message.role !== 'system')
       .filter((m) => m.status !== 'loading' && m.status !== 'error')
-      .map((m) => ({ role: m.message!.role!, content: String(m.message?.content ?? '') }));
+      .map((m) => {
+        const rc = (m.message as { reasoningContent?: string })?.reasoningContent;
+        return {
+          role: m.message!.role!,
+          content: String(m.message?.content ?? ''),
+          ...(rc ? { reasoningContent: rc } : {}),
+        };
+      });
     const now = Date.now();
     setConversations((prev) =>
       prev.map((c) => (c.key === activeKey ? { ...c, messages: simplified, lastActive: now } : c))
@@ -187,7 +201,14 @@ export function useAIChatCore({
         const simplified = messages
           .filter((m) => m.message?.role && m.message.role !== 'system')
           .filter((m) => m.status !== 'loading' && m.status !== 'error')
-          .map((m) => ({ role: m.message!.role!, content: String(m.message?.content ?? '') }));
+          .map((m) => {
+            const rc = (m.message as { reasoningContent?: string })?.reasoningContent;
+            return {
+              role: m.message!.role!,
+              content: String(m.message?.content ?? ''),
+              ...(rc ? { reasoningContent: rc } : {}),
+            };
+          });
         setConversations((prev) =>
           prev.map((c) =>
             c.key === activeKey ? { ...c, messages: simplified, lastActive: now } : c.key === key ? { ...c, lastActive: now } : c
@@ -203,7 +224,11 @@ export function useAIChatCore({
         setMessages(
           conv.messages.map((m, i) => ({
             id: `msg_${i}`,
-            message: { role: m.role as 'user' | 'assistant', content: m.content },
+            message: {
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              ...(m.reasoningContent ? { reasoningContent: m.reasoningContent } : {}),
+            },
             status: 'local' as const,
           }))
         );
@@ -298,14 +323,19 @@ export function useAIChatCore({
   const lastAssistantContent = messages?.filter((m) => m.message?.role === 'assistant').pop()?.message?.content;
   const lastContent = typeof lastAssistantContent === 'string' ? lastAssistantContent : '';
 
-  const bubbleItems = (messages ?? []).map((m, i) => ({
-    key: m.id,
-    role: (m.message?.role === 'system' ? 'system' : m.message?.role) || 'assistant',
-    content: typeof m.message?.content === 'string' ? m.message.content : '',
-    status: m.status,
-    loading: m.status === 'loading',
-    extraInfo: { index: i },
-  }));
+  const bubbleItems = (messages ?? []).map((m, i) => {
+    const reasoningContent =
+      (m.message as { reasoningContent?: string })?.reasoningContent ?? '';
+    const isStreaming = m.status === 'loading' || m.status === 'updating';
+    return {
+      key: m.id,
+      role: (m.message?.role === 'system' ? 'system' : m.message?.role) || 'assistant',
+      content: typeof m.message?.content === 'string' ? m.message.content : '',
+      status: m.status,
+      loading: m.status === 'loading',
+      extraInfo: { index: i, reasoningContent, isStreaming },
+    };
+  });
 
   const convItems = conversations.map((c) => ({
     key: c.key,
@@ -425,6 +455,7 @@ export function useAIChatCore({
     setDrawerOptions,
     attachments,
     DRAWER_ASPECT_OPTIONS,
+    enableReasoning,
 
     // 行为
     handleNewConversation,
@@ -440,7 +471,6 @@ export function useAIChatCore({
     Sender,
     Bubble,
     Prompts,
-    XMarkdown,
     writeBackActions: lastContent && writeBackActions ? writeBackActions(lastContent) : null,
     senderPlaceholder,
   };

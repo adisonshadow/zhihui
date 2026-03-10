@@ -14,6 +14,9 @@ export interface WelcomeSlotSelect {
   defaultValue?: string;
 }
 
+/** Agent 使用的 Provider 类型 */
+export type AgentProviderType = 'chat' | 'images';
+
 /** Agent 角色配置（对应 AI agent） */
 export interface AgentConfig {
   /** Agent 唯一标识 */
@@ -28,6 +31,12 @@ export interface AgentConfig {
   missingCapabilityHint: string;
   /** 欢迎词中的下拉 slot（如绘图师的绘图类型选择） */
   welcomeSlot?: WelcomeSlotSelect;
+  /**
+   * 该 Agent 使用的 Provider 类型，默认 'chat'。
+   * 'images' 对应 OpenAIImagesProvider（绘图师）。
+   * 见功能文档 06 § 4.1
+   */
+  providerType?: AgentProviderType;
 }
 
 /** 提示词项 */

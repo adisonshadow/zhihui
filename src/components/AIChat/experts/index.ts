@@ -31,6 +31,7 @@ export const AGENT_CONFIGS: AgentConfig[] = [
     welcomeMessage: '描述您想要的绘图类型图片，将为您生成。',
     requiredCapabilityKeys: ['draw'],
     missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加具备「{missing}」能力且已配置 API 的模型。',
+    providerType: 'images' as const,
     welcomeSlot: {
       type: 'select' as const,
       options: [...DRAWER_TYPE_OPTIONS],

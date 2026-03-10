@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
-import { Button, Space, Divider, Flex, Select, Layout, Dropdown, InputNumber } from 'antd';
+import { Button, Space, Divider, Flex, Select, Layout, Dropdown, InputNumber, Tooltip } from 'antd';
 import { PlusOutlined, LinkOutlined, RollbackOutlined, MessageOutlined } from '@ant-design/icons';
 import { useAIChatCore } from './AIChatCore';
 import type { AIChatCoreProps } from './AIChatCore';
@@ -22,10 +22,11 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
   const {
     agentKey,
     onAgentChange,
+    enableReasoning,
     ...coreProps
   } = props;
 
-  const core = useAIChatCore({ ...coreProps, agentKey, onAgentChange });
+  const core = useAIChatCore({ ...coreProps, agentKey, onAgentChange, enableReasoning });
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const {
@@ -55,7 +56,6 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
     Sender,
     Bubble,
     Prompts,
-    XMarkdown,
     writeBackActions,
     senderPlaceholder,
   } = core;
@@ -190,33 +190,42 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
         ) : (
           <Bubble.List
             items={bubbleItems}
-            role={{
+              role={{
               assistant: {
                 placement: 'start',
                 variant: 'borderless',
-                contentRender: (content: string) => (
-                  <DrawerBubbleContent
-                    content={content}
-                    isDrawerAgent={agentKey === 'drawer'}
-                    markdownComponent={XMarkdown}
-                  />
-                ),
+                contentRender: (content: string, info?: unknown) => {
+                  const extra = (info as { extraInfo?: { reasoningContent?: string }; status?: string })?.extraInfo;
+                  const status = (info as { status?: string })?.status;
+                  return (
+                    <DrawerBubbleContent
+                      content={content}
+                      isDrawerAgent={agentKey === 'drawer'}
+                      reasoningContent={enableReasoning ? (extra?.reasoningContent || '') : undefined}
+                      status={status}
+                    />
+                  );
+                },
               },
               user: {
                 placement: 'end',
                 variant: 'borderless',
-                header: (_content, info) => {
+                footer: (_content, info) => {
                   const idx = (info?.extraInfo as { index?: number })?.index;
                   if (idx == null || !userTurnIndices.includes(idx)) return null;
                   return (
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<RollbackOutlined />}
+                    <Tooltip 
                       title="撤回到此步"
-                      onClick={() => handleRollbackTo(idx)}
-                      style={{ fontSize: 11, marginRight: 4 }}
-                    />
+                    >
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<RollbackOutlined />}
+                        title="撤回到此步"
+                        onClick={() => handleRollbackTo(idx)}
+                        style={{ fontSize: 11, marginRight: 4 }}
+                      />
+                    </Tooltip>
                   );
                 },
               },
@@ -241,7 +250,10 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
           header={senderHeader}
           loading={isRequesting}
           placeholder={senderPlaceholder}
-          onSubmit={(msg, slotConfig, skill) => handleSubmit(msg, slotConfig, skill)}
+          onSubmit={(msg, slotConfig, skill) => {
+            handleSubmit(msg, slotConfig, skill);
+            senderRef.current?.clear?.();
+          }}
           onChange={handleSenderChange}
           disabled={!hasValidModel}
           autoSize={{ minRows: 1, maxRows: 6 }}
@@ -295,7 +307,10 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
                       onClick={() => {
                         const v = senderRef.current?.getValue?.();
                         const text = (v && typeof v === 'object' && 'value' in v ? v.value : '')?.trim?.();
-                        if (text) handleSubmit(text, v?.slotConfig, v?.skill);
+                        if (text) {
+                          handleSubmit(text, v?.slotConfig, v?.skill);
+                          senderRef.current?.clear?.();
+                        }
                       }}
                     >
                       发送

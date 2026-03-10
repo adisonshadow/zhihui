@@ -117,6 +117,39 @@ async function updateBlockScaleForImage(
   await api.updateTimelineBlock(projectDir, blockId, { scale_x, scale_y });
 }
 
+/** 见功能文档 6.8：拖拽放置视频/透明视频后，按素材存储的 width/height 修正 scale */
+async function updateBlockScaleForVideo(
+  projectDir: string,
+  blockId: string,
+  assetId: string,
+  landscape: boolean
+): Promise<void> {
+  const api = window.yiman?.project;
+  if (!api?.getAssetById || !api?.updateTimelineBlock) return;
+  const asset = (await api.getAssetById(projectDir, assetId)) as { width?: number; height?: number; type?: string } | null;
+  if (!asset || !['video', 'transparent_video'].includes(asset.type ?? '')) return;
+  const w = asset.width;
+  const h = asset.height;
+  if (typeof w !== 'number' || w <= 0 || typeof h !== 'number' || h <= 0) return;
+  const designW = landscape ? 1920 : 1080;
+  const designH = landscape ? 1080 : 1920;
+  const baseScale = 0.25;
+  const frameAspect = w / h;
+  const designAspect = designW / designH;
+  let scale_x = baseScale;
+  let scale_y = baseScale;
+  if (frameAspect >= designAspect) {
+    scale_x = baseScale;
+    scale_y = baseScale * (designW / designH) / frameAspect;
+  } else {
+    scale_y = baseScale;
+    scale_x = baseScale * (designH / designW) * frameAspect;
+  }
+  scale_x = Math.max(0.02, Math.min(1, scale_x));
+  scale_y = Math.max(0.02, Math.min(1, scale_y));
+  await api.updateTimelineBlock(projectDir, blockId, { scale_x, scale_y });
+}
+
 interface TimelinePanelProps {
   project: ProjectInfo;
   sceneId: string | null;
@@ -324,14 +357,27 @@ export function TimelinePanel({
       message.warning('镜头块不可删除');
       return;
     }
-    const res = await window.yiman.project.deleteTimelineBlock(projectDir, selectedBlockId);
+    // 乐观更新：立即从 UI 移除素材条，不等待 DB 响应
+    const deletedId = selectedBlockId;
+    onSelectBlock(null);
+    setBlocksByLayer((prev) => {
+      const next: Record<string, BlockRow[]> = {};
+      for (const [layerId, blocks] of Object.entries(prev)) {
+        next[layerId] = blocks.filter((b) => b.id !== deletedId);
+      }
+      return next;
+    });
+    const res = await window.yiman.project.deleteTimelineBlock(projectDir, deletedId);
     if (res?.ok) {
       message.success('已删除素材条');
-      onSelectBlock(null);
       loadLayersAndBlocks();
       onLayersChange?.();
-    } else message.error(res?.error || '删除失败');
-  }, [projectDir, selectedBlockId, blocksByLayer, message, onSelectBlock, loadLayersAndBlocks, onLayersChange]);
+    } else {
+      // 删除失败时还原数据
+      message.error(res?.error || '删除失败');
+      loadLayersAndBlocks();
+    }
+  }, [projectDir, selectedBlockId, blocksByLayer, message, onSelectBlock, setBlocksByLayer, loadLayersAndBlocks, onLayersChange]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -797,6 +843,8 @@ export function TimelinePanel({
         if (res?.ok) {
           if (assetType === 'image') {
             await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
+          } else if (['video', 'transparent_video'].includes(assetType)) {
+            await updateBlockScaleForVideo(projectDir, blockIdNew, assetId, !!project.landscape);
           }
           loadLayersAndBlocks();
           onLayersChange?.();
@@ -832,6 +880,8 @@ export function TimelinePanel({
         if (res?.ok) {
           if (assetType === 'image') {
             await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
+          } else if (['video', 'transparent_video'].includes(assetType)) {
+            await updateBlockScaleForVideo(projectDir, blockIdNew, assetId, !!project.landscape);
           }
           loadLayersAndBlocks();
           onLayersChange?.();
@@ -1052,6 +1102,8 @@ export function TimelinePanel({
         if (res?.ok) {
           if (assetType === 'image') {
             await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
+          } else if (['video', 'transparent_video'].includes(assetType)) {
+            await updateBlockScaleForVideo(projectDir, blockIdNew, assetId, !!project.landscape);
           }
           loadLayersAndBlocks();
           onLayersChange?.();
