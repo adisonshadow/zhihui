@@ -41,8 +41,11 @@ export interface BlockAnimationConfig {
   action?: {
     animationId: string;
     duration: number;
-    repeatCount: number;
+    /** >=1 为有限次数；0 或 -1 表示不限次（见 docs/08）；缺省按 1 次 */
+    repeatCount?: number;
     direction?: string;
+    /** 动画专属参数，如 yiman.branchSway：swayAnchor / swaySpeed / swayAmplitude */
+    params?: Record<string, unknown>;
     [key: string]: unknown;
   };
   /** 消失动画 */

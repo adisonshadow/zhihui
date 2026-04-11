@@ -1,6 +1,6 @@
 /**
  * 响应式卡片网格：display grid + repeat(auto-fill, minmax(Xpx, 1fr))
- * 用于素材页、人物页、设计器素材面板等分类列表的卡片布局
+ * 用于素材页、角色页、设计器素材面板等分类列表的卡片布局
  */
 import React from 'react';
 

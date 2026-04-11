@@ -1,0 +1,31 @@
+{
+  "id": "simpleText",
+  "name": "双行文字",
+  "description": "两行可分别配置的文字，适合标题、祝福语等",
+  "renderEntry": "./render.js",
+  "renderMethod": "render",
+  "fields": [
+    {
+      "key": "textA",
+      "label": "A文字",
+      "type": "text",
+      "defaults": {
+        "content": "Happy",
+        "fontSize": 48,
+        "color": "#c0c0c0",
+        "fontFamily": "cursive"
+      }
+    },
+    {
+      "key": "textB",
+      "label": "B文字",
+      "type": "text",
+      "defaults": {
+        "content": "birthday!",
+        "fontSize": 64,
+        "color": "#ff6b6b",
+        "fontFamily": "cursive"
+      }
+    }
+  ]
+}

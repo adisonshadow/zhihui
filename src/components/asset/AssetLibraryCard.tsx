@@ -1,5 +1,5 @@
 /**
- * 统一素材/人物列表卡片：素材页（图片/视频/精灵图/元件）、人物页（骨骼/精灵动作/元件）
+ * 统一素材/角色列表卡片：素材页（图片/视频/精灵图/元件）、角色页（骨骼/精灵动作/元件）
  * 音乐/音效使用 AudioListItem，不在此统一
  */
 import { useState, useEffect } from 'react';
@@ -8,8 +8,42 @@ import { DeleteOutlined, StarOutlined, StarFilled, ExportOutlined } from '@ant-d
 import type { GroupComponentItem } from '@/types/groupComponent';
 import type { SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
 import type { CharacterAngle } from '@/types/skeleton';
+import type { AssetBundleListRow } from '@/types/assetBundle';
+import { bundleCardDisplayTitle } from '@/utils/assetBundleUi';
 
 const { Text } = Typography;
+
+const ASSET_TYPE_DISPLAY_LABELS: Record<string, string> = {
+  image: '图片',
+  sprite: '精灵图',
+  component: '元件',
+  video: '视频',
+  transparent_video: '透明视频',
+  sfx: '音效',
+  music: '音乐',
+};
+
+/** 封面左下角类型标签 overlay */
+function TypeLabel({ label, bottom = 4 }: { label: string; bottom?: number }) {
+  if (!label) return null;
+  return (
+    <span
+      style={{
+        position: 'absolute',
+        left: 4,
+        bottom,
+        padding: '2px 5px',
+        borderRadius: 4,
+        background: 'rgba(0,0,0,0.65)',
+        color: 'rgba(255,255,255,0.85)',
+        fontSize: 10,
+        pointerEvents: 'none',
+      }}
+    >
+      {label}
+    </span>
+  );
+}
 
 const CARD_BODY_STYLE = {
   display: 'flex' as const,
@@ -17,7 +51,7 @@ const CARD_BODY_STYLE = {
   alignItems: 'center' as const,
   justifyContent: 'center' as const,
   gap: 8,
-  paddingBottom: 8,
+  padding: 0,
 };
 
 const TITLE_STYLE = {
@@ -29,7 +63,7 @@ const TITLE_STYLE = {
   minHeight: 38,
 };
 
-/** 缩略图：支持图片/视频封面 */
+/** 缩略图：支持图片/视频封面；size='fullWidth' 时宽 100%、1:1 比例 */
 export function AssetThumb({
   projectDir,
   path,
@@ -39,7 +73,7 @@ export function AssetThumb({
   projectDir: string;
   path: string;
   coverPath?: string | null;
-  size?: number;
+  size?: number | 'fullWidth';
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -54,17 +88,23 @@ export function AssetThumb({
       setDataUrl(null);
     }
   }, [projectDir, path, coverPath]);
+
+  const isFullWidth = size === 'fullWidth';
+  const containerStyle = isFullWidth
+    ? { width: '100%', aspectRatio: '1 / 1', borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' }
+    : { width: size, height: size, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' };
+
   const ext = path.split('.').pop()?.toLowerCase();
   const isMediaPlaceholder = ['mp3', 'wav', 'mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext ?? '') && !dataUrl;
   if (isMediaPlaceholder) {
     return (
-      <div style={{ width: size, height: size, background: 'rgba(255,255,255,0.06)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ ...containerStyle, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Text type="secondary">音/视频</Text>
       </div>
     );
   }
   return (
-    <div style={{ width: size, height: size, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' }}>
+    <div style={containerStyle}>
       {dataUrl ? (
         <img src={dataUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
       ) : (
@@ -120,11 +160,14 @@ export function AssetCard({
         styles={{ body: CARD_BODY_STYLE }}
         onClick={handleCardClick}
       >
-        <AssetThumb projectDir={projectDir} path={asset.path} coverPath={asset.cover_path} size={120} />
+        <div style={{ position: 'relative', width: '100%' }}>
+          <AssetThumb projectDir={projectDir} path={asset.path} coverPath={asset.cover_path} size="fullWidth" />
+          <TypeLabel label={ASSET_TYPE_DISPLAY_LABELS[asset.type] ?? ''} />
+        </div>
         <Typography.Paragraph ellipsis={{ rows: 2, expandable: false }} style={TITLE_STYLE}>
           {asset.description || asset.path.split(/[/\\]/).pop() || asset.path}
         </Typography.Paragraph>
-        <Space style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+        <Space style={{ marginBottom: 8 }} onClick={(e) => e.stopPropagation()}>
           <Button type="text" size="small" icon={asset.is_favorite ? <StarFilled /> : <StarOutlined />} onClick={onFavorite} />
           <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={onDelete} />
         </Space>
@@ -133,7 +176,71 @@ export function AssetCard({
   );
 }
 
-/** 精灵图/精灵动作卡片（素材页精灵图、人物页精灵动作） */
+/** 同类素材组卡片：点击进入子项选择（素材库 / 设计器打开 Modal） */
+export function AssetBundleCard({
+  projectDir,
+  bundle,
+  onOpen,
+  onFavorite,
+  onDeleteBundle,
+}: {
+  projectDir: string;
+  bundle: AssetBundleListRow;
+  onOpen: () => void;
+  onFavorite: () => void;
+  onDeleteBundle: () => void;
+}) {
+  const coverPath = bundle.cover_path?.trim() || null;
+  const thumbPath = coverPath || 'assets/__bundle_placeholder__.png';
+  return (
+    <div style={{ padding: 8 }}>
+      <Card
+        size="small"
+        className="asset-card-hover"
+        style={{ width: '100%', minWidth: 0, cursor: 'pointer' }}
+        styles={{ body: CARD_BODY_STYLE }}
+        onClick={onOpen}
+      >
+        <div style={{ position: 'relative', width: '100%' }}>
+          {coverPath ? (
+            <AssetThumb projectDir={projectDir} path={thumbPath} coverPath={null} size="fullWidth" />
+          ) : (
+            <div
+              style={{
+                width: '100%',
+                aspectRatio: '1 / 1',
+                borderRadius: 8,
+                background: 'rgba(255,255,255,0.08)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                组
+              </Text>
+            </div>
+          )}
+          <TypeLabel label={`同类组 · ${bundle.member_count} 个`} />
+        </div>
+        <Typography.Paragraph ellipsis={{ rows: 2, expandable: false }} style={TITLE_STYLE}>
+          {bundleCardDisplayTitle(bundle)}
+        </Typography.Paragraph>
+        <Space style={{ marginBottom: 8 }} onClick={(e) => e.stopPropagation()}>
+          <Button
+            type="text"
+            size="small"
+            icon={bundle.is_favorite ? <StarFilled /> : <StarOutlined />}
+            onClick={onFavorite}
+          />
+          <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={onDeleteBundle} />
+        </Space>
+      </Card>
+    </div>
+  );
+}
+
+/** 精灵图/精灵动作卡片（素材页精灵图、角色页精灵动作） */
 export interface SpriteCardAsset {
   id: string;
   is_favorite?: number;
@@ -176,6 +283,7 @@ export function SpriteCard({
       >
         <div
           style={{
+            position: 'relative',
             aspectRatio: 1,
             background: 'rgba(255,255,255,0.06)',
             borderRadius: 8,
@@ -191,12 +299,13 @@ export function SpriteCard({
           ) : (
             <Text type="secondary" style={{ fontSize: 12 }}>未导入</Text>
           )}
+          <TypeLabel label={subtitle} bottom={22} />
+          <TypeLabel label="精灵图" />
         </div>
         <Typography.Paragraph ellipsis={{ rows: 2, expandable: false }} style={TITLE_STYLE}>
           {sprite.name || '未命名'}
         </Typography.Paragraph>
-        <Text type="secondary" style={{ fontSize: 11 }}>{subtitle}</Text>
-        <Space style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+        <Space style={{ marginBottom: 8 }} onClick={(e) => e.stopPropagation()}>
           {onFavorite && (
             <Button
               type="text"
@@ -261,7 +370,7 @@ function GroupComponentCardThumb({ projectDir, path }: { projectDir: string; pat
   );
 }
 
-/** 元件卡片（素材页元件、人物页元件） */
+/** 元件卡片（素材页元件、角色页元件） */
 export interface GroupComponentCardAsset {
   id: string;
   is_favorite?: number;
@@ -295,14 +404,15 @@ export function GroupComponentCard({
         styles={{ body: CARD_BODY_STYLE }}
         onClick={onEdit}
       >
-        <GroupComponentCardThumb projectDir={projectDir} path={coverPath} />
+        <div style={{ position: 'relative', width: '100%' }}>
+          <GroupComponentCardThumb projectDir={projectDir} path={coverPath} />
+          <TypeLabel label={`${item.states?.length ?? 0} 个状态`} bottom={22} />
+          <TypeLabel label="元件" />
+        </div>
         <Typography.Paragraph ellipsis={{ rows: 2, expandable: false }} style={TITLE_STYLE}>
           {item.name || '未命名'}
         </Typography.Paragraph>
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {item.states?.length ?? 0} 个状态
-        </Text>
-        <Space style={{ marginTop: 8 }} onClick={(e) => e.stopPropagation()}>
+        <Space style={{ marginBottom: '8px' }} onClick={(e) => e.stopPropagation()}>
           {onFavorite && (
             <Button
               type="text"
@@ -319,7 +429,7 @@ export function GroupComponentCard({
   );
 }
 
-/** 骨骼角度卡片（人物页骨骼） */
+/** 骨骼角度卡片（角色页骨骼） */
 export function SkeletonAngleCard({
   projectDir,
   angle,

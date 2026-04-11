@@ -1,0 +1,17 @@
+{
+  "id": "simpleSubtitles",
+  "name": "简单字幕",
+  "description": "白色文字黑色描边字幕，固定底部显示，按时间切换",
+  "renderEntry": "./render.js",
+  "renderMethod": "render",
+  "defaultStyle": {
+    "fontSize": 78,
+    "fontFamily": "sans-serif",
+    "fontWeight": "normal",
+    "color": "#ffffff",
+    "shadowColor": "#000000",
+    "shadowSize": 6,
+    "paddingX": 30,
+    "paddingBottom": 60
+  }
+}

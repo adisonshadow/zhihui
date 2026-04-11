@@ -2,11 +2,12 @@
  * AI 对话 - FloatingBottom 布局模式
  * 固定在视口右下角的悬浮按钮，点击展开/收起对话面板
  */
-import { useState } from 'react';
+import { forwardRef, useState } from 'react';
 import { Button, Flex } from 'antd';
 import { CommentOutlined, CloseOutlined } from '@ant-design/icons';
 import { AIChatSidePanel } from './AIChatSidePanel';
 import type { AIChatCoreProps } from './AIChatCore';
+import type { AIChatSidePanelHandle } from './aiChatPanelHandles';
 
 export interface AIChatFloatingBottomProps extends AIChatCoreProps {
   agentKey: string;
@@ -25,17 +26,21 @@ export interface AIChatFloatingBottomProps extends AIChatCoreProps {
   offsetBottom?: number;
 }
 
-export function AIChatFloatingBottom({
-  agentKey,
-  onAgentChange,
-  title = 'AI 助手',
-  panelWidth = 380,
-  panelHeight = 560,
-  defaultOpen = false,
-  offsetRight = 24,
-  offsetBottom = 24,
-  ...coreProps
-}: AIChatFloatingBottomProps) {
+export const AIChatFloatingBottom = forwardRef<AIChatSidePanelHandle, AIChatFloatingBottomProps>(
+  function AIChatFloatingBottom(
+    {
+      agentKey,
+      onAgentChange,
+      title = 'AI 助手',
+      panelWidth = 380,
+      panelHeight = 560,
+      defaultOpen = false,
+      offsetRight = 24,
+      offsetBottom = 24,
+      ...coreProps
+    },
+    ref
+  ) {
   const [open, setOpen] = useState(defaultOpen);
 
   return (
@@ -87,6 +92,7 @@ export function AIChatFloatingBottom({
           </Flex>
           <div style={{ flex: 1, minHeight: 0 }}>
             <AIChatSidePanel
+              ref={ref}
               agentKey={agentKey}
               onAgentChange={onAgentChange}
               {...coreProps}
@@ -111,4 +117,4 @@ export function AIChatFloatingBottom({
       />
     </div>
   );
-}
+});

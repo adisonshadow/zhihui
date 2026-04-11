@@ -5,6 +5,10 @@
 export interface InstantTransparencyOptions {
   /** 容差 0–255，控制颜色匹配范围 */
   tolerance: number;
+  /**
+   * 颜色匹配方式：euclidean=与 backgroundColor 的欧氏距离；perChannel=各通道与 backgroundColor 差值均 ≤ tolerance（去白底时更接近「只有白/浅灰被抠掉」）
+   */
+  colorMatch?: 'euclidean' | 'perChannel';
   /** 仅选与角连通的背景区域 */
   contiguous: boolean;
   /** 边缘抗锯齿，半透明过渡 */
@@ -13,6 +17,8 @@ export interface InstantTransparencyOptions {
   feather: number;
   /** 四角采样块边长（像素） */
   cornerSampleSize?: number;
+  /** 指定背景色 RGB（0–255），不传则从四角自动采样 */
+  backgroundColor?: { r: number; g: number; b: number };
 }
 
 const DEFAULT_CORNER_SAMPLE_SIZE = 10;
@@ -27,6 +33,24 @@ function colorDistance(
   b2: number
 ): number {
   return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+}
+
+function matchesKeyColor(
+  r: number,
+  g: number,
+  b: number,
+  bg: { r: number; g: number; b: number },
+  tolerance: number,
+  mode: 'euclidean' | 'perChannel'
+): boolean {
+  if (mode === 'perChannel') {
+    return (
+      Math.abs(r - bg.r) <= tolerance &&
+      Math.abs(g - bg.g) <= tolerance &&
+      Math.abs(b - bg.b) <= tolerance
+    );
+  }
+  return colorDistance(r, g, b, bg.r, bg.g, bg.b) <= tolerance;
 }
 
 /** 从四角采样，排除异常颜色，返回背景色中位数 */
@@ -85,6 +109,7 @@ function floodFillBackground(
   channels: number,
   bg: { r: number; g: number; b: number },
   tolerance: number,
+  colorMatch: 'euclidean' | 'perChannel',
   mask: Uint8Array
 ): void {
   const stack: [number, number][] = [];
@@ -94,7 +119,7 @@ function floodFillBackground(
       const r = data[i] ?? 0;
       const g = data[i + 1] ?? 0;
       const b = data[i + 2] ?? 0;
-      if (colorDistance(r, g, b, bg.r, bg.g, bg.b) <= tolerance) {
+      if (matchesKeyColor(r, g, b, bg, tolerance, colorMatch)) {
         mask[y * width + x] = 1;
         stack.push([x, y]);
       }
@@ -128,6 +153,7 @@ function markAllMatchingBackground(
   channels: number,
   bg: { r: number; g: number; b: number },
   tolerance: number,
+  colorMatch: 'euclidean' | 'perChannel',
   mask: Uint8Array
 ): void {
   for (let y = 0; y < height; y++) {
@@ -136,7 +162,7 @@ function markAllMatchingBackground(
       const r = data[i] ?? 0;
       const g = data[i + 1] ?? 0;
       const b = data[i + 2] ?? 0;
-      if (colorDistance(r, g, b, bg.r, bg.g, bg.b) <= tolerance) {
+      if (matchesKeyColor(r, g, b, bg, tolerance, colorMatch)) {
         mask[y * width + x] = 1;
       }
     }
@@ -266,6 +292,13 @@ function applyMaskToAlpha(
       const a = alpha[y * w + x] ?? 255;
       if (channels >= 4) {
         data[i + 3] = a;
+        // 透明像素的 RGB 须为 0（预乘透明）：若保留 (255,255,255,0)，Konva 滤镜卷积仍按 R 累加，
+        // 解算后易出现黑块/黑边；画布直接 drawImage 时 (0,0,0,0) 也更稳妥。
+        if (a === 0) {
+          data[i] = 0;
+          data[i + 1] = 0;
+          data[i + 2] = 0;
+        }
       }
     }
   }
@@ -287,13 +320,14 @@ export function applyInstantTransparency(
     10
   );
 
-  const bg = sampleBackgroundColor(data, width, height, channels, sampleSize);
+  const bg = options.backgroundColor ?? sampleBackgroundColor(data, width, height, channels, sampleSize);
   const mask = new Uint8Array(width * height);
+  const colorMatch = options.colorMatch ?? 'euclidean';
 
   if (options.contiguous) {
-    floodFillBackground(data, width, height, channels, bg, options.tolerance, mask);
+    floodFillBackground(data, width, height, channels, bg, options.tolerance, colorMatch, mask);
   } else {
-    markAllMatchingBackground(data, width, height, channels, bg, options.tolerance, mask);
+    markAllMatchingBackground(data, width, height, channels, bg, options.tolerance, colorMatch, mask);
   }
 
   const outData = new Uint8ClampedArray(data);
@@ -304,10 +338,120 @@ export function applyInstantTransparency(
 
 const DEFAULT_OPTIONS: InstantTransparencyOptions = {
   tolerance: 30,
+  colorMatch: 'euclidean',
   contiguous: true,
   antiAliasing: true,
   feather: 0,
 };
+
+const WHITE_RGB = { r: 255, g: 255, b: 255 };
+
+function smoothstep01(edge0: number, edge1: number, x: number): number {
+  const span = Math.max(1e-6, edge1 - edge0);
+  const t = Math.max(0, Math.min(1, (x - edge0) / span));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * 勾选「仅限白灰色」时在计算混合度（dist→aFg）之前调用：只有判为白/灰的像素才走完整反解，否则保持原 RGBA。
+ * 依据叠白底后的合成色 (Rc,Gc,Bc)：近中性（通道差小）且亮度在中灰以上，避免把明显彩色当背景，同时覆盖白～中灰底。
+ */
+function isWhiteOrGrayBeforeUnblend(rc: number, gc: number, bc: number): boolean {
+  const mx = Math.max(rc, gc, bc);
+  const mn = Math.min(rc, gc, bc);
+  if (mx - mn > 52) return false;
+  const lum = (rc + gc + bc) / 3;
+  return lum >= 100 && lum <= 255;
+}
+
+/**
+ * 假定像素是按直色叠在纯白底上：C = F·α + W·(1−α)（每通道，同一 α）。
+ * 由 C 与白底的「混合度」用平滑阶估计 α，再反解前景 F；输出半透明 Alpha + 还原色（非二值透明）。
+ * @param whiteGrayOnly 为 true 时仍走同一套反解；仅在求 dist/aFg 之前若合成色非白/灰则跳过（保持原像素）
+ */
+export function applyUnblendWhiteBackdrop(imageData: ImageData, tolerance: number, whiteGrayOnly = false): ImageData {
+  const { data, width, height } = imageData;
+  const soft = Math.max(2, 2 + tolerance * 1.5);
+  const eps = 1e-4;
+  const out = new Uint8ClampedArray(data.length);
+  const n = width * height;
+
+  for (let p = 0; p < n; p++) {
+    const i = p * 4;
+    const R = data[i] ?? 0;
+    const G = data[i + 1] ?? 0;
+    const B = data[i + 2] ?? 0;
+    const ain = (data[i + 3] ?? 255) / 255;
+
+    // 直色叠白底的合成色（与画布 getImageData 非预乘一致）
+    const Rc = R * ain + WHITE_RGB.r * (1 - ain);
+    const Gc = G * ain + WHITE_RGB.g * (1 - ain);
+    const Bc = B * ain + WHITE_RGB.b * (1 - ain);
+
+    if (whiteGrayOnly && !isWhiteOrGrayBeforeUnblend(Rc, Gc, Bc)) {
+      out[i] = R;
+      out[i + 1] = G;
+      out[i + 2] = B;
+      out[i + 3] = Math.round(Math.max(0, Math.min(1, ain)) * 255);
+      continue;
+    }
+
+    const dr = WHITE_RGB.r - Rc;
+    const dg = WHITE_RGB.g - Gc;
+    const db = WHITE_RGB.b - Bc;
+    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+    const aFg = smoothstep01(0, soft, dist);
+
+    if (aFg < 1e-3) {
+      out[i] = 0;
+      out[i + 1] = 0;
+      out[i + 2] = 0;
+      out[i + 3] = 0;
+      continue;
+    }
+
+    const inv = 1 / Math.max(aFg, eps);
+    let oR = (Rc - WHITE_RGB.r * (1 - aFg)) * inv;
+    let oG = (Gc - WHITE_RGB.g * (1 - aFg)) * inv;
+    let oB = (Bc - WHITE_RGB.b * (1 - aFg)) * inv;
+    oR = Math.max(0, Math.min(255, oR));
+    oG = Math.max(0, Math.min(255, oG));
+    oB = Math.max(0, Math.min(255, oB));
+    const aOut = Math.round(Math.max(0, Math.min(1, aFg * ain)) * 255);
+
+    if (aOut === 0) {
+      out[i] = 0;
+      out[i + 1] = 0;
+      out[i + 2] = 0;
+      out[i + 3] = 0;
+    } else {
+      out[i] = Math.round(oR);
+      out[i + 1] = Math.round(oG);
+      out[i + 2] = Math.round(oB);
+      out[i + 3] = aOut;
+    }
+  }
+
+  return new ImageData(out, width, height);
+}
+
+/** dataUrl → 白底线性反解去白，PNG base64（无 data: 前缀） */
+export async function removeWhiteBackdropFromDataUrl(
+  dataUrl: string,
+  tolerance: number,
+  whiteGrayOnly = false
+): Promise<string> {
+  const { data: imageData } = await loadImageDataFromDataUrl(dataUrl);
+  const result = applyUnblendWhiteBackdrop(imageData, tolerance, whiteGrayOnly);
+  const canvas = document.createElement('canvas');
+  canvas.width = result.width;
+  canvas.height = result.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('无法创建 Canvas 2D 上下文');
+  ctx.putImageData(result, 0, 0);
+  return canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+}
 
 /** 加载 dataUrl 为 ImageData，确保 RGBA */
 async function loadImageDataFromDataUrl(dataUrl: string): Promise<{ data: ImageData; width: number; height: number }> {
@@ -365,13 +509,14 @@ export async function computeInstantTransparencyMask(
     10
   );
 
-  const bg = sampleBackgroundColor(data, w, h, channels, sampleSize);
+  const bg = opts.backgroundColor ?? sampleBackgroundColor(data, w, h, channels, sampleSize);
   const mask = new Uint8Array(w * h);
+  const colorMatch = opts.colorMatch ?? 'euclidean';
 
   if (opts.contiguous) {
-    floodFillBackground(data, w, h, channels, bg, opts.tolerance, mask);
+    floodFillBackground(data, w, h, channels, bg, opts.tolerance, colorMatch, mask);
   } else {
-    markAllMatchingBackground(data, w, h, channels, bg, opts.tolerance, mask);
+    markAllMatchingBackground(data, w, h, channels, bg, opts.tolerance, colorMatch, mask);
   }
 
   if (opts.antiAliasing) {

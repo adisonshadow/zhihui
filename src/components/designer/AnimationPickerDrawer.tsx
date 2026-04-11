@@ -9,8 +9,9 @@ import { getAnimationsByCategory, resolveAnimationCssClass } from '@/constants/a
 import type { AnimationDef } from '@/constants/animationRegistry';
 import './AnimationPickerDrawer.css';
 
-// 确保 Magic 动画已注册
+// 确保动画已注册（Magic + 芝绘内置）
 import '@/constants/animationsMagic';
+import '@/constants/animationsYiman';
 
 const { Text } = Typography;
 
@@ -48,7 +49,7 @@ export function AnimationPickerDrawer({
       open={open}
       onClose={onClose}
       mask={false}
-      width={360}
+      size={360}
       className="animation-picker-drawer"
       styles={{ body: { padding: 12 } }}
     >

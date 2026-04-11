@@ -5,6 +5,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import ffmpeg from 'fluent-ffmpeg';
 import sharp from 'sharp';
 import { extractVideoFrame } from './videoCoverService';
@@ -220,12 +221,40 @@ async function ensureFfmpegPath(): Promise<void> {
   }
 }
 
+/** 获取 ffmpeg 二进制路径（优先 ffmpeg-static） */
+async function getFfmpegBinPath(): Promise<string> {
+  try {
+    const mod = await import('ffmpeg-static');
+    const p = (mod as { default?: string }).default ?? (mod as { path?: string }).path;
+    if (p && typeof p === 'string' && fs.existsSync(p)) return p;
+  } catch { /* ignore */ }
+  return 'ffmpeg';
+}
+
+/** spawn 运行 ffmpeg 并捕获 stderr */
+function runFfmpeg(bin: string, args: string[]): Promise<{ ok: boolean; stderr: string }> {
+  return new Promise((resolve) => {
+    let stderr = '';
+    const proc = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('close', (code: number) => resolve({ ok: code === 0, stderr }));
+    proc.on('error', (err: Error) => resolve({ ok: false, stderr: err.message }));
+  });
+}
+
 /** 将指定颜色抠除并输出带透明通道的 WebM；返回临时文件路径。
  * color='auto' 时自动检测背景色；tolerance 0-255 对应抠色容差；contiguous=true 使用漫水填充仅去除与边缘相连的背景色 */
 export async function processTransparentVideo(
   inputPath: string,
   color: ChromaKeyColor | { r: number; g: number; b: number },
-  options?: { similarity?: number; blend?: number; tolerance?: number; contiguous?: boolean }
+  options?: {
+    similarity?: number;
+    blend?: number;
+    tolerance?: number;
+    contiguous?: boolean;
+    /** 去溢色类型，'green'|'blue' 时在 colorkey 后应用 despill 滤镜（见 docs/10） */
+    despill?: 'green' | 'blue';
+  }
 ): Promise<{ ok: boolean; path?: string; error?: string }> {
   if (!fs.existsSync(inputPath)) {
     return { ok: false, error: '输入文件不存在' };
@@ -234,8 +263,9 @@ export async function processTransparentVideo(
   // tolerance 0-255 → similarity 0-1；未传 tolerance 时沿用旧 similarity 参数以保持向后兼容
   const tolerance = options?.tolerance ?? Math.round((options?.similarity ?? 0.3) * 255);
   const similarity = Math.max(0, Math.min(1, tolerance / 255));
-  const blend = options?.blend ?? 0.08;
+  const blend = options?.blend ?? 0.12;
   const contiguous = options?.contiguous ?? false;
+  const despill = options?.despill;
 
   // 解析背景色
   let bgColorRgb: { r: number; g: number; b: number };
@@ -283,36 +313,55 @@ export async function processTransparentVideo(
       maskPath = maskRes.maskPath;
 
       // colorkey 生成 alpha；alpha 与遮罩取交集：防止误删内部同色区域
-      // 逻辑：final_alpha = lighten(alphaextract_from_keyed, negate(flood_fill_mask))
+      // 可选 despill 对主画面去溢色后再转 YUV
+      const mainChain = despill
+        ? `[main]format=rgba,despill=type=${despill}:mix=0:expand=0,format=yuv444p[main_yuv]`
+        : `[main]format=yuv444p[main_yuv]`;
       const filterComplex = [
-        `[0:v]colorkey=${hexColor}:${similarity}:${blend}[keyed]`,
-        `[keyed]alphaextract[alpha_key]`,
-        `[1:v]negate[inv_mask]`,
-        `[alpha_key][inv_mask]blend=all_mode='lighten'[final_alpha]`,
-        `[0:v][final_alpha]alphamerge,format=yuva420p[out]`,
+        `[0:v]split=2[main][ck_in]`,
+        mainChain,
+        `[ck_in]colorkey=${hexColor}:${similarity}:${blend},format=rgba,alphaextract,format=gray[alpha_key]`,
+        `[1:v]format=gray,negate[inv_mask]`,
+        `[alpha_key][inv_mask]blend=all_mode=lighten,format=gray[final_alpha]`,
+        `[main_yuv][final_alpha]mergeplanes=0x00010210:yuva444p,format=yuva420p[out]`,
       ].join(';');
 
-      await new Promise<void>((resolve, reject) => {
-        ffmpeg(inputPath)
-          .input(maskPath!)
-          .complexFilter(filterComplex, 'out')
-          .outputOptions(['-y', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-auto-alt-ref', '0', '-lag-in-frames', '0', '-an'])
-          .output(outputPath)
-          .on('end', () => resolve())
-          .on('error', (err: Error) => reject(err))
-          .run();
-      });
+      const bin = await getFfmpegBinPath();
+      const args = [
+        '-y',
+        '-i', inputPath,
+        '-loop', '1', '-i', maskPath!,
+        '-filter_complex', filterComplex,
+        '-map', '[out]',
+        '-shortest',
+        '-c:v', 'libvpx-vp9',
+        '-pix_fmt', 'yuva420p',
+        '-auto-alt-ref', '0',
+        '-lag-in-frames', '0',
+        '-an',
+        outputPath,
+      ];
+      const result = await runFfmpeg(bin, args);
+      if (!result.ok) {
+        throw new Error(`ffmpeg exited with code 1: ${result.stderr.slice(-500)}`);
+      }
     } finally {
       try { if (fs.existsSync(framePath)) fs.unlinkSync(framePath); } catch { /* ignore */ }
       try { if (maskPath && fs.existsSync(maskPath)) fs.unlinkSync(maskPath); } catch { /* ignore */ }
     }
   } else {
-    // 标准模式：直接 colorkey
+    // 标准模式：colorkey，可选 despill 去溢色
+    const vfParts = [`colorkey=${hexColor}:${similarity}:${blend}`];
+    if (despill) {
+      vfParts.push(`format=rgba`, `despill=type=${despill}:mix=0:expand=0`, `format=yuva420p`);
+    } else {
+      vfParts.push('format=yuva420p');
+    }
     await new Promise<void>((resolve, reject) => {
       ffmpeg(inputPath)
         .outputOptions([
           '-y',
-          '-vf', `colorkey=${hexColor}:${similarity}:${blend},format=yuva420p`,
+          '-vf', vfParts.join(','),
           '-c:v', 'libvpx-vp9',
           '-pix_fmt', 'yuva420p',
           '-auto-alt-ref', '0',
@@ -330,5 +379,125 @@ export async function processTransparentVideo(
     return { ok: true, path: outputPath };
   }
   try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { /* ignore */ }
+  return { ok: false, error: '处理失败' };
+}
+
+/** 从单张图片四角采样检测背景色（与 detectVideoBackgroundColor 逻辑一致） */
+async function detectImageBackgroundColor(
+  imagePath: string
+): Promise<{ ok: boolean; r?: number; g?: number; b?: number; error?: string }> {
+  if (!fs.existsSync(imagePath)) {
+    return { ok: false, error: '图片不存在' };
+  }
+  try {
+    const samples = await sampleCornersFromImage(imagePath);
+    if (samples.length === 0) return { ok: false, error: '无法从图片采样' };
+    const bg = filterOutliersAndAverage(samples);
+    return { ok: true, r: bg.r, g: bg.g, b: bg.b };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 单帧 colorkey：对单张图片执行 ffmpeg colorkey，与 processTransparentVideo 算法一致（见 docs/10）
+ * 返回输出 PNG 路径 */
+export async function processSingleFrameColorkey(
+  inputPath: string,
+  color: ChromaKeyColor | { r: number; g: number; b: number },
+  options?: {
+    tolerance?: number;
+    blend?: number;
+    contiguous?: boolean;
+    despill?: 'green' | 'blue';
+  }
+): Promise<{ ok: boolean; path?: string; error?: string }> {
+  if (!fs.existsSync(inputPath)) {
+    return { ok: false, error: '输入文件不存在' };
+  }
+
+  const tolerance = options?.tolerance ?? 80;
+  const similarity = Math.max(0, Math.min(1, tolerance / 255));
+  const blend = options?.blend ?? 0.12;
+  const contiguous = options?.contiguous ?? false;
+  const despill = options?.despill;
+
+  let bgColorRgb: { r: number; g: number; b: number };
+  let hexColor: string;
+  if (typeof color === 'object' && 'r' in color) {
+    bgColorRgb = color;
+    hexColor = rgbToHex(color.r, color.g, color.b);
+  } else if (color === 'auto') {
+    const detected = await detectImageBackgroundColor(inputPath);
+    if (!detected.ok || detected.r == null || detected.g == null || detected.b == null) {
+      return { ok: false, error: detected.error ?? '自动检测背景色失败' };
+    }
+    bgColorRgb = { r: detected.r, g: detected.g, b: detected.b };
+    hexColor = rgbToHex(detected.r, detected.g, detected.b);
+  } else {
+    hexColor = CHROMA_COLORS[color];
+    const hex = hexColor.replace('0x', '');
+    bgColorRgb = {
+      r: parseInt(hex.slice(0, 2), 16),
+      g: parseInt(hex.slice(2, 4), 16),
+      b: parseInt(hex.slice(4, 6), 16),
+    };
+  }
+
+  const tmpDir = fs.realpathSync(os.tmpdir());
+  const outputPath = path.join(tmpDir, `yiman_single_frame_colorkey_${Date.now()}.png`);
+  await ensureFfmpegPath();
+  const bin = await getFfmpegBinPath();
+
+  if (contiguous) {
+    const maskRes = await createContiguousMask(inputPath, bgColorRgb, tolerance);
+    if (!maskRes.ok || !maskRes.maskPath) {
+      return { ok: false, error: maskRes.error ?? '生成遮罩失败' };
+    }
+    const maskPath = maskRes.maskPath;
+    try {
+      const mainChain = despill
+        ? `[main]format=rgba,despill=type=${despill}:mix=0:expand=0[main_rgba]`
+        : `[main]format=rgba[main_rgba]`;
+      const filterComplex = [
+        `[0:v]split=2[main][ck_in]`,
+        mainChain,
+        `[ck_in]colorkey=${hexColor}:${similarity}:${blend},format=rgba,alphaextract,format=gray[alpha_key]`,
+        `[1:v]format=gray,negate[inv_mask]`,
+        `[alpha_key][inv_mask]blend=all_mode=lighten[final_alpha]`,
+        `[main_rgba]format=rgb24[main_rgb]`,
+        `[main_rgb][final_alpha]alphamerge[out]`,
+      ].join(';');
+      const args = [
+        '-y',
+        '-i', inputPath,
+        '-i', maskPath,
+        '-filter_complex', filterComplex,
+        '-map', '[out]',
+        outputPath,
+      ];
+      const result = await runFfmpeg(bin, args);
+      if (!result.ok) {
+        throw new Error(`ffmpeg exited: ${result.stderr.slice(-500)}`);
+      }
+    } finally {
+      try { if (fs.existsSync(maskPath)) fs.unlinkSync(maskPath); } catch { /* ignore */ }
+    }
+  } else {
+    const vfParts = [`colorkey=${hexColor}:${similarity}:${blend}`];
+    if (despill) {
+      vfParts.push(`format=rgba`, `despill=type=${despill}:mix=0:expand=0`);
+    }
+    vfParts.push(`format=rgba`);
+    const args = ['-y', '-i', inputPath, '-vf', vfParts.join(','), outputPath];
+    const result = await runFfmpeg(bin, args);
+    if (!result.ok) {
+      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch { /* ignore */ }
+      return { ok: false, error: result.stderr.slice(-300) };
+    }
+  }
+
+  if (fs.existsSync(outputPath)) {
+    return { ok: true, path: outputPath };
+  }
   return { ok: false, error: '处理失败' };
 }

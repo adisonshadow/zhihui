@@ -1,15 +1,17 @@
 /**
  * AI 对话通用组件入口
- * 支持多种展示模式：SidePanel、FloatingBottom、Popover
+ * 支持多种展示模式：SidePanel、FloatingBottom、Popover、BottomSender
  * 见功能文档 06 § 3
  */
-import React from 'react';
+import React, { forwardRef } from 'react';
 import type { TooltipPlacement } from 'antd/es/tooltip';
 import type { AIChatMode } from './types';
 import { AIChatSidePanel } from './AIChatSidePanel';
 import { AIChatFloatingBottom } from './AIChatFloatingBottom';
 import { AIChatPopover } from './AIChatPopover';
+import { AIChatBottomSender } from './AIChatBottomSender';
 import type { AIChatCoreProps } from './AIChatCore';
+import type { AIChatSidePanelHandle } from './aiChatPanelHandles';
 
 export interface AIChatProps extends Omit<AIChatCoreProps, 'agentKey'> {
   /** 展示模式 */
@@ -43,32 +45,41 @@ export interface AIChatProps extends Omit<AIChatCoreProps, 'agentKey'> {
   /** Popover 弹出方向（默认 'topRight'） */
   popoverPlacement?: TooltipPlacement;
 
+  // ---- BottomSender 专属 ----
+  /** 底部仅 Sender 模式：输入框上方的自定义区域 */
+  bottomSenderAbove?: React.ReactNode;
+
   // ---- 共享 ----
   /** 初始是否展开（FloatingBottom / Popover，默认 false） */
   defaultOpen?: boolean;
 }
 
-export function AIChat({
-  mode,
-  agentKey,
-  onAgentChange,
-  floatingTitle,
-  floatingPanelWidth,
-  floatingPanelHeight,
-  floatingOffsetRight,
-  floatingOffsetBottom,
-  popoverTitle,
-  popoverTrigger,
-  popoverWidth,
-  popoverHeight,
-  popoverPlacement,
-  defaultOpen,
-  ...coreProps
-}: AIChatProps) {
+export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AIChat(
+  {
+    mode,
+    agentKey,
+    onAgentChange,
+    floatingTitle,
+    floatingPanelWidth,
+    floatingPanelHeight,
+    floatingOffsetRight,
+    floatingOffsetBottom,
+    popoverTitle,
+    popoverTrigger,
+    popoverWidth,
+    popoverHeight,
+    popoverPlacement,
+    bottomSenderAbove,
+    defaultOpen,
+    ...coreProps
+  },
+  ref
+) {
   switch (mode) {
     case 'SidePanel':
       return (
         <AIChatSidePanel
+          ref={ref}
           agentKey={agentKey}
           onAgentChange={onAgentChange}
           {...coreProps}
@@ -77,6 +88,7 @@ export function AIChat({
     case 'FloatingBottom':
       return (
         <AIChatFloatingBottom
+          ref={ref}
           agentKey={agentKey}
           onAgentChange={onAgentChange}
           title={floatingTitle}
@@ -91,6 +103,7 @@ export function AIChat({
     case 'Popover':
       return (
         <AIChatPopover
+          ref={ref}
           agentKey={agentKey}
           onAgentChange={onAgentChange}
           title={popoverTitle}
@@ -102,13 +115,23 @@ export function AIChat({
           {...coreProps}
         />
       );
+    case 'BottomSender':
+      return (
+        <AIChatBottomSender
+          agentKey={agentKey}
+          onAgentChange={onAgentChange}
+          aboveSender={bottomSenderAbove}
+          {...coreProps}
+        />
+      );
     default:
       return (
         <AIChatSidePanel
+          ref={ref}
           agentKey={agentKey}
           onAgentChange={onAgentChange}
           {...coreProps}
         />
       );
   }
-}
+});

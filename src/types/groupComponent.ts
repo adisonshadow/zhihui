@@ -58,4 +58,6 @@ export interface GroupComponentItem {
   id: string;
   name?: string;
   states: GroupComponentState[];
+  /** 素材面板 UI 分类（scene/prop/effect），未设则默认归入道具 */
+  uiCategory?: 'scene' | 'prop' | 'effect';
 }

@@ -78,9 +78,10 @@ export class ReasoningChatProvider extends AbstractChatProvider<
 
   transformParams(
     requestParams: Partial<ChatInput>,
-    options: { params?: ChatInput }
+    options: { params?: Partial<ChatInput> }
   ): ChatInput {
     return {
+      messages: [],
       ...(options?.params || {}),
       ...(requestParams || {}),
     } as ChatInput;

@@ -3,6 +3,12 @@
 
 /* Magic 动画库，用于素材动画（见 docs/08-素材动画功能技术方案.md） */
 @import url("/magic.css");
+@import url("/yiman-animations.css");
+@import url("/iconfont/iconfont.css");
+
+html {
+  color-scheme: dark;
+}
 
 * {
   margin: 0;
@@ -74,4 +80,27 @@ body {
   line-height: 24px;
   border-radius: 4px;
   color: #fff;
+}
+
+.form-item{
+  display: flex;
+  width: 100%;
+}
+
+.form-item-horizontal{
+  align-items: center;
+  gap: 10px;
+}
+.form-item-horizontal>*:not(span, .ant-color-picker-trigger){
+  flex: 1;
+  min-width: 0;
+}
+
+.form-item-horizontal-not-scale{
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.form-item-horizontal-not-scale>button{
+  margin-top: 0 !important;
 }

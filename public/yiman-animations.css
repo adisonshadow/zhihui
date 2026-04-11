@@ -1,0 +1,205 @@
+/*!
+ * 芝绘自定义素材动作动画（与 magic.css 一致：类名仅设 animation-name，时长由运行时覆盖）
+ */
+
+/* 1. 弹跳 + 轻微形变（压扁/拉长） */
+.yimanBounceSquash {
+  -webkit-animation-name: yimanBounceSquash;
+  animation-name: yimanBounceSquash;
+  transform-origin: 50% 100%;
+}
+
+@-webkit-keyframes yimanBounceSquash {
+  0%,
+  100% {
+    -webkit-transform: translateY(0) scale(1, 1);
+    transform: translateY(0) scale(1, 1);
+  }
+  18% {
+    -webkit-transform: translateY(-22%) scale(1.05, 0.9);
+    transform: translateY(-22%) scale(1.05, 0.9);
+  }
+  36% {
+    -webkit-transform: translateY(-32%) scale(0.93, 1.1);
+    transform: translateY(-32%) scale(0.93, 1.1);
+  }
+  52% {
+    -webkit-transform: translateY(0) scale(1.08, 0.86);
+    transform: translateY(0) scale(1.08, 0.86);
+  }
+  68% {
+    -webkit-transform: translateY(-10%) scale(0.98, 1.04);
+    transform: translateY(-10%) scale(0.98, 1.04);
+  }
+  82% {
+    -webkit-transform: translateY(0) scale(1.02, 0.96);
+    transform: translateY(0) scale(1.02, 0.96);
+  }
+}
+
+@keyframes yimanBounceSquash {
+  0%,
+  100% {
+    -webkit-transform: translateY(0) scale(1, 1);
+    transform: translateY(0) scale(1, 1);
+  }
+  18% {
+    -webkit-transform: translateY(-22%) scale(1.05, 0.9);
+    transform: translateY(-22%) scale(1.05, 0.9);
+  }
+  36% {
+    -webkit-transform: translateY(-32%) scale(0.93, 1.1);
+    transform: translateY(-32%) scale(0.93, 1.1);
+  }
+  52% {
+    -webkit-transform: translateY(0) scale(1.08, 0.86);
+    transform: translateY(0) scale(1.08, 0.86);
+  }
+  68% {
+    -webkit-transform: translateY(-10%) scale(0.98, 1.04);
+    transform: translateY(-10%) scale(0.98, 1.04);
+  }
+  82% {
+    -webkit-transform: translateY(0) scale(1.02, 0.96);
+    transform: translateY(0) scale(1.02, 0.96);
+  }
+}
+
+/* 2. 微风摇摆：锚点/幅度由 --yiman-sway-rz 与 inline transform-origin 控制（branchSwayAnimation.ts） */
+.yimanBranchSway {
+  -webkit-animation-name: yimanBranchSway;
+  animation-name: yimanBranchSway;
+  transform-style: preserve-3d;
+}
+
+@-webkit-keyframes yimanBranchSway {
+  0%,
+  100% {
+    -webkit-transform: perspective(600px) translateY(0) rotateZ(calc(-0.8 * var(--yiman-sway-rz, 2deg)))
+      rotateY(calc(1.6 * var(--yiman-sway-rz, 2deg))) rotateX(calc(0.4 * var(--yiman-sway-rz, 2deg)));
+    transform: perspective(600px) translateY(0) rotateZ(calc(-0.8 * var(--yiman-sway-rz, 2deg)))
+      rotateY(calc(1.6 * var(--yiman-sway-rz, 2deg))) rotateX(calc(0.4 * var(--yiman-sway-rz, 2deg)));
+  }
+  50% {
+    -webkit-transform: perspective(600px) translateY(-1%) rotateZ(var(--yiman-sway-rz, 2.5deg))
+      rotateY(calc(-1.6 * var(--yiman-sway-rz, 2.5deg))) rotateX(calc(-0.8 * var(--yiman-sway-rz, 2.5deg)));
+    transform: perspective(600px) translateY(-1%) rotateZ(var(--yiman-sway-rz, 2.5deg))
+      rotateY(calc(-1.6 * var(--yiman-sway-rz, 2.5deg))) rotateX(calc(-0.8 * var(--yiman-sway-rz, 2.5deg)));
+  }
+}
+
+@keyframes yimanBranchSway {
+  0%,
+  100% {
+    -webkit-transform: perspective(600px) translateY(0) rotateZ(calc(-0.8 * var(--yiman-sway-rz, 2deg)))
+      rotateY(calc(1.6 * var(--yiman-sway-rz, 2deg))) rotateX(calc(0.4 * var(--yiman-sway-rz, 2deg)));
+    transform: perspective(600px) translateY(0) rotateZ(calc(-0.8 * var(--yiman-sway-rz, 2deg)))
+      rotateY(calc(1.6 * var(--yiman-sway-rz, 2deg))) rotateX(calc(0.4 * var(--yiman-sway-rz, 2deg)));
+  }
+  50% {
+    -webkit-transform: perspective(600px) translateY(-1%) rotateZ(var(--yiman-sway-rz, 2.5deg))
+      rotateY(calc(-1.6 * var(--yiman-sway-rz, 2.5deg))) rotateX(calc(-0.8 * var(--yiman-sway-rz, 2.5deg)));
+    transform: perspective(600px) translateY(-1%) rotateZ(var(--yiman-sway-rz, 2.5deg))
+      rotateY(calc(-1.6 * var(--yiman-sway-rz, 2.5deg))) rotateX(calc(-0.8 * var(--yiman-sway-rz, 2.5deg)));
+  }
+}
+
+/* 3. 蛙跳：下蹲蓄力 → 抛物线起跳 → 落地缓冲 */
+.yimanFrogJump {
+  -webkit-animation-name: yimanFrogJump;
+  animation-name: yimanFrogJump;
+  transform-origin: 50% 100%;
+}
+
+@-webkit-keyframes yimanFrogJump {
+  0%,
+  100% {
+    -webkit-transform: translate(0, 0) scale(1, 1);
+    transform: translate(0, 0) scale(1, 1);
+  }
+  8% {
+    -webkit-transform: translate(0, 4%) scale(1.12, 0.78);
+    transform: translate(0, 4%) scale(1.12, 0.78);
+  }
+  22% {
+    -webkit-transform: translate(6%, -35%) scale(0.92, 1.12);
+    transform: translate(6%, -35%) scale(0.92, 1.12);
+  }
+  45% {
+    -webkit-transform: translate(14%, -18%) scale(1, 1);
+    transform: translate(14%, -18%) scale(1, 1);
+  }
+  65% {
+    -webkit-transform: translate(18%, 0) scale(1.08, 0.85);
+    transform: translate(18%, 0) scale(1.08, 0.85);
+  }
+  80% {
+    -webkit-transform: translate(16%, -5%) scale(0.97, 1.05);
+    transform: translate(16%, -5%) scale(0.97, 1.05);
+  }
+  92% {
+    -webkit-transform: translate(8%, 0) scale(1.02, 0.98);
+    transform: translate(8%, 0) scale(1.02, 0.98);
+  }
+}
+
+@keyframes yimanFrogJump {
+  0%,
+  100% {
+    -webkit-transform: translate(0, 0) scale(1, 1);
+    transform: translate(0, 0) scale(1, 1);
+  }
+  8% {
+    -webkit-transform: translate(0, 4%) scale(1.12, 0.78);
+    transform: translate(0, 4%) scale(1.12, 0.78);
+  }
+  22% {
+    -webkit-transform: translate(6%, -35%) scale(0.92, 1.12);
+    transform: translate(6%, -35%) scale(0.92, 1.12);
+  }
+  45% {
+    -webkit-transform: translate(14%, -18%) scale(1, 1);
+    transform: translate(14%, -18%) scale(1, 1);
+  }
+  65% {
+    -webkit-transform: translate(18%, 0) scale(1.08, 0.85);
+    transform: translate(18%, 0) scale(1.08, 0.85);
+  }
+  80% {
+    -webkit-transform: translate(16%, -5%) scale(0.97, 1.05);
+    transform: translate(16%, -5%) scale(0.97, 1.05);
+  }
+  92% {
+    -webkit-transform: translate(8%, 0) scale(1.02, 0.98);
+    transform: translate(8%, 0) scale(1.02, 0.98);
+  }
+}
+
+/* 4. 绕 Z 轴 360° 旋转（整圈） */
+.yimanSpin360 {
+  -webkit-animation-name: yimanSpin360;
+  animation-name: yimanSpin360;
+  transform-origin: 50% 50%;
+}
+
+@-webkit-keyframes yimanSpin360 {
+  0% {
+    -webkit-transform: rotate(0deg);
+    transform: rotate(0deg);
+  }
+  100% {
+    -webkit-transform: rotate(360deg);
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes yimanSpin360 {
+  0% {
+    -webkit-transform: rotate(0deg);
+    transform: rotate(0deg);
+  }
+  100% {
+    -webkit-transform: rotate(360deg);
+    transform: rotate(360deg);
+  }
+}

@@ -1,11 +1,17 @@
 /**
  * 动画预览 Modal：用原始素材播放当前配置的动画（见 docs/08-素材动画功能技术方案.md 6.4）
  */
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Modal } from 'antd';
 import type { AnimationCategory } from '@/constants/animationRegistry';
 import { getAnimationById, resolveAnimationCssClass } from '@/constants/animationRegistry';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
+import {
+  BRANCH_SWAY_ANIMATION_ID,
+  branchSwayEffectiveDuration,
+  branchSwayLayerStyleFromAction,
+  parseBranchSwayParams,
+} from '@/constants/branchSwayAnimation';
 import './AnimationPreviewModal.css';
 
 interface AnimationPreviewModalProps {
@@ -20,6 +26,8 @@ interface AnimationPreviewModalProps {
 
 const VIDEO_TYPES = ['video', 'transparent_video'];
 
+type ActionAnimConfig = NonNullable<BlockAnimationConfig['action']>;
+
 export function AnimationPreviewModal({
   open,
   onClose,
@@ -30,20 +38,36 @@ export function AnimationPreviewModal({
 }: AnimationPreviewModalProps) {
   const previewRef = useRef<HTMLDivElement>(null);
 
+  const branchSwayPreviewDeps =
+    category === 'action' && config != null
+      ? (() => {
+          const ac = config as ActionAnimConfig;
+          return ac.animationId === BRANCH_SWAY_ANIMATION_ID ? JSON.stringify(ac.params ?? {}) : '';
+        })()
+      : '';
+
   useEffect(() => {
     if (!open || !config?.animationId || !previewRef.current) return;
     const el = previewRef.current;
     el.style.animation = 'none';
     el.offsetHeight;
     el.style.animation = '';
-  }, [open, config?.animationId]);
+  }, [open, config?.animationId, category, branchSwayPreviewDeps]);
 
   const def = config?.animationId ? getAnimationById(config.animationId) : null;
   const hasValidConfig = !!config?.animationId && !!def;
 
   const defaultDir = def?.directionMap ? Object.keys(def.directionMap)[0] : undefined;
   const resolvedClass = hasValidConfig && def ? resolveAnimationCssClass(def, config!.direction ?? defaultDir) : '';
-  const duration = hasValidConfig && def ? (config!.duration ?? def.defaultDuration ?? 0.6) : 0;
+  const baseDuration = hasValidConfig && def ? (config!.duration ?? def.defaultDuration ?? 0.6) : 0;
+  const actionCfg = category === 'action' && config ? (config as ActionAnimConfig) : null;
+  const isBranchSwayPreview = actionCfg?.animationId === BRANCH_SWAY_ANIMATION_ID;
+  const duration =
+    isBranchSwayPreview && actionCfg
+      ? branchSwayEffectiveDuration(baseDuration, parseBranchSwayParams(actionCfg.params).swaySpeed)
+      : baseDuration;
+  const branchPreviewLayer =
+    isBranchSwayPreview && actionCfg ? branchSwayLayerStyleFromAction(actionCfg) : undefined;
 
   return (
     <Modal
@@ -61,6 +85,7 @@ export function AnimationPreviewModal({
             ref={previewRef}
             className={`animation-preview-modal__block magictime ${resolvedClass}`}
             style={{
+              ...branchPreviewLayer,
               animationDuration: `${duration}s`,
               animationIterationCount: 'infinite',
             }}

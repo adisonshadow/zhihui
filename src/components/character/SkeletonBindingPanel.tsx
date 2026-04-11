@@ -1,5 +1,5 @@
 /**
- * 骨骼绑定设计器面板：导入人物图片、选择预设骨骼、拖拽节点与人物绑定（见 docs/06-人物骨骼贴图功能设计.md）
+ * 骨骼绑定设计器面板：导入角色图片、选择预设骨骼、拖拽节点与角色绑定（见 docs/06-角色骨骼贴图功能设计.md）
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -107,7 +107,7 @@ export function SkeletonBindingPanel({
   const [useRvmMatting, setUseRvmMatting] = useState(false); // 暂时不使用 RVM 抠图
   const savedNodesBeforePreview = useRef<{ id: string; position: [number, number] }[]>([]);
   const rafRef = useRef<number>(0);
-  /** 预览时人物图片随骨骼根节点（髋）的位移，归一化 [dx, dy] */
+  /** 预览时角色图片随骨骼根节点（髋）的位移，归一化 [dx, dy] */
   const [imageTranslate, setImageTranslate] = useState<[number, number]>([0, 0]);
 
   const preset = getPresetByKind(presetKind);
@@ -210,7 +210,7 @@ export function SkeletonBindingPanel({
 
   const handleGenerateContourMesh = useCallback(async () => {
     if (!angle.image_path) {
-      message.warning('请先导入人物图片');
+      message.warning('请先导入角色图片');
       return;
     }
     setGeneratingContour(true);
@@ -227,7 +227,7 @@ export function SkeletonBindingPanel({
         }
       }
       if (!dataUrlForContour) {
-        message.warning('请先导入人物图片');
+        message.warning('请先导入角色图片');
         return;
       }
       const runContour = async (dataUrl: string): Promise<ReturnType<typeof generateContourMesh>> => {
@@ -372,7 +372,7 @@ export function SkeletonBindingPanel({
         <Space orientation="vertical" style={{ width: '100%' }} size="middle">
           <div>
             <Text strong style={{ display: 'block', marginBottom: 8 }}>
-              人物图片
+              角色图片
             </Text>
             <Space wrap>
               <Button type="default" icon={<UploadOutlined />} onClick={handleUploadImage}>
@@ -453,7 +453,7 @@ export function SkeletonBindingPanel({
 
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
-              <Text strong>拖拽骨骼节点与人物对齐</Text>
+              <Text strong>拖拽骨骼节点与角色对齐</Text>
               <Space wrap>
                 {presetKind === 'human' && (
                   <>
@@ -621,9 +621,9 @@ interface SkeletonCanvasProps {
   draggingId: string | null;
   onDraggingChange: (id: string | null) => void;
   isPreviewing?: boolean;
-  /** 预览时人物图随骨骼根节点位移，归一化 [dx, dy]（非 Canvas 蒙皮时使用） */
+  /** 预览时角色图随骨骼根节点位移，归一化 [dx, dy]（非 Canvas 蒙皮时使用） */
   imageTranslate?: [number, number];
-  /** 预览时传入绑定姿态，用于 Canvas 2D 骨骼蒙皮（仅人物预设） */
+  /** 预览时传入绑定姿态，用于 Canvas 2D 骨骼蒙皮（仅角色预设） */
   bindPoseForSkinning?: { id: string; position: [number, number] }[];
   /** 加权变换数据，有则用加权蒙皮，无则回退到三角形仿射 */
   vertexWeights?: { vertexId: string; weights: { boneId: string; weight: number }[] }[];
@@ -1163,7 +1163,7 @@ function SkeletonCanvas({
             fontSize: 14,
           }}
         >
-          请先导入人物图片
+          请先导入角色图片
         </div>
       )}
     </div>

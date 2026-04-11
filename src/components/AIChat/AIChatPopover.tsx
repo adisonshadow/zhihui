@@ -2,12 +2,13 @@
  * AI 对话 - Popover 布局模式
  * 以触发元素打开 Popover 展示对话界面，适合嵌入到任意 UI 位置
  */
-import React, { useState } from 'react';
+import React, { forwardRef, useState } from 'react';
 import { Popover, Button } from 'antd';
 import type { TooltipPlacement } from 'antd/es/tooltip';
 import { CommentOutlined } from '@ant-design/icons';
 import { AIChatSidePanel } from './AIChatSidePanel';
 import type { AIChatCoreProps } from './AIChatCore';
+import type { AIChatSidePanelHandle } from './aiChatPanelHandles';
 
 export interface AIChatPopoverProps extends AIChatCoreProps {
   agentKey: string;
@@ -26,22 +27,26 @@ export interface AIChatPopoverProps extends AIChatCoreProps {
   placement?: TooltipPlacement;
 }
 
-export function AIChatPopover({
-  agentKey,
-  onAgentChange,
-  title = 'AI 助手',
-  trigger: triggerNode,
-  popoverWidth = 400,
-  popoverHeight = 520,
-  defaultOpen = false,
-  placement = 'topRight',
-  ...coreProps
-}: AIChatPopoverProps) {
+export const AIChatPopover = forwardRef<AIChatSidePanelHandle, AIChatPopoverProps>(function AIChatPopover(
+  {
+    agentKey,
+    onAgentChange,
+    title = 'AI 助手',
+    trigger: triggerNode,
+    popoverWidth = 400,
+    popoverHeight = 520,
+    defaultOpen = false,
+    placement = 'topRight',
+    ...coreProps
+  },
+  ref
+) {
   const [open, setOpen] = useState(defaultOpen);
 
   const content = (
     <div style={{ width: popoverWidth, height: popoverHeight }}>
       <AIChatSidePanel
+        ref={ref}
         agentKey={agentKey}
         onAgentChange={onAgentChange}
         {...coreProps}
@@ -59,7 +64,7 @@ export function AIChatPopover({
       placement={placement}
       destroyOnHidden
       overlayStyle={{ padding: 0 }}
-      overlayInnerStyle={{ padding: 0, overflow: 'hidden', borderRadius: 8 }}
+      styles={{ container: { padding: 0, overflow: 'hidden', borderRadius: 8 }}}
     >
       {triggerNode ?? (
         <Button type="primary" icon={<CommentOutlined />}>
@@ -68,4 +73,4 @@ export function AIChatPopover({
       )}
     </Popover>
   );
-}
+});

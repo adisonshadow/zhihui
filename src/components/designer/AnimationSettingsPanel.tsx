@@ -2,11 +2,12 @@
  * 动画设置主面板（3 Tab：出现、动作、消失）
  * 见 docs/08-素材动画功能技术方案.md 6.2
  */
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Tabs, App } from 'antd';
 import { getAnimationById } from '@/constants/animationRegistry';
 import type { AnimationCategory } from '@/constants/animationRegistry';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
+import { BRANCH_SWAY_ANIMATION_ID, BRANCH_SWAY_DEFAULT_PARAMS } from '@/constants/branchSwayAnimation';
 import { AnimationTabContent } from './AnimationTabContent';
 import { AnimationPickerDrawer } from './AnimationPickerDrawer';
 import { AnimationPreviewModal } from './AnimationPreviewModal';
@@ -78,7 +79,16 @@ export function AnimationSettingsPanel({
       if (category === 'appear') {
         next.appear = { animationId, duration, direction };
       } else if (category === 'action') {
-        next.action = { animationId, duration, repeatCount: 1, direction };
+        next.action =
+          animationId === BRANCH_SWAY_ANIMATION_ID
+            ? {
+                animationId,
+                duration,
+                repeatCount: 1,
+                direction,
+                params: { ...BRANCH_SWAY_DEFAULT_PARAMS },
+              }
+            : { animationId, duration, repeatCount: 1, direction };
       } else {
         next.disappear = { animationId, duration, direction };
       }
@@ -88,15 +98,32 @@ export function AnimationSettingsPanel({
   );
 
   const handleSettingsChange = useCallback(
-    (category: AnimationCategory, data: { duration?: number; repeatCount?: number; direction?: string }) => {
+    (
+      category: AnimationCategory,
+      data: {
+        duration?: number;
+        repeatCount?: number;
+        direction?: string;
+        params?: Record<string, unknown>;
+      }
+    ) => {
       const prev = animationConfig ?? {};
       const next = { ...prev };
+      const { params: patchParams, ...rest } = data;
       if (category === 'appear' && next.appear) {
-        next.appear = { ...next.appear, ...data };
+        next.appear = { ...next.appear, ...rest };
       } else if (category === 'action' && next.action) {
-        next.action = { ...next.action, ...data };
+        next.action = { ...next.action, ...rest };
+        if (patchParams != null) {
+          next.action.params = {
+            ...(typeof next.action.params === 'object' && next.action.params
+              ? next.action.params
+              : {}),
+            ...patchParams,
+          };
+        }
       } else if (category === 'disappear' && next.disappear) {
-        next.disappear = { ...next.disappear, ...data };
+        next.disappear = { ...next.disappear, ...rest };
       }
       saveAnimationConfig(next);
     },

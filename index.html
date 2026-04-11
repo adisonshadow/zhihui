@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" style="color-scheme: dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- 开发时放宽 CSP 便于 Vite HMR；connect-src 含 https: 以支持外部 AI API（OpenAI、豆包等） -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: file: blob:; media-src 'self' data: file: blob:; connect-src 'self' data: ws: wss: https:;" />
+    <!-- 开发时放宽 CSP 便于 Vite HMR；connect-src 含 https: 以支持外部 AI API；127.0.0.1:9380 为本地 IOPaint 擦除服务 -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: file: blob:; media-src 'self' data: file: blob:; connect-src 'self' data: ws: wss: https: http://127.0.0.1:9380 http://localhost:9380;" />
     <title>芝绘 - 撷芝入画，绘漫成境</title>
   </head>
   <body>

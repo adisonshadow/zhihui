@@ -33,6 +33,23 @@ import type { ProjectItem } from '@/types/project';
 
 const { Search } = Input;
 
+/** 项目列表空状态：透明 WebM 插图（替代 Empty 默认 SVG） */
+function EmptyStateVideo() {
+  return (
+    <div style={{ display: 'none', justifyContent: 'center', width: '100%' }}>
+      <video
+        autoPlay
+        loop
+        muted
+        playsInline
+        aria-hidden
+        src="/medias/117beadd-9f0d-43a1-8dba-75b99c102733.webm"
+        style={{ width: 218, maxWidth: '100%', height: 'auto', display: 'block' }}
+      />
+    </div>
+  );
+}
+
 type SortBy = 'updated_at' | 'created_at' | 'name';
 
 /** 目录选择器（Space.Compact，供 Form.Item 绑定 value/onChange；支持手工输入或点击按钮选择） */
@@ -196,7 +213,36 @@ const ProjectList: React.FC = () => {
   };
 
   return (
-    <div>
+    <div style={{ position: 'relative' }}>
+      {/* 全视口背景：fixed 铺满；顶栏靠 AppHeader 更高 z-index 浮在上层 */}
+      <video
+        autoPlay
+        loop
+        muted
+        playsInline
+        aria-hidden
+        src="/medias/grok-video-05239329-8e2d-4172-89e7-acc217c3291e.mp4"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          zIndex: 0,
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          zIndex: 1,
+          pointerEvents: 'none',
+        }}
+      />
+      <div style={{ position: 'relative', zIndex: 2 }}>
       {/* 工具栏：参考 Biezhi2 WorkflowList */}
       <div style={{ marginBottom: 24 }}>
         <Row gutter={16} align="middle">
@@ -209,8 +255,15 @@ const ProjectList: React.FC = () => {
               >
                 新建
               </Button>
-              <Button icon={<ImportOutlined />} onClick={() => setImportModalVisible(true)}>
-                导入
+              <Button 
+                styles={{
+                  root: {
+                    backgroundColor: 'rgba(255,255,255,0.1)',
+                  },
+                }}
+                style={{ backdropFilter: 'blur(10px)' }}
+                icon={<ImportOutlined />} onClick={() => setImportModalVisible(true)}>
+                  导入
               </Button>
             </Space>
           </Col>
@@ -219,10 +272,16 @@ const ProjectList: React.FC = () => {
               <Search
                 placeholder="搜索项目名称或路径"
                 allowClear
-                style={{ width: 220 }}
+                
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 onSearch={(v) => setSearchText(v)}
+                style={{ width: 220, backdropFilter: 'blur(10px)' }}
+                styles={{
+                  button: {
+                    root: { backgroundColor: 'rgba(255,255,255,0.1)' },
+                  },
+                }}
               />
               <Select<SortBy>
                 placeholder="排序"
@@ -274,7 +333,7 @@ const ProjectList: React.FC = () => {
           rowKey="id"
           loading={loading}
           pagination={false}
-          locale={{ emptyText: <Empty description="暂无项目" /> }}
+          locale={{ emptyText: <Empty description="暂无项目" image={<EmptyStateVideo />} /> }}
           columns={[
             {
               title: '名称',
@@ -350,8 +409,8 @@ const ProjectList: React.FC = () => {
       {viewMode === 'card' && filteredAndSorted.length === 0 && !loading && (
         <Empty
           style={{ marginTop: 48 }}
-          description="暂无漫剧项目，点击「新建项目」创建"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="暂无漫剧项目，点击「新建」创建"
+          image={<EmptyStateVideo />}
         />
       )}
 
@@ -446,6 +505,7 @@ const ProjectList: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+      </div>
     </div>
   );
 };

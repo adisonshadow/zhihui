@@ -1,5 +1,5 @@
 /**
- * 人物预设骨骼动画：正面/侧面 走路、跳跃（见 docs/06-人物骨骼贴图功能设计.md）
+ * 角色预设骨骼动画：正面/侧面 走路、跳跃（见 docs/06-角色骨骼贴图功能设计.md）
  * 关键帧为归一化坐标 [0,1]，与 HUMAN_PRESET 节点 id 一致
  */
 
@@ -18,7 +18,7 @@ const HUMAN_NODE_IDS = [
   'hip_l', 'knee_l', 'heel_l', 'toe_l', 'hip_r', 'knee_r', 'heel_r', 'toe_r',
 ] as const;
 
-/** 人物 T 姿态（正面，12 顶点：头顶-下颌-锁骨-肚脐 / 肩胛-肘-腕-指尖 / 髋-膝-脚跟-脚尖） */
+/** 角色 T 姿态（正面，12 顶点：头顶-下颌-锁骨-肚脐 / 肩胛-肘-腕-指尖 / 髋-膝-脚跟-脚尖） */
 const REST_POSE_FRONT: Record<string, [number, number]> = {
   head_top: [0.5, 0.05], jaw: [0.5, 0.12], collarbone: [0.5, 0.2], navel: [0.5, 0.38],
   shoulder_l: [0.26, 0.18], elbow_l: [0.12, 0.35], wrist_l: [0.05, 0.5], fingertip_l: [0.02, 0.52],
@@ -27,7 +27,7 @@ const REST_POSE_FRONT: Record<string, [number, number]> = {
   hip_r: [0.62, 0.48], knee_r: [0.66, 0.68], heel_r: [0.66, 0.88], toe_r: [0.66, 0.96],
 };
 
-/** 人物 T 姿态（45度视角） */
+/** 角色 T 姿态（45度视角） */
 const REST_POSE_FRONT45: Record<string, [number, number]> = {
   head_top: [0.52, 0.06], jaw: [0.52, 0.16], collarbone: [0.51, 0.26], navel: [0.51, 0.4],
   shoulder_l: [0.38, 0.2], elbow_l: [0.28, 0.38], wrist_l: [0.22, 0.52], fingertip_l: [0.2, 0.54],
@@ -36,7 +36,7 @@ const REST_POSE_FRONT45: Record<string, [number, number]> = {
   hip_r: [0.59, 0.52], knee_r: [0.61, 0.72], heel_r: [0.62, 0.9], toe_r: [0.62, 0.96],
 };
 
-/** 人物 T 姿态（侧面视角） */
+/** 角色 T 姿态（侧面视角） */
 const REST_POSE_SIDE: Record<string, [number, number]> = {
   head_top: [0.55, 0.06], jaw: [0.54, 0.16], collarbone: [0.52, 0.26], navel: [0.52, 0.4],
   shoulder_l: [0.48, 0.2], elbow_l: [0.42, 0.38], wrist_l: [0.38, 0.52], fingertip_l: [0.36, 0.54],
@@ -45,7 +45,7 @@ const REST_POSE_SIDE: Record<string, [number, number]> = {
   hip_r: [0.58, 0.52], knee_r: [0.6, 0.72], heel_r: [0.6, 0.9], toe_r: [0.6, 0.96],
 };
 
-/** 人物 T 姿态（背面） */
+/** 角色 T 姿态（背面） */
 const REST_POSE_BACK: Record<string, [number, number]> = {
   head_top: [0.5, 0.06], jaw: [0.5, 0.16], collarbone: [0.5, 0.26], navel: [0.5, 0.4],
   shoulder_l: [0.72, 0.2], elbow_l: [0.85, 0.38], wrist_l: [0.92, 0.52], fingertip_l: [0.95, 0.54],
@@ -138,8 +138,8 @@ function buildFrontJump(): SkeletonKeyframe[] {
       time: 0.25,
       pose: {
         ...copyPose(rest),
-        head_top: [0.5, 0.08], jaw: [0.5, 0.16], collarbone: [0.5, 0.24], navel: [0.5, 0.36],
-        navel: [0.5, 0.44], hip_l: [0.38, 0.46], knee_l: [0.36, 0.6], heel_l: [0.38, 0.76], toe_l: [0.38, 0.84],
+        head_top: [0.5, 0.08], jaw: [0.5, 0.16], collarbone: [0.5, 0.24], navel: [0.5, 0.44],
+        hip_l: [0.38, 0.46], knee_l: [0.36, 0.6], heel_l: [0.38, 0.76], toe_l: [0.38, 0.84],
         hip_r: [0.62, 0.46], knee_r: [0.64, 0.6], heel_r: [0.62, 0.76], toe_r: [0.62, 0.84],
         shoulder_l: [0.24, 0.16], elbow_l: [0.12, 0.3], wrist_l: [0.08, 0.42], fingertip_l: [0.06, 0.44],
         shoulder_r: [0.76, 0.16], elbow_r: [0.88, 0.3], wrist_r: [0.92, 0.42], fingertip_r: [0.94, 0.44],
@@ -149,8 +149,8 @@ function buildFrontJump(): SkeletonKeyframe[] {
       time: 0.4,
       pose: {
         ...copyPose(rest),
-        head_top: [0.5, 0.078], jaw: [0.5, 0.14], collarbone: [0.5, 0.22], navel: [0.5, 0.32],
-        navel: [0.5, 0.4], hip_l: [0.36, 0.42], knee_l: [0.34, 0.52], heel_l: [0.36, 0.66], toe_l: [0.36, 0.74],
+        head_top: [0.5, 0.078], jaw: [0.5, 0.14], collarbone: [0.5, 0.22], navel: [0.5, 0.4],
+        hip_l: [0.36, 0.42], knee_l: [0.34, 0.52], heel_l: [0.36, 0.66], toe_l: [0.36, 0.74],
         hip_r: [0.64, 0.42], knee_r: [0.66, 0.52], heel_r: [0.64, 0.66], toe_r: [0.64, 0.74],
         shoulder_l: [0.24, 0.14], elbow_l: [0.1, 0.24], wrist_l: [0.06, 0.34], fingertip_l: [0.04, 0.36],
         shoulder_r: [0.76, 0.14], elbow_r: [0.9, 0.24], wrist_r: [0.94, 0.34], fingertip_r: [0.96, 0.36],
@@ -160,8 +160,8 @@ function buildFrontJump(): SkeletonKeyframe[] {
       time: 0.55,
       pose: {
         ...copyPose(rest),
-        head_top: [0.5, 0.082], jaw: [0.5, 0.15], collarbone: [0.5, 0.26], navel: [0.5, 0.38],
-        navel: [0.5, 0.48], hip_l: [0.4, 0.5], knee_l: [0.38, 0.66], heel_l: [0.38, 0.84], toe_l: [0.38, 0.92],
+        head_top: [0.5, 0.082], jaw: [0.5, 0.15], collarbone: [0.5, 0.26], navel: [0.5, 0.48],
+        hip_l: [0.4, 0.5], knee_l: [0.38, 0.66], heel_l: [0.38, 0.84], toe_l: [0.38, 0.92],
         hip_r: [0.6, 0.5], knee_r: [0.62, 0.66], heel_r: [0.62, 0.84], toe_r: [0.62, 0.92],
       },
     },
@@ -188,8 +188,8 @@ function buildSideJump(): SkeletonKeyframe[] {
       time: 0.25,
       pose: {
         ...copyPose(rest),
-        head_top: [0.555, 0.08], jaw: [0.545, 0.15], collarbone: [0.54, 0.24], navel: [0.54, 0.36],
-        navel: [0.52, 0.44], hip_l: [0.46, 0.46], knee_l: [0.44, 0.6], heel_l: [0.44, 0.76], toe_l: [0.44, 0.84],
+        head_top: [0.555, 0.08], jaw: [0.545, 0.15], collarbone: [0.54, 0.24], navel: [0.52, 0.44],
+        hip_l: [0.46, 0.46], knee_l: [0.44, 0.6], heel_l: [0.44, 0.76], toe_l: [0.44, 0.84],
         hip_r: [0.58, 0.46], knee_r: [0.6, 0.6], heel_r: [0.6, 0.76], toe_r: [0.6, 0.84],
         shoulder_l: [0.46, 0.14], elbow_l: [0.4, 0.28], wrist_l: [0.36, 0.42], fingertip_l: [0.34, 0.44],
         shoulder_r: [0.6, 0.14], elbow_r: [0.66, 0.28], wrist_r: [0.7, 0.42], fingertip_r: [0.72, 0.44],
@@ -199,8 +199,8 @@ function buildSideJump(): SkeletonKeyframe[] {
       time: 0.4,
       pose: {
         ...copyPose(rest),
-        head_top: [0.56, 0.078], jaw: [0.55, 0.14], collarbone: [0.54, 0.22], navel: [0.54, 0.32],
-        navel: [0.53, 0.4], hip_l: [0.46, 0.42], knee_l: [0.44, 0.52], heel_l: [0.44, 0.66], toe_l: [0.44, 0.74],
+        head_top: [0.56, 0.078], jaw: [0.55, 0.14], collarbone: [0.54, 0.22], navel: [0.53, 0.4],
+        hip_l: [0.46, 0.42], knee_l: [0.44, 0.52], heel_l: [0.44, 0.66], toe_l: [0.44, 0.74],
         hip_r: [0.6, 0.42], knee_r: [0.62, 0.52], heel_r: [0.62, 0.66], toe_r: [0.62, 0.74],
         shoulder_l: [0.45, 0.1], elbow_l: [0.39, 0.22], wrist_l: [0.35, 0.34], fingertip_l: [0.33, 0.36],
         shoulder_r: [0.61, 0.1], elbow_r: [0.67, 0.22], wrist_r: [0.71, 0.34], fingertip_r: [0.73, 0.36],
@@ -210,8 +210,8 @@ function buildSideJump(): SkeletonKeyframe[] {
       time: 0.55,
       pose: {
         ...copyPose(rest),
-        head_top: [0.552, 0.082], jaw: [0.542, 0.14], collarbone: [0.52, 0.28], navel: [0.52, 0.38],
-        navel: [0.52, 0.48], hip_l: [0.46, 0.5], knee_l: [0.44, 0.66], heel_l: [0.44, 0.84], toe_l: [0.44, 0.92],
+        head_top: [0.552, 0.082], jaw: [0.542, 0.14], collarbone: [0.52, 0.28], navel: [0.52, 0.48],
+        hip_l: [0.46, 0.5], knee_l: [0.44, 0.66], heel_l: [0.44, 0.84], toe_l: [0.44, 0.92],
         hip_r: [0.58, 0.5], knee_r: [0.6, 0.66], heel_r: [0.6, 0.84], toe_r: [0.6, 0.92],
       },
     },
@@ -228,10 +228,10 @@ function buildFrontMjDance(): SkeletonKeyframe[] {
       time: 0.4,
       pose: {
         ...copyPose(rest),
-        head_top: [0.5, 0.08], collarbone: [0.5, 0.3], navel: [0.5, 0.42],
+        head_top: [0.5, 0.08], collarbone: [0.5, 0.3], navel: [0.5, 0.5],
         shoulder_r: [0.74, 0.16], elbow_r: [0.84, 0.1], wrist_r: [0.88, 0.06], fingertip_r: [0.9, 0.04],
         shoulder_l: [0.28, 0.22], elbow_l: [0.2, 0.32], wrist_l: [0.14, 0.42], fingertip_l: [0.12, 0.44],
-        navel: [0.5, 0.5], hip_l: [0.42, 0.48], knee_l: [0.4, 0.64], heel_l: [0.4, 0.8], toe_l: [0.4, 0.88],
+        hip_l: [0.42, 0.48], knee_l: [0.4, 0.64], heel_l: [0.4, 0.8], toe_l: [0.4, 0.88],
         hip_r: [0.58, 0.54], knee_r: [0.62, 0.78], heel_r: [0.64, 0.92], toe_r: [0.64, 0.98],
       },
     },
@@ -239,10 +239,10 @@ function buildFrontMjDance(): SkeletonKeyframe[] {
       time: 0.8,
       pose: {
         ...copyPose(rest),
-        head_top: [0.5, 0.08], collarbone: [0.5, 0.28], navel: [0.5, 0.4],
+        head_top: [0.5, 0.08], collarbone: [0.5, 0.28], navel: [0.5, 0.5],
         shoulder_l: [0.26, 0.16], elbow_l: [0.16, 0.1], wrist_l: [0.12, 0.06], fingertip_l: [0.1, 0.04],
         shoulder_r: [0.72, 0.22], elbow_r: [0.8, 0.32], wrist_r: [0.86, 0.42], fingertip_r: [0.84, 0.44],
-        navel: [0.5, 0.5], hip_r: [0.42, 0.48], knee_r: [0.4, 0.64], heel_r: [0.4, 0.8], toe_r: [0.4, 0.88],
+        hip_r: [0.42, 0.48], knee_r: [0.4, 0.64], heel_r: [0.4, 0.8], toe_r: [0.4, 0.88],
         hip_l: [0.58, 0.54], knee_l: [0.62, 0.78], heel_l: [0.64, 0.92], toe_l: [0.64, 0.98],
       },
     },

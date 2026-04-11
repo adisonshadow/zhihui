@@ -2,8 +2,8 @@
  * 剧本专家 AI Chat（参考 Aisting SidePanel 布局）
  * 布局：第一行置顶（Conversations+新建），第二行内容区，第三四行置底（剧本对象+Sender）
  */
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Button, Space, Tag, Divider, Flex } from 'antd';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import { Button, Space, Tag, Divider, Flex, type GetRef } from 'antd';
 import { PlusOutlined, LinkOutlined, RollbackOutlined } from '@ant-design/icons';
 import { Bubble, Sender, Attachments, Prompts } from '@ant-design/x';
 import XMarkdown from '@ant-design/x-markdown';
@@ -68,6 +68,17 @@ function saveConversations(items: ConversationItem[]) {
   }
 }
 
+/** 与 AIChatCore 一致：stopPropagation 后补发 document drop，收起 @ant-design/x DropArea 遮罩 */
+function notifyXAttachmentDropOverlayClose() {
+  queueMicrotask(() => {
+    try {
+      document.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true }));
+    } catch {
+      document.dispatchEvent(new Event('drop', { bubbles: true }));
+    }
+  });
+}
+
 export function ScriptExpertChat({
   scriptModel,
   projectScriptPrompt,
@@ -83,7 +94,72 @@ export function ScriptExpertChat({
   const [convCounter, setConvCounter] = useState(() => loadConversations().length);
   const [attachments, setAttachments] = useState<any[]>([]);
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
-  const senderRef = useRef<any>(null);
+  const senderRef = useRef<GetRef<typeof Sender>>(null);
+  const attachmentsRef = useRef<GetRef<typeof Attachments>>(null);
+
+  const onSenderPasteFile = useCallback((files: FileList) => {
+    const api = attachmentsRef.current;
+    if (!api?.upload) return;
+    Array.from(files).forEach((file) => {
+      try {
+        api.upload(file);
+      } catch {
+        /* ignore */
+      }
+    });
+    setAttachmentsOpen(true);
+  }, []);
+
+  /** 拖到输入区时落点不在 portaled Upload：Sender 根捕获 drop 后走 Attachments ref.upload */
+  useLayoutEffect(() => {
+    let cancelled = false;
+    let raf = 0;
+    let detach: (() => void) | undefined;
+    const tryBind = () => {
+      if (cancelled) return;
+      const el = senderRef.current?.nativeElement as HTMLElement | undefined;
+      if (!el) {
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(tryBind);
+        return;
+      }
+      const onDragOverCap = (e: DragEvent) => {
+        if (e.dataTransfer?.types?.includes('Files')) e.preventDefault();
+      };
+      const onDropCap = (e: DragEvent) => {
+        const dt = e.dataTransfer;
+        if (!dt?.types?.includes('Files')) return;
+        const files = dt.files;
+        if (!files?.length) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const api = attachmentsRef.current;
+        if (api?.upload) {
+          Array.from(files).forEach((file) => {
+            try {
+              api.upload(file);
+            } catch {
+              /* ignore */
+            }
+          });
+        }
+        setAttachmentsOpen(true);
+        notifyXAttachmentDropOverlayClose();
+      };
+      el.addEventListener('dragover', onDragOverCap, true);
+      el.addEventListener('drop', onDropCap, true);
+      detach = () => {
+        el.removeEventListener('dragover', onDragOverCap, true);
+        el.removeEventListener('drop', onDropCap, true);
+      };
+    };
+    tryBind();
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      detach?.();
+    };
+  }, [attachmentsOpen]);
 
   const provider = React.useMemo(() => buildScriptExpertProvider(scriptModel), [scriptModel]);
 
@@ -215,14 +291,18 @@ export function ScriptExpertChat({
       title="附件"
       open={attachmentsOpen}
       onOpenChange={setAttachmentsOpen}
+      forceRender
       styles={{ content: { padding: 0 } }}
     >
       <Attachments
+        ref={attachmentsRef}
         beforeUpload={() => false}
         items={attachments}
         onChange={({ fileList }) => setAttachments(fileList)}
+        multiple
         showUploadList
         listType="picture-card"
+        getDropContainer={() => senderRef.current?.nativeElement}
         placeholder={(type) =>
           type === 'drop'
             ? { title: '拖放文件到此处' }
@@ -232,7 +312,6 @@ export function ScriptExpertChat({
                 description: '点击或拖拽文件到此区域',
               }
         }
-        getDropContainer={() => senderRef.current?.nativeElement}
       />
     </Sender.Header>
   );
@@ -353,6 +432,7 @@ export function ScriptExpertChat({
           loading={isRequesting}
           placeholder="输入指令，如：根据当前概要扩写剧本。Shift+Enter 换行，Enter 发送"
           onSubmit={(msg) => handleSubmit(msg)}
+          onPasteFile={onSenderPasteFile}
           disabled={!scriptModel}
           autoSize={{ minRows: 2, maxRows: 6 }}
           footer={(oriNode, info) => {

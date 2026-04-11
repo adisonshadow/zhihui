@@ -27,6 +27,10 @@ interface TimelineBlockSortableProps {
   resizable?: boolean;
   /** 视频/精灵图原始时长（秒），超出时在素材条上显示循环分隔线 */
   nativeDuration?: number;
+  /** 素材缩略图 data URL */
+  assetThumb?: string;
+  /** 素材名称 */
+  assetName?: string;
 }
 
 export function TimelineBlockSortable({
@@ -41,6 +45,8 @@ export function TimelineBlockSortable({
   onKeyframeClick,
   resizable = true,
   nativeDuration,
+  assetThumb,
+  assetName,
 }: TimelineBlockSortableProps) {
   const left = timeToX(block.start_time);
   const width = Math.max(12, timeToX(block.end_time - block.start_time));
@@ -104,7 +110,33 @@ export function TimelineBlockSortable({
           aria-hidden
         />
       ))}
-      {/* 视频/精灵图循环分隔线：block 时长超出原始素材时长时显示 */}
+      {(assetThumb || assetName) && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            padding: '0 6px',
+            overflow: 'hidden',
+            pointerEvents: 'none',
+          }}
+        >
+          {assetThumb && (
+            <img
+              src={assetThumb}
+              alt=""
+              style={{ width: 26, height: 26, objectFit: 'cover', borderRadius: 3, flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}
+            />
+          )}
+          {assetName && (
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1 }}>
+              {assetName}
+            </span>
+          )}
+        </div>
+      )}
       {nativeDuration && nativeDuration > 0 && (block.end_time - block.start_time) > nativeDuration + 0.1 && (
         Array.from({ length: Math.ceil((block.end_time - block.start_time) / nativeDuration) - 1 }).map((_, i) => {
           const loopTime = block.start_time + nativeDuration * (i + 1);

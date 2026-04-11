@@ -5,8 +5,10 @@
  * 见官方 demo：@ant-design/x Think + XMarkdown streaming 用法
  */
 import React, { memo, useEffect, useState } from 'react';
+import { Image, Spin } from 'antd';
 import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown';
 import { Think } from '@ant-design/x';
+import { useVolcArkDisplayableImageSrc } from '../adapters/volcArkImageAdapter';
 
 /**
  * 推理内容折叠/展开组件，对应 XMarkdown <think> 标签
@@ -110,6 +112,55 @@ function buildMarkdownText(content: string, reasoningContent?: string): string {
   return `<think>\n\n${reasoningContent}${closeTag}${content}`;
 }
 
+/** 单张生成图：火山 TOS 链接经适配器拉成 blob URL 后再交给 antd Image，避免 attachment 触发下载 */
+const DrawerArtifactImage = memo(function DrawerArtifactImage({
+  originalSrc,
+  style,
+}: {
+  originalSrc: string;
+  style?: React.CSSProperties;
+}) {
+  const { displaySrc, loading, error } = useVolcArkDisplayableImageSrc(originalSrc);
+
+  if (error) {
+    return (
+      <div
+        style={{
+          ...style,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: 120,
+          color: 'rgba(255,255,255,0.45)',
+          fontSize: 12,
+          textAlign: 'center',
+          padding: 8,
+        }}
+      >
+        图片加载失败
+      </div>
+    );
+  }
+
+  if (loading || displaySrc == null) {
+    return (
+      <Spin>
+        <div
+          style={{
+            ...style,
+            minHeight: 120,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        />
+      </Spin>
+    );
+  }
+
+  return <Image src={displaySrc} alt="" style={style} />;
+});
+
 /** 绘图师模式下：有图片则渲染图片网格 + 文本；否则渲染 Markdown。推理内容通过 Think 组件在正文上方展示。 */
 export function DrawerBubbleContent({
   content,
@@ -152,29 +203,30 @@ export function DrawerBubbleContent({
           streaming={{ hasNextChunk: isStreaming, enableAnimation: true }}
         />
       )}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: images.length === 1 ? '1fr' : 'repeat(auto-fill, minmax(140px, 1fr))',
-          gap: 8,
-          maxWidth: 400,
-        }}
-      >
-        {images.map((src, i) => (
-          <img
-            key={i}
-            src={src}
-            alt=""
-            style={{
-              width: '100%',
-              height: 'auto',
-              borderRadius: 8,
-              objectFit: 'contain',
-              maxHeight: 240,
-            }}
-          />
-        ))}
-      </div>
+      <Image.PreviewGroup>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: images.length === 1 ? '1fr' : 'repeat(auto-fill, minmax(140px, 1fr))',
+            gap: 8,
+            maxWidth: 400,
+          }}
+        >
+          {images.map((src, i) => (
+            <DrawerArtifactImage
+              key={`${i}-${src.slice(0, 64)}`}
+              originalSrc={src}
+              style={{
+                width: '100%',
+                height: 'auto',
+                borderRadius: 8,
+                objectFit: 'contain',
+                maxHeight: 240,
+              }}
+            />
+          ))}
+        </div>
+      </Image.PreviewGroup>
       {text && (
         <XMarkdown
           content={textMarkdown}

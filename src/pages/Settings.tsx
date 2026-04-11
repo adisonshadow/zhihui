@@ -431,7 +431,7 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
     <div style={{ padding: 24 }}>
       <Typography.Title level={5}>AI 模型配置</Typography.Title>
       <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-        不同模型有不同擅长方向，可添加多个模型并为每个模型设置能力 tag。配置供剧情大纲、人物设计、视频设计器等 AI 功能使用。
+        不同模型有不同擅长方向，可添加多个模型并为每个模型设置能力 tag。配置供剧情大纲、角色设计、视频设计器等 AI 功能使用。
       </Text>
       <Divider />
       {content}

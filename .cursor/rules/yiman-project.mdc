@@ -30,6 +30,12 @@ yarn add <包名>
 
 当用户或任务要求「添加一个包」时，应回复将执行上述命令并给出具体 `yarn add` 示例，**不要**贴出对 package.json 的 diff 或直接编辑 package.json。
 
+
+Electron 二进制从 GitHub 下载，国内可能较慢或失败，可改用镜像：
+```bash
+export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+```
+
 ## 技术栈速记
 
 - 构建：Vite；包管理：Yarn

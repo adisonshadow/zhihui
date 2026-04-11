@@ -5,7 +5,7 @@ import type { SkeletonPreset, SkeletonPresetKind } from '@/types/skeleton';
 import type { VertexBoneWeight } from '@/types/skeleton';
 import { getPresetByKind } from '@/types/skeleton';
 
-/** 人物预设的蒙皮网格：每三角形由 3 顶点组成（12 顶点骨架，mid: 为两顶点中点） */
+/** 角色预设的蒙皮网格：每三角形由 3 顶点组成（12 顶点骨架，mid: 为两顶点中点） */
 export const HUMAN_MESH_TRIANGLES: [string, string, string][] = [
   ['head_top', 'mid:head_top:jaw', 'shoulder_l'],
   ['head_top', 'mid:head_top:jaw', 'shoulder_r'],

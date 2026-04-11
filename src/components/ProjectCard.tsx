@@ -48,6 +48,11 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ project, pathValid, onOpen, o
     <Card
       hoverable
       onClick={onOpen}
+      styles={{
+        root: {
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        },
+      }}
       cover={
         <div style={{ position: 'relative' }}>
           {coverContent}

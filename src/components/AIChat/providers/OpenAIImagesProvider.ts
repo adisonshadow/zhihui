@@ -1,36 +1,23 @@
 /**
- * 绘图师 Images API Provider（/images/generations）
- * 支持火山方舟 Seedream 协议：文生图、图文生图、流式、size/output_format/watermark
+ * 绘图师 Images API 基础 Provider（/images/generations，OpenAI 兼容）
+ * 流式合并逻辑见 imagesGenerationSseMerge；方舟 Seedream 见 VolcArkSeedreamImagesProvider。
  */
 import { AbstractChatProvider, XRequest } from '@ant-design/x-sdk';
 import type { AIModelConfig } from '@/types/settings';
-import { resolveAspectRatio } from '../types/drawerOptions';
+import { resolveAspectRatio, type DrawerAspectRatio } from '../types/drawerOptions';
+import type { ImagesApiParams, ImagesApiResponse } from './imagesGenerationTypes';
+import { mergeImageUrlsFromStream, parseSseFramePayload } from './imagesGenerationSseMerge';
 
-/** Images API 请求参数（兼容 OpenAI + 火山方舟 Seedream） */
-interface ImagesApiParams {
-  prompt: string;
-  model?: string;
-  n?: number;
-  size?: string;
-  aspect_ratio?: string;
-  output_format?: string;
-  stream?: boolean;
-  image?: string;
-  image2?: string;
-  [key: string]: unknown;
-}
+export { type ImagesApiParams, type ImagesApiResponse } from './imagesGenerationTypes';
+export { mergeImageUrlsFromStream, parseSseFramePayload } from './imagesGenerationSseMerge';
 
-/** Images API 响应 */
-interface ImagesApiResponse {
-  data?: Array<{ url?: string; b64_json?: string }>;
-  error?: { message?: string };
-}
+type ImagesAssistantMessage = { role: string; content: string };
 
 function buildImagesRequest(modelConfig: AIModelConfig | null) {
   const baseURL = (modelConfig?.apiUrl?.trim() || 'https://api.openai.com/v1')
     .replace(/\/$/, '')
     + '/images/generations';
-  return XRequest(baseURL, {
+  return XRequest<ImagesApiParams, ImagesApiResponse, ImagesAssistantMessage>(baseURL, {
     manual: true,
     params: {
       model: modelConfig?.model?.trim() || 'dall-e-2',
@@ -44,9 +31,6 @@ function buildImagesRequest(modelConfig: AIModelConfig | null) {
   });
 }
 
-/**
- * 将 chat 格式的 messages 转为 images API 的 prompt
- */
 function getPromptFromMessages(messages: Array<{ role?: string; content?: string }> | undefined): string {
   if (!Array.isArray(messages) || messages.length === 0) return '';
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
@@ -55,7 +39,7 @@ function getPromptFromMessages(messages: Array<{ role?: string; content?: string
 }
 
 export default class OpenAIImagesProvider extends AbstractChatProvider<
-  { role: string; content: string },
+  ImagesAssistantMessage,
   ImagesApiParams,
   ImagesApiResponse
 > {
@@ -70,7 +54,7 @@ export default class OpenAIImagesProvider extends AbstractChatProvider<
       drawerOptions?: { imageCount?: number; aspectRatio?: string; canvasAspectRatio?: string };
     }>,
     options: { params?: ImagesApiParams }
-  ) {
+  ): ImagesApiParams {
     const messages = requestParams?.messages;
     const prompt = getPromptFromMessages(messages);
     const attachmentImages = requestParams?.attachmentImages as string[] | undefined;
@@ -79,18 +63,19 @@ export default class OpenAIImagesProvider extends AbstractChatProvider<
       | undefined;
     const n = Math.min(4, Math.max(1, drawerOptions?.imageCount ?? 1));
     const aspectRatio = resolveAspectRatio(
-      (drawerOptions?.aspectRatio as 'canvas' | '16:9' | '9:16' | '4:3' | '3:4' | '1:1') ?? '1:1',
+      (drawerOptions?.aspectRatio as DrawerAspectRatio) ?? '1:1',
       drawerOptions?.canvasAspectRatio
     );
+    const mergedParams = (options?.params || {}) as ImagesApiParams;
+
     const base: ImagesApiParams = {
-      ...(options?.params || {}),
+      ...mergedParams,
       prompt: prompt || 'a beautiful image',
       n,
       size: '2K',
       output_format: 'png',
       stream: true,
       aspect_ratio: aspectRatio,
-      extra_body: { watermark: false } as Record<string, unknown>,
     };
     if (attachmentImages?.length) {
       base.image = attachmentImages[0];
@@ -112,29 +97,16 @@ export default class OpenAIImagesProvider extends AbstractChatProvider<
     responseHeaders: Headers;
   }) {
     const { originMessage, chunk, chunks } = info;
-    const existingUrls: string[] = [];
-    try {
-      const prev = originMessage?.content ? JSON.parse(originMessage.content) : null;
-      if (prev?.images) existingUrls.push(...prev.images);
-    } catch {
-      /* ignore */
-    }
-    const allChunks = chunks?.length ? chunks : (chunk ? [chunk] : []);
-    for (const c of allChunks) {
-      const data = c?.data;
-      if (Array.isArray(data)) {
-        for (const item of data) {
-          if (item?.url && !existingUrls.includes(item.url)) existingUrls.push(item.url);
-          else if (item?.b64_json) {
-            const b64 = `data:image/png;base64,${item.b64_json}`;
-            if (!existingUrls.includes(b64)) existingUrls.push(b64);
-          }
-        }
-      }
-    }
-    const urls = existingUrls.length > 0 ? existingUrls : [];
-    const content =
-      urls.length > 0 ? JSON.stringify({ images: urls }) : (chunk?.error?.message ?? '生成图片失败');
+    const allChunks = chunks?.length ? chunks : chunk ? [chunk] : [];
+    const urls = mergeImageUrlsFromStream(originMessage?.content, allChunks);
+
+    const innerLast = chunk ? parseSseFramePayload(chunk) : null;
+    const innerFinal =
+      chunks?.length && chunks.length > 0 ? parseSseFramePayload(chunks[chunks.length - 1]) : null;
+    const errObj = (innerLast?.error ?? innerFinal?.error) as { message?: string } | undefined;
+    const errMsg = typeof errObj?.message === 'string' ? errObj.message : undefined;
+
+    const content = urls.length > 0 ? JSON.stringify({ images: urls }) : errMsg ?? '生成图片失败';
     return { content, role: 'assistant' };
   }
 }

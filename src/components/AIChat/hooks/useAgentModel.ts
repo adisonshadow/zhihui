@@ -7,6 +7,30 @@ import type { AIModelConfig } from '@/types/settings';
 import type { AgentConfig, AgentModelCheckResult } from '../types';
 import { AGENT_CONFIGS, getCapabilityLabel } from '../experts';
 
+export type BuiltInAgentsMode = 'default' | 'none';
+
+export interface UseAgentModelOptions {
+  /** 与内置合并，同 key 时 extra 覆盖内置 */
+  extraAgents?: AgentConfig[];
+  /** `none`：仅使用 extraAgents（可空） */
+  builtInAgents?: BuiltInAgentsMode;
+}
+
+function mergeAgentConfigs(
+  builtIn: BuiltInAgentsMode | undefined,
+  extra: AgentConfig[] | undefined
+): AgentConfig[] {
+  const base = builtIn === 'none' ? [] : AGENT_CONFIGS;
+  const map = new Map<string, AgentConfig>();
+  for (const a of base) {
+    map.set(a.key, a);
+  }
+  for (const a of extra ?? []) {
+    map.set(a.key, a);
+  }
+  return Array.from(map.values());
+}
+
 function findModelForAgent(
   models: AIModelConfig[] | undefined,
   agent: AgentConfig
@@ -54,19 +78,22 @@ function findModelForAgent(
 
 export function useAgentModel(
   agentKey: string | undefined,
-  models: AIModelConfig[] | undefined
-): AgentModelCheckResult & { agent: AgentConfig | null } {
+  models: AIModelConfig[] | undefined,
+  options?: UseAgentModelOptions
+): AgentModelCheckResult & { agent: AgentConfig | null; mergedAgents: AgentConfig[] } {
   return useMemo(() => {
-    const agent = AGENT_CONFIGS.find((e) => e.key === agentKey) ?? null;
+    const mergedAgents = mergeAgentConfigs(options?.builtInAgents, options?.extraAgents);
+    const agent = mergedAgents.find((e) => e.key === agentKey) ?? null;
     if (!agent) {
       return {
         agent: null,
         hasValidModel: false,
         model: null,
         missingCapabilityLabels: [],
+        mergedAgents,
       };
     }
     const result = findModelForAgent(models, agent);
-    return { ...result, agent };
-  }, [agentKey, models]);
+    return { ...result, agent, mergedAgents };
+  }, [agentKey, models, options?.builtInAgents, options?.extraAgents]);
 }

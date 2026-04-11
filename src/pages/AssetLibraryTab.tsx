@@ -1,12 +1,11 @@
 /**
  * 素材库页：按分类筛选、列表/卡片、上传、保存为常用（见功能文档 5、开发计划 2.8）
- * 精灵图与人物精灵动作本质相同，使用项目级精灵图存储，点击「添加精灵图」打开与人物设计相同的编辑侧栏
+ * 精灵图与角色精灵动作本质相同，使用项目级精灵图存储，点击「添加精灵图」打开与角色设计相同的编辑侧栏
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Button,
   Radio,
-  Select,
   Space,
   App,
   Modal,
@@ -17,24 +16,29 @@ import {
   Typography,
   Empty,
   Table,
+  Dropdown,
 } from 'antd';
-import { PlusOutlined, StarOutlined, StarFilled, DeleteOutlined } from '@ant-design/icons';
+import { StarOutlined, StarFilled, DeleteOutlined, DownOutlined } from '@ant-design/icons';
+import { UI_ASSET_CATEGORIES, addCategoryToTags, type AssetUiCategory, type UiCategoryValue } from '@/utils/assetCategory';
 import { VideoPreviewDrawer } from '@/components/asset/VideoPreviewDrawer';
 import { AudioPreviewDrawer } from '@/components/asset/AudioPreviewDrawer';
 import { ImagePreviewDrawer } from '@/components/asset/ImagePreviewDrawer';
+import { TextPreviewDrawer } from '@/components/asset/TextPreviewDrawer';
 import { AudioListItem } from '@/components/asset/AudioListItem';
 import { VideoTagInput } from '@/components/asset/VideoTagInput';
 import type { ProjectInfo } from '@/hooks/useProject';
-import { ASSET_CATEGORIES, ASSET_LIBRARY_CATEGORIES, type AssetCategoryValue } from '@/constants/assetCategories';
+import { ASSET_CATEGORIES } from '@/constants/assetCategories';
 import { STANDALONE_SPRITES_CHARACTER_ID, STANDALONE_COMPONENTS_CHARACTER_ID } from '@/constants/project';
 import { AdaptiveCard } from '@/components/antd-plus/AdaptiveCard';
 import { ResponsiveCardGrid } from '@/components/antd-plus/ResponsiveCardGrid';
 import { SpriteSheetPanel, type SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
 import { GroupComponentPanel } from '@/components/character/GroupComponentPanel';
-import { AssetCard, AssetThumb, SpriteCard, GroupComponentCard, getGroupCoverPath, IMAGE_TYPES } from '@/components/asset/AssetLibraryCard';
+import { AssetCard, AssetBundleCard, AssetThumb, SpriteCard, GroupComponentCard, getGroupCoverPath, IMAGE_TYPES } from '@/components/asset/AssetLibraryCard';
+import { AssetBundlePickModal, type AssetBundlePickMember } from '@/components/asset/AssetBundlePickModal';
 import type { GroupComponentItem } from '@/types/groupComponent';
+import type { AssetBundleListRow } from '@/types/assetBundle';
+import { bundleCardDisplayTitle, fetchAssetRowForBundleMemberPreview } from '@/utils/assetBundleUi';
 
-const { TextArea } = Input;
 const { Text } = Typography;
 
 const STORAGE_KEY_ASSET_CATEGORY = 'yiman.assetLibrary.category';
@@ -61,14 +65,17 @@ interface AssetLibraryTabProps {
 
 export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded }: AssetLibraryTabProps) {
   const { message } = App.useApp();
-  const [assets, setAssets] = useState<AssetRow[]>([]);
+  /** 视觉素材（图片/视频）合并列表，用于布景/道具/特效分类过滤 */
+  const [visualAssets, setVisualAssets] = useState<AssetRow[]>([]);
+  /** 音频素材（音效/音乐）列表 */
+  const [audioAssets, setAudioAssets] = useState<AssetRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [typeFilter, setTypeFilter] = useState<string>(() => {
+  const [categoryFilter, setCategoryFilter] = useState<UiCategoryValue>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_ASSET_CATEGORY);
-      return saved && ASSET_LIBRARY_CATEGORIES.some((c) => c.value === saved) ? saved : 'image';
+      return saved && UI_ASSET_CATEGORIES.some((c) => c.value === saved) ? (saved as UiCategoryValue) : 'prop';
     } catch {
-      return 'image';
+      return 'prop';
     }
   });
   const [favoriteOnly, setFavoriteOnly] = useState(false);
@@ -89,33 +96,55 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
   const [audioPreviewOpen, setAudioPreviewOpen] = useState(false);
   const [imagePreviewAsset, setImagePreviewAsset] = useState<AssetRow | null>(null);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [textPreviewAsset, setTextPreviewAsset] = useState<AssetRow | null>(null);
+  const [textPreviewOpen, setTextPreviewOpen] = useState(false);
+  const [assetBundles, setAssetBundles] = useState<AssetBundleListRow[]>([]);
+  const [bundlePickId, setBundlePickId] = useState<string | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const playingAudioRef = useRef<{ id: string; el: HTMLAudioElement } | null>(null);
   const [audioSearch, setAudioSearch] = useState('');
-  const [form] = Form.useForm<{ type: AssetCategoryValue; is_favorite: boolean; description: string; name?: string; tags?: string; chromaKeyColor?: 'auto' | 'black' | 'green' | 'purple' }>();
+  /** 当前正在上传的资产类型（image/video/sfx/music），由添加按钮触发 */
+  const [pendingUploadType, setPendingUploadType] = useState<string>('image');
+  const [form] = Form.useForm<{ is_favorite: boolean; description: string; name?: string; tags?: string }>();
   const projectDir = project.project_dir;
 
-  const isSpriteCategory = typeFilter === 'sprite';
-  const isComponentCategory = typeFilter === 'component';
-  const isImageCategory = typeFilter === 'image';
-  const isVideoCategory = typeFilter === 'video' || typeFilter === 'transparent_video';
-  const isAudioCategory = typeFilter === 'sfx' || typeFilter === 'music';
+  const isVisualCategory = categoryFilter === 'scene' || categoryFilter === 'prop' || categoryFilter === 'effect';
+  const isSoundCategory = categoryFilter === 'sound';
+  const isTextCategory = categoryFilter === 'text';
 
-  const loadAssets = useCallback(async () => {
-    if (!window.yiman?.project?.getAssets) return;
+  /** 加载视觉素材（按 UI 分类：布景/道具/特效，服务端已按 created_at DESC 排序） */
+  const loadVisualAssets = useCallback(async () => {
+    if (!window.yiman?.project?.getAssetsByUiCategory) return;
     setLoading(true);
     try {
-      const list = await window.yiman.project.getAssets(projectDir, typeFilter);
-      setAssets(list as AssetRow[]);
+      const list = (await window.yiman.project.getAssetsByUiCategory(
+        projectDir,
+        categoryFilter as 'scene' | 'prop' | 'effect'
+      )) as AssetRow[];
+      setVisualAssets(list || []);
     } catch {
       message.error('加载素材失败');
     } finally {
       setLoading(false);
     }
-  }, [projectDir, typeFilter, message]);
+  }, [projectDir, categoryFilter, message]);
+
+  /** 加载音频素材（按 UI 分类：声音，服务端已按 created_at DESC 排序） */
+  const loadAudioAssets = useCallback(async () => {
+    if (!window.yiman?.project?.getAssetsByUiCategory) return;
+    setLoading(true);
+    try {
+      const list = (await window.yiman.project.getAssetsByUiCategory(projectDir, 'sound')) as AssetRow[];
+      setAudioAssets(list || []);
+    } catch {
+      message.error('加载素材失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [projectDir, message]);
 
   const handleCategoryChange = (v: string) => {
-    setTypeFilter(v);
+    setCategoryFilter(v as UiCategoryValue);
     try {
       localStorage.setItem(STORAGE_KEY_ASSET_CATEGORY, v);
     } catch {
@@ -123,9 +152,28 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
     }
   };
 
+  const loadAssetBundles = useCallback(async () => {
+    if (!window.yiman?.project?.getAssetBundlesByUiCategory) return;
+    if (isVisualCategory) {
+      const list = await window.yiman.project.getAssetBundlesByUiCategory(
+        projectDir,
+        categoryFilter as 'scene' | 'prop' | 'effect'
+      );
+      setAssetBundles((list as AssetBundleListRow[]) || []);
+    } else if (isSoundCategory) {
+      const list = await window.yiman.project.getAssetBundlesByUiCategory(projectDir, 'sound');
+      setAssetBundles((list as AssetBundleListRow[]) || []);
+    } else setAssetBundles([]);
+  }, [projectDir, categoryFilter, isVisualCategory, isSoundCategory]);
+
   useEffect(() => {
-    loadAssets();
-  }, [loadAssets, assetRefreshKey]);
+    if (isVisualCategory) loadVisualAssets();
+    else if (isSoundCategory) loadAudioAssets();
+  }, [isVisualCategory, isSoundCategory, loadVisualAssets, loadAudioAssets, assetRefreshKey]);
+
+  useEffect(() => {
+    void loadAssetBundles();
+  }, [loadAssetBundles, assetRefreshKey]);
 
   const loadStandaloneSprites = useCallback(async () => {
     if (!window.yiman?.project?.getOrCreateStandaloneSpritesCharacter) return;
@@ -139,8 +187,8 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
   }, [projectDir]);
 
   useEffect(() => {
-    if (isSpriteCategory || isComponentCategory) loadStandaloneSprites();
-  }, [isSpriteCategory, isComponentCategory, loadStandaloneSprites]);
+    if (isVisualCategory) loadStandaloneSprites();
+  }, [isVisualCategory, loadStandaloneSprites, assetRefreshKey]);
 
   const loadStandaloneComponents = useCallback(async () => {
     if (!window.yiman?.project?.getOrCreateStandaloneComponentsCharacter) return;
@@ -156,8 +204,8 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
   }, [projectDir]);
 
   useEffect(() => {
-    if (isComponentCategory) loadStandaloneComponents();
-  }, [isComponentCategory, loadStandaloneComponents]);
+    if (isVisualCategory) loadStandaloneComponents();
+  }, [isVisualCategory, loadStandaloneComponents, assetRefreshKey]);
 
   const loadPathToAsset = useCallback(async () => {
     if (!window.yiman?.project?.getAssets) return;
@@ -170,9 +218,9 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
   }, [projectDir]);
 
   useEffect(() => {
-    if (!isSpriteCategory && !isComponentCategory) return;
+    if (!isVisualCategory) return;
     loadPathToAsset();
-  }, [isSpriteCategory, isComponentCategory, loadPathToAsset]);
+  }, [isVisualCategory, loadPathToAsset]);
 
   const handleSpriteSheetSave = useCallback(
     async (updated: SpriteSheetItem) => {
@@ -218,6 +266,7 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
       id: newId,
       name: '元件',
       states: [{ id: defaultStateId, tags: [], items: [] }],
+      uiCategory: (isVisualCategory ? categoryFilter : 'prop') as AssetUiCategory,
     };
     const next = [...standaloneComponents, newItem];
     const res = await window.yiman?.project?.updateCharacter?.(projectDir, STANDALONE_COMPONENTS_CHARACTER_ID, {
@@ -232,6 +281,37 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
       message.error(res?.error || '添加失败');
     }
   }, [projectDir, standaloneComponents, loadStandaloneComponents, message, onAssetAdded]);
+
+  /** 视频变更分类到角色：把 asset 加入 character.transparent_videos（从 VideoPreviewDrawer 回调） */
+  const handleVideoAssetCategoryChange = useCallback(
+    async (assetId: string, category: string, targetCharacterId?: string) => {
+      if (category !== 'character' || !targetCharacterId || !window.yiman?.project?.getCharacters || !window.yiman?.project?.updateCharacter) return;
+      const list = (await window.yiman.project.getCharacters(projectDir)) as { id: string; transparent_videos?: string | null }[];
+      const charData = list.find((c) => c.id === targetCharacterId);
+      const existing = (() => {
+        if (!charData?.transparent_videos?.trim()) return [];
+        try {
+          const arr = JSON.parse(charData.transparent_videos) as { id: string; asset_id: string }[];
+          return Array.isArray(arr) ? arr : [];
+        } catch {
+          return [];
+        }
+      })();
+      if (existing.some((v) => v.asset_id === assetId)) {
+        message.warning('该视频已在此角色中');
+        return;
+      }
+      const newItem = { id: `tv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`, asset_id: assetId };
+      const next = [...existing, newItem];
+      const res = await window.yiman.project.updateCharacter(projectDir, targetCharacterId, { transparent_videos: JSON.stringify(next) });
+      if (res?.ok) {
+        message.success('已移动到角色');
+      } else {
+        message.error(res?.error || '操作失败');
+      }
+    },
+    [projectDir, message]
+  );
 
   const handleDeleteGroupComponent = useCallback(
     async (item: GroupComponentItem) => {
@@ -252,7 +332,12 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
   const handleAddSpriteSheet = useCallback(async () => {
     await window.yiman?.project?.getOrCreateStandaloneSpritesCharacter?.(projectDir);
     const newId = `sprite_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    const newItem: SpriteSheetItem = { id: newId, name: '精灵动作', image_path: '' };
+    const newItem: SpriteSheetItem = {
+      id: newId,
+      name: '精灵动作',
+      image_path: '',
+      uiCategory: (isVisualCategory ? categoryFilter : 'prop') as AssetUiCategory,
+    };
     const next = [...standaloneSprites, newItem];
     const res = await window.yiman?.project?.updateCharacter?.(projectDir, STANDALONE_SPRITES_CHARACTER_ID, {
       sprite_sheets: JSON.stringify(next),
@@ -289,10 +374,87 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
     [projectDir, standaloneSprites, loadStandaloneSprites, message]
   );
 
-  const filtered = favoriteOnly ? assets.filter((a) => a.is_favorite) : assets;
+  /** 视觉素材（API 已按分类 + created_at DESC 返回，此处仅应用「仅常用」过滤） */
+  const filteredVisualAssets = React.useMemo(() => {
+    if (favoriteOnly) return visualAssets.filter((a) => a.is_favorite);
+    return visualAssets;
+  }, [visualAssets, favoriteOnly]);
+
+  /** 按当前分类过滤的独立精灵图 */
+  const filteredSprites = React.useMemo(
+    () => standaloneSprites.filter((s) => (s.uiCategory ?? 'prop') === categoryFilter),
+    [standaloneSprites, categoryFilter]
+  );
+
+  /** 按当前分类过滤的独立元件 */
+  const filteredComponents = React.useMemo(
+    () => standaloneComponents.filter((g) => (g.uiCategory ?? 'prop') === categoryFilter),
+    [standaloneComponents, categoryFilter]
+  );
+
+  const filteredAssetBundles = React.useMemo(() => {
+    let list = assetBundles;
+    if (favoriteOnly) list = list.filter((b) => b.is_favorite);
+    return list;
+  }, [assetBundles, favoriteOnly]);
+
+  type UnifiedItem =
+    | { kind: 'asset'; data: AssetRow; sortTime: number }
+    | { kind: 'bundle'; data: AssetBundleListRow; sortTime: number }
+    | { kind: 'sprite'; data: SpriteSheetItem; sortTime: number }
+    | { kind: 'component'; data: GroupComponentItem; sortTime: number };
+
+  /** 所有类型合并后按时间倒序排列，最新的排在最前 */
+  const unifiedItems = React.useMemo<UnifiedItem[]>(() => {
+    const extractTs = (id: string) => {
+      const m = id.match(/_(\d{10,})_/);
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    const items: UnifiedItem[] = [
+      ...filteredVisualAssets.map((a) => ({
+        kind: 'asset' as const,
+        data: a,
+        sortTime: new Date(a.updated_at || a.created_at).getTime(),
+      })),
+      ...filteredAssetBundles.map((b) => ({
+        kind: 'bundle' as const,
+        data: b,
+        sortTime: new Date(b.updated_at || b.created_at).getTime(),
+      })),
+      ...filteredSprites.map((s) => ({
+        kind: 'sprite' as const,
+        data: s,
+        sortTime: extractTs(s.id),
+      })),
+      ...filteredComponents.map((g) => ({
+        kind: 'component' as const,
+        data: g,
+        sortTime: extractTs(g.id),
+      })),
+    ];
+    return items.sort((a, b) => b.sortTime - a.sortTime);
+  }, [filteredVisualAssets, filteredAssetBundles, filteredSprites, filteredComponents]);
+
+  /** 音频分类下的同类组（关键词过滤） */
+  const filteredAudioBundles = React.useMemo(() => {
+    if (!isSoundCategory) return [];
+    const kw = (audioSearch || '').trim().toLowerCase();
+    let list = assetBundles;
+    if (kw) {
+      list = list.filter((b) => {
+        const t = (b.title || '').toLowerCase();
+        const tags = (b.tags || '').toLowerCase();
+        const fb = (b.first_member_fallback || '').toLowerCase();
+        return t.includes(kw) || tags.includes(kw) || fb.includes(kw);
+      });
+    }
+    return [...list].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+  }, [assetBundles, isSoundCategory, audioSearch]);
+
+  /** 音频列表（音效在前、音乐在后），支持关键词过滤 */
   const filteredAudio = React.useMemo(() => {
-    if (!isAudioCategory) return filtered;
-    let list = filtered;
+    if (!isSoundCategory) return [];
+    let list = audioAssets;
     const kw = (audioSearch || '').trim().toLowerCase();
     if (kw) {
       list = list.filter((a) => {
@@ -303,54 +465,100 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
       });
     }
     return [...list].sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-  }, [filtered, isAudioCategory, audioSearch]);
+  }, [audioAssets, isSoundCategory, audioSearch]);
+
+  const toggleBundleFavorite = async (bundle: AssetBundleListRow) => {
+    const res = await window.yiman?.project?.updateAssetBundle?.(projectDir, bundle.id, {
+      is_favorite: bundle.is_favorite ? 0 : 1,
+    });
+    if (res?.ok) reloadCurrentCategory();
+    else message.error(res?.error || '操作失败');
+  };
+
+  const handleDeleteBundle = (bundleId: string) => {
+    Modal.confirm({
+      title: '解散同类组',
+      content: '将移除组关系，不删除组内素材文件。确定？',
+      onOk: async () => {
+        const res = await window.yiman?.project?.deleteAssetBundle?.(projectDir, bundleId);
+        if (res?.ok) {
+          message.success('已解散');
+          reloadCurrentCategory();
+        } else message.error(res?.error || '操作失败');
+      },
+    });
+  };
+
+  const previewMemberFromBundle = async (m: AssetBundlePickMember) => {
+    const row = (await fetchAssetRowForBundleMemberPreview(projectDir, m)) as AssetRow | null;
+    if (!row) return;
+    const t = row.type || '';
+    if (t === 'video' || t === 'transparent_video') {
+      setVideoPreviewAsset(row);
+      setVideoPreviewOpen(true);
+    } else if (IMAGE_TYPES.includes(t) || t === 'image') {
+      setImagePreviewAsset(row);
+      setImagePreviewOpen(true);
+    } else if (t === 'sfx' || t === 'music') {
+      setAudioPreviewAsset(row);
+      setAudioPreviewOpen(true);
+    }
+  };
 
   const handleUpload = async () => {
     const values = await form.validateFields().catch(() => null);
     if (!values) return;
-    const isVideo = isVideoCategory;
-    const isAudio = isAudioCategory;
-    const isTransparent = typeFilter === 'transparent_video';
+    const isAudio = pendingUploadType === 'sfx' || pendingUploadType === 'music';
+    const isVideo = pendingUploadType === 'video';
     const filePath = await window.yiman?.dialog?.openFile?.({
       filters: isVideo
         ? [{ name: '视频', extensions: ['mp4', 'webm', 'mov', 'avi', 'mkv'] }]
         : isAudio
           ? [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }]
-          : isImageCategory
-            ? [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }]
-            : [{ name: '素材', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp3', 'wav', 'mp4', 'webm'] }],
+          : [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
     });
     if (!filePath) return;
     const fileName = filePath.split(/[/\\]/).pop() || '';
-    const description =
-      isVideo || isAudio || isImageCategory ? (values.name?.trim() || fileName || null) : (values.description?.trim() || null);
-    const tags = (values.tags ?? '').trim() || null;
+    const description = values.name?.trim() || fileName || null;
+    const rawTags = (values.tags ?? '').trim() || null;
+    const tags = isVisualCategory
+      ? addCategoryToTags(rawTags, categoryFilter as AssetUiCategory)
+      : rawTags;
     setUploading(true);
     try {
-      const type = isVideo || isAudio || isImageCategory ? typeFilter : values.type;
-      let res: { ok: boolean; error?: string };
-      if (isTransparent && window.yiman?.project?.saveTransparentVideoAsset) {
-        const color = (values.chromaKeyColor ?? 'auto') as 'auto' | 'black' | 'green' | 'purple';
-        res = await window.yiman.project.saveTransparentVideoAsset(projectDir, filePath, color, {
+      let res: { ok: boolean; error?: string; id?: string };
+      if (window.yiman?.project?.saveAssetFromFile) {
+        res = await window.yiman.project.saveAssetFromFile(projectDir, filePath, pendingUploadType, {
           description,
           is_favorite: values.is_favorite ? 1 : 0,
           tags,
         });
-      } else if (window.yiman?.project?.saveAssetFromFile) {
-        res = await window.yiman.project.saveAssetFromFile(projectDir, filePath, type, {
-          description,
-          is_favorite: isImageCategory ? 0 : (values.is_favorite ? 1 : 0),
-          tags,
-        });
       } else {
-        message.error(isTransparent ? '透明视频功能未就绪' : '上传功能未就绪');
+        message.error('上传功能未就绪');
         return;
       }
       if (res?.ok) {
         message.success('已上传并入库');
         setUploadModalOpen(false);
         form.resetFields();
-        loadAssets();
+        if (isVisualCategory) {
+          // 乐观更新：立即将新素材加入列表，避免刷新延迟导致看不到（见 issue：透明视频上传后道具分类不显示）
+          const newId = (res as { id?: string }).id;
+          if (newId && window.yiman?.project?.getAssetById) {
+            try {
+              const fresh = (await window.yiman.project.getAssetById(projectDir, newId)) as AssetRow | null;
+              if (fresh) {
+                setVisualAssets((prev) => [fresh, ...prev.filter((a) => a.id !== newId)]);
+              }
+            } catch {
+              /* 乐观更新失败时仍依赖 loadVisualAssets */
+            }
+          }
+          loadVisualAssets();
+          loadPathToAsset();
+        } else if (isSoundCategory) {
+          loadAudioAssets();
+        }
         onAssetAdded?.();
       } else message.error(res?.error || '上传失败');
     } finally {
@@ -358,9 +566,15 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
     }
   };
 
+  const reloadCurrentCategory = useCallback(() => {
+    if (isVisualCategory) { loadVisualAssets(); loadPathToAsset(); }
+    else if (isSoundCategory) loadAudioAssets();
+    void loadAssetBundles();
+  }, [isVisualCategory, isSoundCategory, loadVisualAssets, loadAudioAssets, loadPathToAsset, loadAssetBundles]);
+
   const toggleFavorite = async (id: string, current: number) => {
     const res = await window.yiman?.project?.updateAsset(projectDir, id, { is_favorite: current ? 0 : 1 });
-    if (res?.ok) loadAssets();
+    if (res?.ok) reloadCurrentCategory();
     else message.error(res?.error || '操作失败');
   };
 
@@ -372,7 +586,7 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
         const res = await window.yiman?.project?.deleteAsset(projectDir, id);
         if (res?.ok) {
           message.success('已移除');
-          loadAssets();
+          reloadCurrentCategory();
         } else message.error(res?.error || '删除失败');
       },
     });
@@ -416,30 +630,65 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
     [projectDir]
   );
 
+  /** 视觉分类添加菜单（图片/精灵图/元件/视频） */
+  const visualAddMenuItems = [
+    { key: 'image', label: '图片' },
+    { key: 'sprite', label: '精灵图' },
+    { key: 'component', label: '元件' },
+    { key: 'video', label: '视频' },
+  ];
+
+  const handleVisualAdd = ({ key }: { key: string }) => {
+    if (key === 'sprite') {
+      handleAddSpriteSheet();
+    } else if (key === 'component') {
+      handleAddGroupComponent();
+    } else {
+      setPendingUploadType(key);
+      setUploadModalOpen(true);
+    }
+  };
+
+  const uploadModalTitle = pendingUploadType === 'video'
+    ? '上传视频'
+    : pendingUploadType === 'sfx'
+      ? '上传音效'
+      : pendingUploadType === 'music'
+        ? '上传音乐'
+        : '上传图片';
+
+  const uploadOkText = pendingUploadType === 'video'
+    ? '选择视频并上传'
+    : pendingUploadType === 'sfx' || pendingUploadType === 'music'
+      ? '选择音频并上传'
+      : '选择图片并上传';
+
   return (
-    <div style={{ padding: '0' , height: '100%' }}>
+    <div style={{ padding: '0', height: '100%' }}>
       <AdaptiveCard size="small" style={{ marginBottom: 16 }}
         headerStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         headerHeight={40}
         header={
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <Space>
               <Radio.Group
                 block
                 optionType="button"
                 buttonStyle="solid"
-                value={typeFilter}
+                value={categoryFilter}
                 onChange={(e) => handleCategoryChange(e.target.value)}
                 size="small"
-                options={ASSET_LIBRARY_CATEGORIES.map((t) => ({ value: t.value, label: t.label }))}
+                options={UI_ASSET_CATEGORIES.map((t) => ({ value: t.value, label: t.label }))}
               />
-              <Checkbox checked={favoriteOnly} onChange={(e) => setFavoriteOnly(e.target.checked)}>
-                仅常用
-              </Checkbox>
-              {!isAudioCategory && (
-                <Radio.Group value={viewMode} buttonStyle="solid" onChange={(e) => setViewMode(e.target.value)} optionType="button" size="small" options={[{ value: 'list', label: '列表' }, { value: 'card', label: '卡片' }]} />
+              {isVisualCategory && (
+                <>
+                  <Checkbox checked={favoriteOnly} onChange={(e) => setFavoriteOnly(e.target.checked)}>
+                    仅常用
+                  </Checkbox>
+                  <Radio.Group value={viewMode} buttonStyle="solid" onChange={(e) => setViewMode(e.target.value)} optionType="button" size="small" options={[{ value: 'card', label: '卡片' }, { value: 'list', label: '列表' }]} />
+                </>
               )}
-              {isAudioCategory && (
+              {isSoundCategory && (
                 <Input.Search
                   placeholder="模糊搜索"
                   allowClear
@@ -450,80 +699,48 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
                 />
               )}
             </Space>
-            <Button
-              type="primary"
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={
-                isComponentCategory
-                  ? handleAddGroupComponent
-                  : isSpriteCategory
-                    ? handleAddSpriteSheet
-                    : () => setUploadModalOpen(true)
-              }
-            >
-              {isComponentCategory ? '新建元件' : isSpriteCategory ? '添加精灵图' : isImageCategory ? '上传' : isVideoCategory ? (typeFilter === 'transparent_video' ? '上传透明视频' : '上传视频') : isAudioCategory ? (typeFilter === 'sfx' ? '上传音效' : '上传音乐') : '上传'}
-            </Button>
+            {isVisualCategory && (
+              <Dropdown menu={{ items: visualAddMenuItems, onClick: handleVisualAdd }} trigger={['click']}>
+                <Button type="primary" size="small">
+                  添加 <DownOutlined />
+                </Button>
+              </Dropdown>
+            )}
+            {isSoundCategory && (
+              <Space>
+                <Button type="primary" size="small" onClick={() => { setPendingUploadType('sfx'); setUploadModalOpen(true); }}>上传音效</Button>
+                <Button size="small" onClick={() => { setPendingUploadType('music'); setUploadModalOpen(true); }}>上传音乐</Button>
+              </Space>
+            )}
           </div>
         }
       >
-
-        <Spin spinning={loading && !isSpriteCategory && !isComponentCategory}>
-          {isComponentCategory ? (
-            standaloneComponents.length === 0 ? (
-              <Empty description="暂无元件，点击「新建元件」添加" style={{ marginTop: 48 }} />
-            ) : (
-              <ResponsiveCardGrid>
-                {standaloneComponents.map((g) => {
-                  const coverPath = getGroupCoverPath(g, standaloneSprites);
-                  const asset = coverPath ? pathToAsset[coverPath] : undefined;
-                  return (
-                    <GroupComponentCard
-                      key={g.id}
-                      projectDir={projectDir}
-                      item={g}
-                      spriteSheets={standaloneSprites}
-                      onEdit={() => {
-                        setGroupComponentPanelItem(g);
-                        setGroupComponentPanelOpen(true);
-                      }}
-                      onDelete={() => handleDeleteGroupComponent(g)}
-                      onFavorite={asset ? () => toggleFavorite(asset.id, asset.is_favorite).then(() => loadPathToAsset()) : undefined}
-                      asset={asset}
-                    />
-                  );
-                })}
-              </ResponsiveCardGrid>
-            )
-          ) : isSpriteCategory ? (
-            standaloneSprites.length === 0 ? (
-              <Empty description="暂无精灵图，点击「添加精灵图」添加" style={{ marginTop: 48 }} />
-            ) : (
-              <ResponsiveCardGrid>
-                {standaloneSprites.map((s) => {
-                  const asset = (s.cover_path || s.image_path) ? pathToAsset[s.cover_path || s.image_path!] : undefined;
-                  return (
-                    <SpriteCard
-                      key={s.id}
-                      projectDir={projectDir}
-                      sprite={s}
-                      asset={asset}
-                      onEdit={() => {
-                        setSpriteSheetPanelItem(s);
-                        setSpriteSheetPanelOpen(true);
-                      }}
-                      onFavorite={asset ? () => toggleFavorite(asset.id, asset.is_favorite).then(() => loadPathToAsset()) : undefined}
-                      onDelete={() => handleDeleteSprite(s)}
-                    />
-                  );
-                })}
-              </ResponsiveCardGrid>
-            )
-          ) : isAudioCategory ? (
-            filteredAudio.length === 0 ? (
-              <Empty description={(assets.length === 0 ? `暂无${typeFilter === 'sfx' ? '音效' : '音乐'}，点击「上传${typeFilter === 'sfx' ? '音效' : '音乐'}」添加` : '无匹配结果')} style={{ marginTop: 48 }} />
+        <Spin spinning={loading}>
+          {isTextCategory ? (
+            <Empty description="文字素材功能即将上线" style={{ marginTop: 48 }} />
+          ) : isSoundCategory ? (
+            filteredAudio.length === 0 && filteredAudioBundles.length === 0 ? (
+              <Empty description="暂无音频素材，点击「上传音效/上传音乐」添加" style={{ marginTop: 48 }} />
             ) : (
               <ResponsiveCardGrid minItemWidth={240}>
+                {filteredAudioBundles.map((b) => (
+                  <div key={`bundle:${b.id}`} style={{ padding: 8 }}>
+                    <AdaptiveCard
+                      size="small"
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => setBundlePickId(b.id)}
+                      header={`${bundleCardDisplayTitle(b)}（${b.member_count} 个）`}
+                    >
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        点击展开选择子项或预览
+                      </Text>
+                      <Space style={{ marginTop: 8 }}>
+                        <Button type="text" size="small" icon={b.is_favorite ? <StarFilled /> : <StarOutlined />} onClick={(e) => { e.stopPropagation(); toggleBundleFavorite(b); }} />
+                        <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={(e) => { e.stopPropagation(); handleDeleteBundle(b.id); }} />
+                      </Space>
+                    </AdaptiveCard>
+                  </div>
+                ))}
                 {filteredAudio.map((a) => (
                   <AudioListItem
                     key={a.id}
@@ -537,38 +754,9 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
                 ))}
               </ResponsiveCardGrid>
             )
-          ) : filtered.length === 0 ? (
-            <Empty description={`暂无素材，点击「${isImageCategory ? '上传' : isVideoCategory ? '上传视频' : '上传'}」添加`} style={{ marginTop: 48 }} />
-          ) : viewMode === 'card' ? (
-            <ResponsiveCardGrid>
-                {filtered.map((a) => (
-                <AssetCard
-                  key={a.id}
-                  projectDir={projectDir}
-                  asset={a}
-                  onFavorite={() => toggleFavorite(a.id, a.is_favorite)}
-                  onDelete={() => handleDelete(a.id)}
-                  onVideoPreview={
-                    (a.type === 'video' || a.type === 'transparent_video')
-                      ? () => { setVideoPreviewAsset(a); setVideoPreviewOpen(true); }
-                      : undefined
-                  }
-                  onAudioPreview={
-                    (a.type === 'sfx' || a.type === 'music')
-                      ? () => { setAudioPreviewAsset(a); setAudioPreviewOpen(true); }
-                      : undefined
-                  }
-                  onImagePreview={
-                    IMAGE_TYPES.includes(a.type)
-                      ? () => { setImagePreviewAsset(a); setImagePreviewOpen(true); }
-                      : undefined
-                  }
-                />
-              ))}
-            </ResponsiveCardGrid>
-          ) : !isSpriteCategory ? (
+          ) : isVisualCategory && viewMode === 'list' ? (
             <Table
-              dataSource={filtered}
+              dataSource={filteredVisualAssets}
               rowKey="id"
               virtual
               scroll={{ x: 600, y: 400 }}
@@ -589,9 +777,9 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
                   render: (path: string) => <Text ellipsis>{path}</Text>,
                 },
                 {
-                  title: '分类',
+                  title: '类型',
                   dataIndex: 'type',
-                  width: 100,
+                  width: 90,
                   render: (type) => ASSET_CATEGORIES.find((t) => t.value === type)?.label ?? type,
                 },
                 {
@@ -607,14 +795,7 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
                   render: (_, r) => (
                     <Space>
                       {(r.type === 'video' || r.type === 'transparent_video') && (
-                        <Button type="link" size="small" onClick={() => { setVideoPreviewAsset(r); setVideoPreviewOpen(true); }}>
-                          预览
-                        </Button>
-                      )}
-                      {(r.type === 'sfx' || r.type === 'music') && (
-                        <Button type="link" size="small" onClick={() => { setAudioPreviewAsset(r); setAudioPreviewOpen(true); }}>
-                          预览
-                        </Button>
+                        <Button type="link" size="small" onClick={() => { setVideoPreviewAsset(r); setVideoPreviewOpen(true); }}>预览</Button>
                       )}
                       <Button type="text" size="small" icon={r.is_favorite ? <StarFilled /> : <StarOutlined />} onClick={() => toggleFavorite(r.id, r.is_favorite)} />
                       <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(r.id)} />
@@ -623,59 +804,109 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
                 },
               ]}
             />
-          ) : null}
+          ) : (
+            <>
+              {unifiedItems.length === 0 ? (
+                <Empty description="暂无素材，点击「添加」导入" style={{ marginTop: 48 }} />
+              ) : (
+                <ResponsiveCardGrid>
+                  {unifiedItems.map((item) => {
+                    if (item.kind === 'bundle') {
+                      const b = item.data;
+                      return (
+                        <AssetBundleCard
+                          key={`bundle:${b.id}`}
+                          projectDir={projectDir}
+                          bundle={b}
+                          onOpen={() => setBundlePickId(b.id)}
+                          onFavorite={() => toggleBundleFavorite(b)}
+                          onDeleteBundle={() => handleDeleteBundle(b.id)}
+                        />
+                      );
+                    }
+                    if (item.kind === 'asset') {
+                      const a = item.data;
+                      return (
+                        <AssetCard
+                          key={a.id}
+                          projectDir={projectDir}
+                          asset={a}
+                          onFavorite={() => toggleFavorite(a.id, a.is_favorite)}
+                          onDelete={() => handleDelete(a.id)}
+                          onVideoPreview={
+                            (a.type === 'video' || a.type === 'transparent_video')
+                              ? () => { setVideoPreviewAsset(a); setVideoPreviewOpen(true); }
+                              : undefined
+                          }
+                          onImagePreview={
+                            IMAGE_TYPES.includes(a.type)
+                              ? () => { setImagePreviewAsset(a); setImagePreviewOpen(true); }
+                              : undefined
+                          }
+                        />
+                      );
+                    }
+                    if (item.kind === 'sprite') {
+                      const s = item.data;
+                      const asset = (s.cover_path || s.image_path) ? pathToAsset[s.cover_path || s.image_path!] : undefined;
+                      return (
+                        <SpriteCard
+                          key={s.id}
+                          projectDir={projectDir}
+                          sprite={s}
+                          asset={asset}
+                          onEdit={() => { setSpriteSheetPanelItem(s); setSpriteSheetPanelOpen(true); }}
+                          onFavorite={asset ? () => toggleFavorite(asset.id, asset.is_favorite).then(() => loadPathToAsset()) : undefined}
+                          onDelete={() => handleDeleteSprite(s)}
+                        />
+                      );
+                    }
+                    const g = item.data;
+                    const coverPath = getGroupCoverPath(g, standaloneSprites);
+                    const asset = coverPath ? pathToAsset[coverPath] : undefined;
+                    return (
+                      <GroupComponentCard
+                        key={g.id}
+                        projectDir={projectDir}
+                        item={g}
+                        spriteSheets={standaloneSprites}
+                        onEdit={() => { setGroupComponentPanelItem(g); setGroupComponentPanelOpen(true); }}
+                        onDelete={() => handleDeleteGroupComponent(g)}
+                        onFavorite={asset ? () => toggleFavorite(asset.id, asset.is_favorite).then(() => loadPathToAsset()) : undefined}
+                        asset={asset}
+                      />
+                    );
+                  })}
+                </ResponsiveCardGrid>
+              )}
+            </>
+          )}
         </Spin>
-
       </AdaptiveCard>
 
       <Modal
-        title={
-          isVideoCategory ? '上传视频' : isAudioCategory ? (typeFilter === 'sfx' ? '上传音效' : '上传音乐') : isImageCategory ? '上传' : '上传素材'
-        }
+        title={uploadModalTitle}
         open={uploadModalOpen}
         onCancel={() => { setUploadModalOpen(false); form.resetFields(); }}
         onOk={handleUpload}
         confirmLoading={uploading}
-        okText={isVideoCategory ? '选择视频并上传' : isAudioCategory ? '选择音频并上传' : isImageCategory ? '选择图片并上传' : '选择文件并上传'}
+        okText={uploadOkText}
       >
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ type: 'image', is_favorite: false, description: '', name: '', tags: '', chromaKeyColor: 'auto' }}
+          initialValues={{ is_favorite: false, name: '', tags: '', chromaKeyColor: 'auto' }}
         >
-          {isVideoCategory || isAudioCategory || isImageCategory ? (
-            <>
-              <Form.Item name="name" label="名称（可选，不填则用文件名）">
-                <Input placeholder="素材名称" />
-              </Form.Item>
-              {isVideoCategory && typeFilter === 'transparent_video' && (
-                <Form.Item name="chromaKeyColor" label="抠图背景色" rules={[{ required: true }]} initialValue="auto">
-                  <Radio.Group
-                    options={[
-                      { value: 'auto', label: '自动检测（推荐）' },
-                      { value: 'black', label: '黑色' },
-                      { value: 'green', label: '绿色' },
-                      { value: 'purple', label: '紫色' },
-                    ]}
-                  />
-                </Form.Item>
-              )}
-              <Form.Item name="tags" label="标签（可选）">
-                <VideoTagInput />
-              </Form.Item>
-            </>
-          ) : (
-            <>
-              <Form.Item name="type" label="分类" rules={[{ required: true }]}>
-                <Select options={ASSET_LIBRARY_CATEGORIES.map((t) => ({ value: t.value, label: t.label }))} />
-              </Form.Item>
-              <Form.Item name="is_favorite" valuePropName="checked">
-                <Checkbox>保存为常用</Checkbox>
-              </Form.Item>
-              <Form.Item name="description" label="描述（可选）">
-                <TextArea rows={2} placeholder="素材描述" />
-              </Form.Item>
-            </>
+          <Form.Item name="name" label="名称（可选，不填则用文件名）">
+            <Input placeholder="素材名称" />
+          </Form.Item>
+          <Form.Item name="tags" label="标签（可选）">
+            <VideoTagInput />
+          </Form.Item>
+          {(pendingUploadType === 'sfx' || pendingUploadType === 'music') && (
+            <Form.Item name="is_favorite" valuePropName="checked">
+              <Checkbox>保存为常用</Checkbox>
+            </Form.Item>
           )}
         </Form>
       </Modal>
@@ -685,24 +916,74 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
         onClose={() => { setVideoPreviewOpen(false); setVideoPreviewAsset(null); }}
         projectDir={projectDir}
         asset={videoPreviewAsset}
-        onUpdate={loadAssets}
+        onUpdate={reloadCurrentCategory}
+        onChangeCategory={handleVideoAssetCategoryChange}
+        onReprocessComplete={async (assetId) => {
+          reloadCurrentCategory();
+          onAssetAdded?.();
+          if (videoPreviewAsset?.id === assetId && window.yiman?.project?.getAssetById) {
+            const fresh = (await window.yiman.project.getAssetById(projectDir, assetId)) as AssetRow | null;
+            if (fresh) setVideoPreviewAsset(fresh);
+          }
+        }}
+        onSpriteSaved={async (result) => {
+          if (!result.path) return;
+          await window.yiman?.project?.getOrCreateStandaloneSpritesCharacter?.(projectDir);
+          const newId = `sprite_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+          const newItem: SpriteSheetItem = {
+            id: newId,
+            name: '精灵动作',
+            image_path: result.path,
+            frames: result.frames,
+            uiCategory: (isVisualCategory ? categoryFilter : 'prop') as AssetUiCategory,
+          };
+          const next = [...standaloneSprites, newItem];
+          const res = await window.yiman?.project?.updateCharacter?.(projectDir, STANDALONE_SPRITES_CHARACTER_ID, {
+            sprite_sheets: JSON.stringify(next),
+          });
+          if (res?.ok) {
+            loadStandaloneSprites();
+            onAssetAdded?.();
+          }
+        }}
+        saveAssetFromFile={async (dir, filePath, type, opt) =>
+          (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type, opt)) ?? { ok: false }}
+        openFileDialog={(opts) => window.yiman?.dialog?.openFile?.(opts) ?? Promise.resolve(undefined)}
       />
       <AudioPreviewDrawer
         open={audioPreviewOpen}
         onClose={() => { setAudioPreviewOpen(false); setAudioPreviewAsset(null); }}
         projectDir={projectDir}
         asset={audioPreviewAsset}
-        onUpdate={loadAssets}
+        onUpdate={reloadCurrentCategory}
+        saveAssetFromFile={async (dir, filePath, type) => (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type)) ?? { ok: false }}
+        openFileDialog={(opts) => window.yiman?.dialog?.openFile?.(opts) ?? Promise.resolve(undefined)}
       />
       <ImagePreviewDrawer
         open={imagePreviewOpen}
         onClose={() => { setImagePreviewOpen(false); setImagePreviewAsset(null); }}
         projectDir={projectDir}
         asset={imagePreviewAsset}
-        onUpdate={loadAssets}
+        onUpdate={async (opts) => {
+          reloadCurrentCategory();
+          if (opts?.assetId && imagePreviewOpen && imagePreviewAsset?.id === opts.assetId && window.yiman?.project?.getAssetById) {
+            const fresh = (await window.yiman.project.getAssetById(projectDir, opts.assetId)) as AssetRow | null;
+            if (fresh) setImagePreviewAsset(fresh);
+          }
+        }}
         getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
         saveAssetFromBase64={(dir, base64, ext, type, opt) => window.yiman?.project?.saveAssetFromBase64?.(dir, base64, ext, type, opt) ?? Promise.resolve({ ok: false })}
         matteImageAndSave={(dir, path, opt) => window.yiman?.project?.matteImageAndSave?.(dir, path, opt) ?? Promise.resolve({ ok: false })}
+        saveAssetFromFile={async (dir, filePath, type, opt) =>
+          (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type, opt)) ?? { ok: false }}
+        openFileDialog={(opts) => window.yiman?.dialog?.openFile?.(opts) ?? Promise.resolve(undefined)}
+      />
+      <TextPreviewDrawer
+        open={textPreviewOpen}
+        onClose={() => { setTextPreviewOpen(false); setTextPreviewAsset(null); }}
+        projectDir={projectDir}
+        asset={textPreviewAsset}
+        onUpdate={reloadCurrentCategory}
       />
       {spriteSheetPanelOpen && (
         <SpriteSheetPanel
@@ -749,6 +1030,18 @@ export default function AssetLibraryTab({ project, assetRefreshKey, onAssetAdded
           matteImageAndSave={(dir, path, opt) => window.yiman?.project?.matteImageAndSave?.(dir, path, opt) ?? Promise.resolve({ ok: false, error: '未就绪' })}
         />
       )}
+      <AssetBundlePickModal
+        open={!!bundlePickId}
+        bundleId={bundlePickId}
+        projectDir={projectDir}
+        mode="library"
+        title="素材包 · 选择子项"
+        onCancel={() => setBundlePickId(null)}
+        onPreviewMember={(m) => {
+          previewMemberFromBundle(m);
+          setBundlePickId(null);
+        }}
+      />
     </div>
   );
 }

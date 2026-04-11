@@ -7,7 +7,7 @@ import React from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import WavesurferPlayer from '@wavesurfer/react';
 import { getTimelineAnimationSegments } from '@/utils/timelineAnimationSegments';
-import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
+import { CAMERA_BLOCK_ASSET_ID, SUBTITLE_BLOCK_ASSET_ID } from '@/constants/project';
 
 interface KeyframeRow {
   id: string;
@@ -33,6 +33,12 @@ interface TimelineBlockDraggableProps {
   audioUrl?: string | null;
   /** 视频/精灵图原始时长（秒），超出时在素材条上显示循环分隔线 */
   nativeDuration?: number;
+  /** 素材缩略图 data URL */
+  assetThumb?: string;
+  /** 素材名称 */
+  assetName?: string;
+  /** 字幕块：字幕 item 列表，用于绘制起止标记 */
+  subtitleItems?: { startTime: number; endTime: number }[];
 }
 
 export function TimelineBlockDraggable({
@@ -49,6 +55,9 @@ export function TimelineBlockDraggable({
   draggable = true,
   audioUrl,
   nativeDuration,
+  assetThumb,
+  assetName,
+  subtitleItems = [],
 }: TimelineBlockDraggableProps) {
   const left = timeToX(block.start_time);
   const width = Math.max(12, timeToX(block.end_time - block.start_time));
@@ -61,6 +70,13 @@ export function TimelineBlockDraggable({
   });
 
   const isCameraBlock = block.asset_id === CAMERA_BLOCK_ASSET_ID;
+  const isSubtitleBlock = block.asset_id === SUBTITLE_BLOCK_ASSET_ID;
+  const blockBorderLeft = isCameraBlock ? '2px solid rgba(255,77,79,0.8)' : isSubtitleBlock ? '2px solid rgba(64,169,255,0.8)' : '1px solid rgb(23, 23, 23)';
+  const blockBg = isCameraBlock
+    ? (isDragging ? 'rgba(255,77,79,0.5)' : selectedBlockId === block.id ? 'rgba(255,77,79,0.4)' : 'rgba(255,77,79,0.2)')
+    : isSubtitleBlock
+      ? (isDragging ? 'rgba(64,169,255,0.5)' : selectedBlockId === block.id ? 'rgba(64,169,255,0.4)' : 'rgba(64,169,255,0.2)')
+      : (isDragging ? 'rgba(23,119,255,0.5)' : selectedBlockId === block.id ? 'rgba(23,119,255,0.4)' : 'rgba(255,255,255,0.15)');
   const style: React.CSSProperties = {
     position: 'absolute',
     left,
@@ -68,11 +84,9 @@ export function TimelineBlockDraggable({
     width,
     marginLeft: 1,
     height: trackRowHeight - 8,
-    borderLeft: isCameraBlock ? '2px solid rgba(255,77,79,0.8)' : '1px solid rgb(23, 23, 23)',
+    borderLeft: blockBorderLeft,
     transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
-    background: isCameraBlock
-      ? (isDragging ? 'rgba(255,77,79,0.5)' : selectedBlockId === block.id ? 'rgba(255,77,79,0.4)' : 'rgba(255,77,79,0.2)')
-      : (isDragging ? 'rgba(23,119,255,0.5)' : selectedBlockId === block.id ? 'rgba(23,119,255,0.4)' : 'rgba(255,255,255,0.15)'),
+    background: blockBg,
     borderRadius: 4,
     cursor: 'pointer',
     opacity: isDragging ? 0.8 : 1,
@@ -136,7 +150,83 @@ export function TimelineBlockDraggable({
           />
         </div>
       ) : null}
-      {/* 视频/精灵图循环分隔线：block 时长超出原始素材时长时显示 */}
+      {isSubtitleBlock && subtitleItems.length > 0 && (() => {
+        const blockDur = Math.max(0.001, block.end_time - block.start_time);
+        const colors = ['rgba(64,169,255,0.9)', 'rgba(82,196,26,0.9)', 'rgba(250,173,20,0.9)', 'rgba(255,77,79,0.9)'];
+        const sorted = [...subtitleItems].sort((a, b) => a.startTime - b.startTime);
+        const rows: number[] = [];
+        for (let i = 0; i < sorted.length; i++) {
+          let r = 0;
+          while (rows.some((_, j) => j < i && rows[j] === r && sorted[j].endTime > sorted[i].startTime && sorted[j].startTime < sorted[i].endTime)) r++;
+          rows[i] = r;
+        }
+        const rowH = 4;
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 4,
+              height: (Math.max(...rows, 0) + 1) * rowH,
+              pointerEvents: 'none',
+            }}
+          >
+            {sorted.map((item, i) => {
+              const leftPct = Math.max(0, ((item.startTime - block.start_time) / blockDur) * 100);
+              const rightPct = Math.min(100, ((item.endTime - block.start_time) / blockDur) * 100);
+              const wPct = Math.max(0.5, rightPct - leftPct);
+              if (wPct <= 0) return null;
+              return (
+                <div
+                  key={`sub_${i}`}
+                  style={{
+                    position: 'absolute',
+                    left: `${leftPct}%`,
+                    width: `${wPct}%`,
+                    height: 3,
+                    bottom: rows[i] * rowH,
+                    background: colors[rows[i] % colors.length],
+                    borderRadius: 1,
+                  }}
+                  aria-hidden
+                />
+              );
+            })}
+          </div>
+        );
+      })()}
+      {!audioUrl && (assetThumb || assetName || isSubtitleBlock) && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 3,
+            padding: '0 6px',
+            overflow: 'hidden',
+            pointerEvents: 'none',
+          }}
+        >
+          {assetThumb && (
+            <img
+              src={assetThumb}
+              alt=""
+              style={{ width: 26, height: 26, objectFit: 'cover', borderRadius: 3, flexShrink: 0, background: 'rgba(0,0,0,0.3)' }}
+            />
+          )}
+          {isSubtitleBlock ? (
+            <span style={{ fontSize: 11, color: 'rgba(64,169,255,0.9)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1 }}>
+              字幕
+            </span>
+          ) : assetName ? (
+            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1 }}>
+              {assetName}
+            </span>
+          ) : null}
+        </div>
+      )}
       {nativeDuration && nativeDuration > 0 && (block.end_time - block.start_time) > nativeDuration + 0.1 && (
         Array.from({ length: Math.ceil((block.end_time - block.start_time) / nativeDuration) - 1 }).map((_, i) => {
           const loopTime = block.start_time + nativeDuration * (i + 1);

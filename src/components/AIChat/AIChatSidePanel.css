@@ -1,0 +1,24 @@
+/* Sender 附件文件卡缩略图：侧栏较窄，使用更小缩略图（默认 68×68） */
+.ant-file-card-list .ant-file-card-image{
+  width: 48px !important;
+  height: 48px !important;
+}
+
+.ant-upload-wrapper.ant-upload-picture-card-wrapper .ant-upload.ant-upload-select{
+  width: 48px !important;
+  height: 48px !important;
+  border: none !important;
+}
+
+.ant-upload-wrapper.ant-upload-picture-card-wrapper .ant-upload.ant-upload-select .ant-btn{
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.ant-file-card .ant-file-card-image-img img { 
+  height: 100% !important;
+}
+
+.ant-sender .ant-sender-header .ant-sender-header-header{
+  padding: 4px 10px !important;
+}

@@ -1,0 +1,85 @@
+{
+  "id": "simpleParticles",
+  "name": "飘花/飘叶",
+  "description": "花瓣或树叶飘落粒子效果",
+  "renderEntry": "./render.js",
+  "renderMethod": "render",
+  "fields": [
+    {
+      "key": "particleType",
+      "label": "粒子类型",
+      "type": "select",
+      "options": [
+        { "value": "petal", "label": "花瓣" },
+        { "value": "leaf_green", "label": "细长绿树叶" },
+        { "value": "leaf_autumn", "label": "金黄秋树叶" },
+        { "value": "snow", "label": "下雪" },
+        { "value": "rain", "label": "下雨" }
+      ],
+      "defaults": { "particleType": "petal" }
+    },
+    {
+      "key": "count",
+      "label": "数量",
+      "type": "slider",
+      "min": 10,
+      "max": 300,
+      "step": 5,
+      "defaults": { "count": 80 }
+    },
+    {
+      "key": "windDirection",
+      "label": "风向",
+      "type": "slider",
+      "min": 0,
+      "max": 360,
+      "step": 15,
+      "defaults": { "windDirection": 90 }
+    },
+    {
+      "key": "windSpeed",
+      "label": "风速",
+      "type": "slider",
+      "min": 0,
+      "max": 20,
+      "step": 0.1,
+      "defaults": { "windSpeed": 0.5 }
+    },
+    {
+      "key": "fallSpeed",
+      "label": "下落速度",
+      "type": "slider",
+      "min": 0.2,
+      "max": 50,
+      "step": 0.1,
+      "defaults": { "fallSpeed": 5 }
+    },
+    {
+      "key": "size",
+      "label": "粒子大小",
+      "type": "slider",
+      "min": 4,
+      "max": 40,
+      "step": 1,
+      "defaults": { "size": 12 }
+    },
+    {
+      "key": "blurRatio",
+      "label": "模糊粒子比例 (%)",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "defaults": { "blurRatio": 35 }
+    },
+    {
+      "key": "flightVariation",
+      "label": "飞行变异程度",
+      "type": "slider",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "defaults": { "flightVariation": 60 }
+    }
+  ]
+}

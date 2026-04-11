@@ -605,10 +605,10 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                   <Form.Item name="script_text" label="剧本文本（纯文本，供 AI 参考）" style={{ display: 'none' }}>
                     <TextArea rows={6} placeholder="详细剧本文本或从结构化场景导出" />
                   </Form.Item>
-                  <Form.Item name="character_refs" label="绑定人物" style={{ display: 'none' }}>
+                  <Form.Item name="character_refs" label="绑定角色" style={{ display: 'none' }}>
                     <Select
                       mode="multiple"
-                      placeholder="选择本集出现的人物（供视频设计器人物 Tab 排序）"
+                      placeholder="选择本集出现的角色（供视频设计器角色 Tab 排序）"
                       allowClear
                       options={characters.map((c) => ({ label: c.name, value: c.id }))}
                       style={{ width: '100%' }}

@@ -1,5 +1,5 @@
 /**
- * 镜头设置（选中镜头素材条时显示）：X/Y/Z 关键帧、AI 自动生成镜头、自动居中说话人物（见功能文档 6.6）
+ * 镜头设置（选中镜头素材条时显示）：X/Y/Z 关键帧、AI 自动生成镜头、自动居中说话角色（见功能文档 6.6）
  * 镜头参数：pos_x=X, pos_y=Y, scale_x=Z（景深/缩放）
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -276,7 +276,7 @@ export function CameraSettingsPanel({
         onChange={(e) => handleAutoCenterChange(e.target.checked)}
         disabled
       >
-        自动居中说话人物
+        自动居中说话角色
       </Checkbox>
 
       <Button

@@ -26,7 +26,7 @@ import type { DragEndEvent, DragOverEvent, DragStartEvent } from '@dnd-kit/core'
 import type { ProjectInfo } from '@/hooks/useProject';
 import type { ScriptScene } from '@/types/script';
 import { DesignScriptPanel } from './DesignScriptPanel';
-import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
+import { CAMERA_BLOCK_ASSET_ID, SUBTITLE_BLOCK_ASSET_ID } from '@/constants/project';
 import { TimelineBlockSortable } from './TimelineBlockSortable';
 import { TimelineBlockDraggable } from './TimelineBlockDraggable';
 import { BlockOverlay } from './BlockOverlay';
@@ -162,13 +162,15 @@ interface TimelinePanelProps {
   refreshKey?: number;
   /** 导出视频按钮点击 */
   onExportClick?: () => void;
-  /** 剧本模式：当前集（含 script_structured）、场景索引、人物列表、保存回调 */
+  /** 剧本模式：当前集（含 script_structured）、场景索引、角色列表、保存回调 */
   episodeId?: string | null;
   episode?: { script_structured?: string | null } | null;
   sceneIndex?: number;
   epIndex?: number;
   characters?: { id: string; name: string }[];
   onEpisodeScriptChange?: (episodeId: string, scriptStructured: string) => Promise<void>;
+  /** 拖拽同类组到轨道时先选子素材（返回 assetId，取消返回 null） */
+  requestAssetBundlePick?: (bundleId: string) => Promise<string | null>;
 }
 
 const STORAGE_KEY_TIMELINE_MODE = 'yiman:designer:timelineMode';
@@ -207,6 +209,7 @@ export function TimelinePanel({
   epIndex = 0,
   characters = [],
   onEpisodeScriptChange,
+  requestAssetBundlePick,
 }: TimelinePanelProps) {
   const { message } = App.useApp();
   const [timelineMode, setTimelineMode] = useState<'design' | 'script'>(() => getStoredTimelineMode());
@@ -234,6 +237,8 @@ export function TimelinePanel({
   const [spriteBlockIds, setSpriteBlockIds] = useState<Set<string>>(new Set());
   const [blockAudioUrls, setBlockAudioUrls] = useState<Record<string, string>>({});
   const [blockNativeDurations, setBlockNativeDurations] = useState<Record<string, number>>({});
+  const [blockAssetInfo, setBlockAssetInfo] = useState<Record<string, { thumb?: string; name?: string }>>({});
+  const [subtitleItems, setSubtitleItems] = useState<{ startTime: number; endTime: number }[]>([]);
   const [resizingState, setResizingState] = useState<ResizingState | null>(null);
 
   const loadLayersAndBlocks = useCallback(async () => {
@@ -244,18 +249,42 @@ export function TimelinePanel({
       await window.yiman.project.createLayer(projectDir, { id: layerId, scene_id: sceneId, name: '主轨道', z_index: 0, is_main: 1 });
       layerList = (await window.yiman.project.getLayers(projectDir, sceneId)) as LayerRow[];
     }
-    const scene = (await window.yiman?.project?.getScene?.(projectDir, sceneId)) as { camera_enabled?: number } | null;
+    const scene = (await window.yiman?.project?.getScene?.(projectDir, sceneId)) as { camera_enabled?: number; subtitle_enabled?: number; subtitle_config?: string | null } | null;
     const cameraEnabled = !!scene?.camera_enabled;
+    const subtitleEnabled = !!scene?.subtitle_enabled;
+    let subtitleItems: { startTime: number; endTime: number }[] = [];
+    if (subtitleEnabled && scene?.subtitle_config) {
+      try {
+        const parsed = JSON.parse(scene.subtitle_config) as { items?: { startTime: number; duration?: number; endTime?: number }[] };
+        subtitleItems = (parsed.items ?? []).map((it) => {
+          const dur = typeof it.duration === 'number' ? it.duration : typeof it.endTime === 'number' ? it.endTime - it.startTime : 2;
+          return { startTime: it.startTime, endTime: it.startTime + dur };
+        });
+      } catch { /* ignore */ }
+    }
     if (cameraEnabled && window.yiman?.project?.ensureCameraLayerAndBlock) {
       await window.yiman.project.ensureCameraLayerAndBlock(projectDir, sceneId);
       layerList = (await window.yiman.project.getLayers(projectDir, sceneId)) as LayerRow[];
     }
-    const filtered = cameraEnabled ? layerList : layerList.filter((l) => (l.layer_type ?? 'video') !== 'camera');
+    if (subtitleEnabled && window.yiman?.project?.ensureSubtitleLayerAndBlock) {
+      await window.yiman.project.ensureSubtitleLayerAndBlock(projectDir, sceneId);
+      layerList = (await window.yiman.project.getLayers(projectDir, sceneId)) as LayerRow[];
+    }
+    const filtered = layerList.filter((l) => {
+      const lt = l.layer_type ?? 'video';
+      if (lt === 'camera' && !cameraEnabled) return false;
+      if (lt === 'subtitle' && !subtitleEnabled) return false;
+      return true;
+    });
     const sorted = filtered.sort((a, b) => {
       const aCam = (a.layer_type ?? 'video') === 'camera';
       const bCam = (b.layer_type ?? 'video') === 'camera';
+      const aSub = (a.layer_type ?? 'video') === 'subtitle';
+      const bSub = (b.layer_type ?? 'video') === 'subtitle';
       if (aCam && !bCam) return -1;
       if (!aCam && bCam) return 1;
+      if (aSub && !bSub) return -1;
+      if (!aSub && bSub) return 1;
       return a.z_index - b.z_index;
     });
     setLayers(sorted);
@@ -264,6 +293,7 @@ export function TimelinePanel({
     const spriteIds = new Set<string>();
     const audioUrls: Record<string, string> = {};
     const nativeDurations: Record<string, number> = {};
+    const assetInfo: Record<string, { thumb?: string; name?: string }> = {};
     if (window.yiman.project.getTimelineBlocks && window.yiman.project.getKeyframes) {
       for (const layer of layerList) {
         const list = (await window.yiman.project.getTimelineBlocks(projectDir, layer.id)) as BlockRow[];
@@ -296,11 +326,21 @@ export function TimelinePanel({
         for (const list of Object.values(blocks)) {
           for (const b of list) {
             if (b.asset_id) {
-              const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id) as { path?: string; type?: string; duration?: number } | null;
+              const asset = await window.yiman.project.getAssetById(projectDir, b.asset_id) as { path?: string; type?: string; duration?: number; cover_path?: string; description?: string } | null;
               if (asset?.path && spritePaths.has(asset.path)) spriteIds.add(b.id);
-              // 收集视频/精灵图原始时长，用于循环分隔线显示
               if (asset && typeof asset.duration === 'number' && asset.duration > 0) {
                 nativeDurations[b.id] = asset.duration;
+              }
+              if (asset) {
+                const name = asset.description || asset.path?.split(/[/\\]/).pop() || '';
+                const thumbPath = asset.cover_path || asset.path;
+                assetInfo[b.id] = { name };
+                if (thumbPath && window.yiman.project.getAssetDataUrl) {
+                  try {
+                    const url = await window.yiman.project.getAssetDataUrl(projectDir, thumbPath);
+                    if (url) assetInfo[b.id].thumb = url;
+                  } catch { /* ignore */ }
+                }
               }
             }
           }
@@ -309,9 +349,11 @@ export function TimelinePanel({
     }
     setBlocksByLayer(blocks);
     setKeyframesByBlock(keyframes);
+    setSubtitleItems(subtitleItems);
     setSpriteBlockIds(spriteIds);
     setBlockAudioUrls(audioUrls);
     setBlockNativeDurations(nativeDurations);
+    setBlockAssetInfo(assetInfo);
   }, [projectDir, sceneId]);
 
   useEffect(() => {
@@ -355,6 +397,10 @@ export function TimelinePanel({
     const block = Object.values(blocksByLayer).flat().find((b) => b.id === selectedBlockId);
     if (block?.asset_id === CAMERA_BLOCK_ASSET_ID) {
       message.warning('镜头块不可删除');
+      return;
+    }
+    if (block?.asset_id === SUBTITLE_BLOCK_ASSET_ID) {
+      message.warning('字幕块不可删除');
       return;
     }
     // 乐观更新：立即从 UI 移除素材条，不等待 DB 响应
@@ -461,7 +507,7 @@ export function TimelinePanel({
     (timeA: number, currentLayerId: string): number | null => {
       const currentLayerIdx = layers.findIndex((l) => l.id === currentLayerId);
       if (currentLayerIdx < 0) return null;
-      const cameraLayerIds = new Set(layers.filter((l) => (l.layer_type ?? 'video') === 'camera').map((l) => l.id));
+      const cameraLayerIds = new Set(layers.filter((l) => { const lt = l.layer_type ?? 'video'; return lt === 'camera' || lt === 'subtitle'; }).map((l) => l.id));
       const candidates: { time: number; layerIdx: number }[] = [];
       for (const layer of layers) {
         if (layer.id === currentLayerId || cameraLayerIds.has(layer.id)) continue;
@@ -690,10 +736,18 @@ export function TimelinePanel({
         message.warning('镜头块不可移动到其他轨道');
         return;
       }
+      if (block?.asset_id === SUBTITLE_BLOCK_ASSET_ID) {
+        message.warning('字幕块不可移动到其他轨道');
+        return;
+      }
       const fromLayer = layers.find((l) => l.id === fromLayerId);
       const toLayer = layers.find((l) => l.id === toLayerId);
       if ((toLayer?.layer_type ?? 'video') === 'camera') {
         message.warning('镜头层仅可放置镜头块');
+        return;
+      }
+      if ((toLayer?.layer_type ?? 'video') === 'subtitle') {
+        message.warning('字幕层仅可放置字幕块');
         return;
       }
       const duration = block ? block.end_time - block.start_time : 10;
@@ -797,9 +851,23 @@ export function TimelinePanel({
       setDragOver(null);
       const blockId = e.dataTransfer.getData('blockId');
       const fromLayerId = e.dataTransfer.getData('fromLayerId');
-      const assetId = e.dataTransfer.getData('assetId');
+      let assetId = e.dataTransfer.getData('assetId');
+      let assetType = e.dataTransfer.getData('assetType') || '';
+      const assetBundleId = e.dataTransfer.getData('assetBundleId');
+      if (assetBundleId && requestAssetBundlePick) {
+        const picked = await requestAssetBundlePick(assetBundleId);
+        if (!picked) return;
+        assetId = picked;
+        if (window.yiman?.project?.getAssetById) {
+          const row = (await window.yiman.project.getAssetById(projectDir, picked)) as { type?: string } | null;
+          assetType = row?.type ?? '';
+        }
+      }
       let assetDuration = parseFloat(e.dataTransfer.getData('assetDuration') || '10');
-      const assetType = e.dataTransfer.getData('assetType') || '';
+      const textGadgetConfigRaw = e.dataTransfer.getData('textGadgetConfig');
+      const textGadgetConfig = textGadgetConfigRaw || null;
+      const particlesGadgetConfigRaw = e.dataTransfer.getData('particlesGadgetConfig');
+      const particlesGadgetConfig = particlesGadgetConfigRaw || null;
       const isAudioAsset = ['sfx', 'music'].includes(assetType);
       if (assetId && ['video', 'transparent_video'].includes(assetType)) {
         assetDuration = await getAssetDuration(assetId, assetDuration);
@@ -829,7 +897,7 @@ export function TimelinePanel({
       if (assetId && toLayerId === mainLayerId && !isAudioAsset && window.yiman?.project?.insertBlockAtMainTrack && mainLayerId) {
         const insertAt = getMainTrackInsertAt(dropTime);
         const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        const res = await window.yiman.project.insertBlockAtMainTrack(projectDir, sceneId!, {
+        const insertData: Parameters<typeof window.yiman.project.insertBlockAtMainTrack>[2] = {
           id: blockIdNew,
           asset_id: assetId,
           duration: assetDuration,
@@ -839,7 +907,14 @@ export function TimelinePanel({
           scale_x: 0.25,
           scale_y: 0.25,
           rotation: 0,
-        });
+        };
+        if (assetType === 'text_gadget' && textGadgetConfig) {
+          insertData.text_gadget_config = textGadgetConfig;
+        }
+        if (assetType === 'particles_gadget' && particlesGadgetConfig) {
+          insertData.particles_gadget_config = particlesGadgetConfig;
+        }
+        const res = await window.yiman.project.insertBlockAtMainTrack(projectDir, sceneId!, insertData);
         if (res?.ok) {
           if (assetType === 'image') {
             await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
@@ -865,7 +940,7 @@ export function TimelinePanel({
           }
         }
         const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        const res = await window.yiman.project.createTimelineBlock(projectDir, {
+        const createData: Parameters<typeof window.yiman.project.createTimelineBlock>[1] = {
           id: blockIdNew,
           layer_id: toLayerId,
           asset_id: assetId,
@@ -876,7 +951,14 @@ export function TimelinePanel({
           scale_x: 0.25,
           scale_y: 0.25,
           rotation: 0,
-        });
+        };
+        if (assetType === 'text_gadget' && textGadgetConfig) {
+          createData.text_gadget_config = textGadgetConfig;
+        }
+        if (assetType === 'particles_gadget' && particlesGadgetConfig) {
+          createData.particles_gadget_config = particlesGadgetConfig;
+        }
+        const res = await window.yiman.project.createTimelineBlock(projectDir, createData);
         if (res?.ok) {
           if (assetType === 'image') {
             await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
@@ -889,7 +971,7 @@ export function TimelinePanel({
         return;
       }
     },
-    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message, project, getAssetDuration]
+    [projectDir, sceneId, mainLayerId, blocksByLayer, hasOverlap, trySnapNonOverlap, getMainTrackInsertAt, loadLayersAndBlocks, onLayersChange, message, project, getAssetDuration, requestAssetBundlePick]
   );
 
   const handleTrackDragOver = useCallback(
@@ -1031,9 +1113,23 @@ export function TimelinePanel({
     async (afterIndex: number, dropTime: number, e: React.DragEvent) => {
       const blockId = e.dataTransfer.getData('blockId');
       const fromLayerId = e.dataTransfer.getData('fromLayerId');
-      const assetId = e.dataTransfer.getData('assetId');
+      let assetId = e.dataTransfer.getData('assetId');
+      let assetType = e.dataTransfer.getData('assetType') || '';
+      const assetBundleId = e.dataTransfer.getData('assetBundleId');
+      if (assetBundleId && requestAssetBundlePick) {
+        const picked = await requestAssetBundlePick(assetBundleId);
+        if (!picked) return;
+        assetId = picked;
+        if (window.yiman?.project?.getAssetById) {
+          const row = (await window.yiman.project.getAssetById(projectDir, picked)) as { type?: string } | null;
+          assetType = row?.type ?? '';
+        }
+      }
       let assetDuration = parseFloat(e.dataTransfer.getData('assetDuration') || '10');
-      const assetType = e.dataTransfer.getData('assetType') || '';
+      const textGadgetConfigRaw = e.dataTransfer.getData('textGadgetConfig');
+      const textGadgetConfig = textGadgetConfigRaw || null;
+      const particlesGadgetConfigRaw = e.dataTransfer.getData('particlesGadgetConfig');
+      const particlesGadgetConfig = particlesGadgetConfigRaw || null;
       const isAudioAsset = ['sfx', 'music'].includes(assetType);
       if (assetId && ['video', 'transparent_video'].includes(assetType)) {
         assetDuration = await getAssetDuration(assetId, assetDuration);
@@ -1065,7 +1161,12 @@ export function TimelinePanel({
       } else {
         const a = layers[afterIndex];
         const b = layers[afterIndex + 1];
-        newZ = ((a?.z_index ?? 0) + (b?.z_index ?? 0)) / 2;
+        const aLt = a?.layer_type ?? 'video';
+        if (aLt === 'camera' || aLt === 'subtitle') {
+          newZ = (b?.z_index ?? 0) - 1;
+        } else {
+          newZ = ((a?.z_index ?? 0) + (b?.z_index ?? 0)) / 2;
+        }
       }
       const cr = await window.yiman.project.createLayer(projectDir, { id: newLayerId, scene_id: sceneId, name: '图层', z_index: newZ });
       if (!cr?.ok) {
@@ -1085,9 +1186,8 @@ export function TimelinePanel({
           onLayersChange?.();
         } else message.error(res?.error || '移动失败');
       } else if (assetId && window.yiman?.project?.createTimelineBlock) {
-        const assetType = e.dataTransfer.getData('assetType') || '';
         const blockIdNew = `block_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        const res = await window.yiman.project.createTimelineBlock(projectDir, {
+        const createData: Parameters<typeof window.yiman.project.createTimelineBlock>[1] = {
           id: blockIdNew,
           layer_id: newLayerId,
           asset_id: assetId,
@@ -1098,7 +1198,14 @@ export function TimelinePanel({
           scale_x: 0.25,
           scale_y: 0.25,
           rotation: 0,
-        });
+        };
+        if (assetType === 'text_gadget' && textGadgetConfig) {
+          createData.text_gadget_config = textGadgetConfig;
+        }
+        if (assetType === 'particles_gadget' && particlesGadgetConfig) {
+          createData.particles_gadget_config = particlesGadgetConfig;
+        }
+        const res = await window.yiman.project.createTimelineBlock(projectDir, createData);
         if (res?.ok) {
           if (assetType === 'image') {
             await updateBlockScaleForImage(projectDir, blockIdNew, assetId, !!project.landscape);
@@ -1110,7 +1217,7 @@ export function TimelinePanel({
         } else message.error(res?.error || '放置失败');
       }
     },
-    [projectDir, sceneId, layers, mainLayerId, blocksByLayer, loadLayersAndBlocks, onLayersChange, message, project, getAssetDuration]
+    [projectDir, sceneId, layers, mainLayerId, blocksByLayer, loadLayersAndBlocks, onLayersChange, message, project, getAssetDuration, requestAssetBundlePick]
   );
 
   /** 素材条拖到 between zone 时创建新分层并移动块（见功能文档 6.7） */
@@ -1130,7 +1237,12 @@ export function TimelinePanel({
       } else {
         const a = layers[afterIndex];
         const b = layers[afterIndex + 1];
-        newZ = ((a?.z_index ?? 0) + (b?.z_index ?? 0)) / 2;
+        const aLt2 = a?.layer_type ?? 'video';
+        if (aLt2 === 'camera' || aLt2 === 'subtitle') {
+          newZ = (b?.z_index ?? 0) - 1;
+        } else {
+          newZ = ((a?.z_index ?? 0) + (b?.z_index ?? 0)) / 2;
+        }
       }
       const cr = await window.yiman.project.createLayer(projectDir, { id: newLayerId, scene_id: sceneId, name: '图层', z_index: newZ });
       if (!cr?.ok) {
@@ -1556,7 +1668,7 @@ export function TimelinePanel({
                       gap: 2,
                       borderBottom: '1px solid rgba(255,255,255,0.06)',
                       borderRight: '1px solid rgba(255,255,255,0.06)',
-                      background: (layer.layer_type ?? 'video') === 'camera' ? 'rgba(255,77,79,0.08)' : undefined,
+                      background: (layer.layer_type ?? 'video') === 'camera' ? 'rgba(255,77,79,0.08)' : (layer.layer_type ?? 'video') === 'subtitle' ? 'rgba(64,169,255,0.08)' : undefined,
                     }}
                   >
                     <Checkbox
@@ -1571,6 +1683,8 @@ export function TimelinePanel({
                       <Text ellipsis style={{ flex: 1, fontSize: 12, minWidth: 0 }}>主层</Text>
                     ) : (layer.layer_type ?? 'video') === 'camera' ? (
                       <Text ellipsis style={{ flex: 1, fontSize: 12, minWidth: 0, color: 'rgba(255,100,100,0.9)' }}>镜头层</Text>
+                    ) : (layer.layer_type ?? 'video') === 'subtitle' ? (
+                      <Text ellipsis style={{ flex: 1, fontSize: 12, minWidth: 0, color: 'rgba(64,169,255,0.9)' }}>字幕层</Text>
                     ) : (
                       <Select
                         size="small"
@@ -1693,7 +1807,7 @@ export function TimelinePanel({
                         position: 'relative',
                         minWidth: axisWidth,
                         borderBottom: '1px solid rgba(255,255,255,0.06)',
-                        background: (layer.layer_type ?? 'video') === 'camera' ? 'rgba(255,77,79,0.05)' : 'rgba(0,0,0,0.2)',
+                        background: (layer.layer_type ?? 'video') === 'camera' ? 'rgba(255,77,79,0.05)' : (layer.layer_type ?? 'video') === 'subtitle' ? 'rgba(64,169,255,0.05)' : 'rgba(0,0,0,0.2)',
                         display: 'block',
                       }}
                 onClick={(e) => {
@@ -1745,18 +1859,20 @@ export function TimelinePanel({
                           onSelectBlock={(id) => onSelectBlock(id)}
                           onResizeBlock={handleResizeBlock}
                           onKeyframeClick={(t) => setCurrentTimeClamped(t)}
-                          resizable={block.asset_id !== CAMERA_BLOCK_ASSET_ID}
+                          resizable={block.asset_id !== CAMERA_BLOCK_ASSET_ID && block.asset_id !== SUBTITLE_BLOCK_ASSET_ID}
                           nativeDuration={blockNativeDurations[block.id]}
+                          assetThumb={blockAssetInfo[block.id]?.thumb}
+                          assetName={blockAssetInfo[block.id]?.name}
                         />
                       );
                     })}
                   </SortableContext>
                 ) : (
                   (blocksByLayer[layer.id] ?? []).map((block) => {
-                    // resize 实时预览：用 resizingState 覆盖当前 block
                     const displayBlock = resizingState?.blockId === block.id
                       ? { ...block, start_time: resizingState.currentStart, end_time: resizingState.currentEnd }
                       : block;
+                    const isSpecialBlock = block.asset_id === CAMERA_BLOCK_ASSET_ID || block.asset_id === SUBTITLE_BLOCK_ASSET_ID;
                     return (
                       <TimelineBlockDraggable
                         key={block.id}
@@ -1769,10 +1885,13 @@ export function TimelinePanel({
                         onSelectBlock={(id) => onSelectBlock(id)}
                         onResizeBlock={handleResizeBlock}
                         onKeyframeClick={(t) => setCurrentTimeClamped(t)}
-                        resizable={block.asset_id !== CAMERA_BLOCK_ASSET_ID}
-                        draggable={block.asset_id !== CAMERA_BLOCK_ASSET_ID}
+                        resizable={!isSpecialBlock}
+                        draggable={!isSpecialBlock}
                         audioUrl={(layer.layer_type ?? 'video') === 'audio' ? blockAudioUrls[block.id] : undefined}
                         nativeDuration={blockNativeDurations[block.id]}
+                        assetThumb={!isSpecialBlock && (layer.layer_type ?? 'video') !== 'audio' ? blockAssetInfo[block.id]?.thumb : undefined}
+                        assetName={!isSpecialBlock && (layer.layer_type ?? 'video') !== 'audio' ? blockAssetInfo[block.id]?.name : undefined}
+                        subtitleItems={block.asset_id === SUBTITLE_BLOCK_ASSET_ID ? subtitleItems : undefined}
                       />
                     );
                   })

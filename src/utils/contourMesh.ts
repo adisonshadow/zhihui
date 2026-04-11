@@ -1,6 +1,6 @@
 /**
  * 基于图像轮廓的完整网格生成（见 docs/06 3.6）
- * 输入：PNG 人物图（透明通道）、骨骼绑定位置
+ * 输入：PNG 角色图（透明通道）、骨骼绑定位置
  * 输出：沿轮廓 + 骨骼的三角网格及顶点权重
  */
 import Delaunator from 'delaunator';
@@ -94,7 +94,7 @@ function extractContour(data: ImageData): [number, number][] {
   return simplifyContour(sampled.length >= 3 ? sampled : contour, tolerance);
 }
 
-/** 判断点是否在人物内（轮廓提取用，阈值较高） */
+/** 判断点是否在角色内（轮廓提取用，阈值较高） */
 function isInsideCharacter(data: ImageData, nx: number, ny: number): boolean {
   const { width, height } = data;
   const x = Math.floor(nx * width);
@@ -103,7 +103,7 @@ function isInsideCharacter(data: ImageData, nx: number, ny: number): boolean {
   return data.data[(y * width + x) * 4 + 3] >= ALPHA_THRESHOLD;
 }
 
-/** 判断点是否在人物内（三角形过滤用，阈值较低以保留抗锯齿边缘） */
+/** 判断点是否在角色内（三角形过滤用，阈值较低以保留抗锯齿边缘） */
 function isInsideForTriangle(data: ImageData, nx: number, ny: number): boolean {
   const { width, height } = data;
   const x = Math.floor(nx * width);
@@ -162,7 +162,7 @@ function getEligibleBonesHuman(
   return ['navel', 'hip_l', 'hip_r'];
 }
 
-/** 为顶点计算骨骼权重。人物预设使用分段式权重，避免跨解剖区域分配 */
+/** 为顶点计算骨骼权重。角色预设使用分段式权重，避免跨解剖区域分配 */
 function computeWeights(
   pos: [number, number],
   boneNodes: { id: string; position: [number, number] }[],
@@ -203,24 +203,24 @@ export interface GenerateContourMeshInput {
 
 export type GenerateContourMeshResult = { ok: true; mesh: ContourMesh } | { ok: false; reason: string };
 
-/** 人物预设中位于肢体末端的骨骼 id，不参与 Delaunay 三角化（常处于轮廓外导致三角形被大量过滤），仍参与权重计算 */
+/** 角色预设中位于肢体末端的骨骼 id，不参与 Delaunay 三角化（常处于轮廓外导致三角形被大量过滤），仍参与权重计算 */
 const HUMAN_EXTREMITY_BONE_IDS = new Set(['fingertip_l', 'fingertip_r', 'toe_l', 'toe_r']);
 
 /**
- * 基于人物图 alpha 通道与骨骼节点生成轮廓网格
+ * 基于角色图 alpha 通道与骨骼节点生成轮廓网格
  */
 export function generateContourMesh(input: GenerateContourMeshInput): GenerateContourMeshResult {
   const { imageData, nodes, presetKind } = input;
   const preset = getPresetByKind(presetKind);
   const boneIds = new Set(preset.nodes.map((n) => n.id));
   const boneNodes = nodes.filter((n) => boneIds.has(n.id));
-  if (boneNodes.length === 0) return { ok: false, reason: '请先完成骨骼绑定（拖拽节点对齐人物）' };
+  if (boneNodes.length === 0) return { ok: false, reason: '请先完成骨骼绑定（拖拽节点对齐角色）' };
 
   const contourPoints = extractContour(imageData);
   if (contourPoints.length < 3)
     return {
       ok: false,
-      reason: `未检测到有效轮廓（仅 ${contourPoints.length} 个轮廓点）。请确保人物图为 PNG/WebP 格式且背景为透明，或勾选「先用 RVM 抠图」`,
+      reason: `未检测到有效轮廓（仅 ${contourPoints.length} 个轮廓点）。请确保角色图为 PNG/WebP 格式且背景为透明，或勾选「先用 RVM 抠图」`,
     };
 
   const points: [number, number][] = [...contourPoints];
@@ -325,7 +325,7 @@ function clampToPolygon(
 
 /**
  * 根据轮廓网格与预设，自动推算骨骼节点位置（置于轮廓内）
- * 人物预设（12 顶点）：按人体区域与轮廓 extremities 放置 head_top/jaw/collarbone/navel、fingertip/toe 末端等
+ * 角色预设（12 顶点）：按人体区域与轮廓 extremities 放置 head_top/jaw/collarbone/navel、fingertip/toe 末端等
  * @param angleType 视角类型，用于获取该角度的默认骨骼位置
  */
 export function suggestBonePositionsFromContour(
@@ -369,7 +369,7 @@ export function suggestBonePositionsFromContour(
     return preset.nodes.map((n) => ({ id: n.id, position: linearMap(n) }));
   }
 
-  // 人物预设：按人体区域与 extremities 适配新骨架
+  // 角色预设：按人体区域与 extremities 适配新骨架
   const sortedByY = [...polygon].sort((a, b) => a[1] - b[1]);
   const p05Y = sortedByY[Math.floor(0.05 * sortedByY.length)]?.[1] ?? minY;
   const p15Y = sortedByY[Math.floor(0.15 * sortedByY.length)]?.[1] ?? minY + rangeY * 0.15;

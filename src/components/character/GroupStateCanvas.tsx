@@ -42,7 +42,7 @@ interface GroupStateCanvasProps {
     path: string,
     options?: { mattingModel?: string; downsampleRatio?: number }
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
-  /** 从人物元件打开时，可获取全部人物的精灵图/元件以支持「仅查看本人物的」筛选 */
+  /** 从角色元件打开时，可获取全部角色的精灵图/元件以支持「仅查看本角色的」筛选 */
   getAllCharactersData?: () => Promise<
     { characterId: string; characterName?: string; spriteSheets: SpriteSheetItem[]; componentGroups: GroupComponentItem[] }[]
   >;
@@ -93,7 +93,7 @@ export function GroupStateCanvas({
     setCropPanelOpen(false);
   }, [selectedItemId]);
 
-  /** 当画板有跨人物元件时，加载全部人物数据以正确渲染 */
+  /** 当画板有跨角色元件时，加载全部角色数据以正确渲染 */
   const hasCrossCharacterItems = items.some(
     (it) => (it.type === 'sprite' || it.type === 'group') && it.characterId !== characterId
   );
@@ -496,7 +496,7 @@ function SpriteGroupPickerModal({
             checked={onlyCurrentCharacter}
             onChange={(e) => setOnlyCurrentCharacter(e.target.checked)}
           >
-            仅查看本人物的{type === 'sprite' ? '精灵图' : '元件'}
+            仅查看本角色的{type === 'sprite' ? '精灵图' : '元件'}
           </Checkbox>
         )}
         <Input.Search

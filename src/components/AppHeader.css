@@ -1,10 +1,13 @@
 /* 参考 Biezhi2/web AppHeader.css，dark 主题 */
 .yiman-header {
+  position: relative;
+  z-index: 10; /* 高于项目列表页 fixed 视频/蒙层，避免挡导航又可全屏背景 */
   background-color: rgba(101, 101, 101, 0.25);
   width: fit-content;
   margin: 15px auto;
   border-radius: 24px;
   padding: 0 28px;
+  backdrop-filter: blur(10px);
 }
 
 .yiman-header-inner {

@@ -3,7 +3,7 @@
  * 关键帧按属性独立：位置/缩放/旋转各自独立；设置自动保存，无保存按钮
  */
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Form, Input, InputNumber, Button, Typography, Space, Switch, Slider, App, Radio } from 'antd';
+import { Form, Input, InputNumber, Button, Typography, Space, Switch, Slider, App, Radio, Select, ColorPicker } from 'antd';
 import { EyeOutlined } from '@ant-design/icons';
 import type { FormInstance } from 'antd';
 import type { ProjectInfo } from '@/hooks/useProject';
@@ -11,7 +11,7 @@ import { KeyframeButton } from './KeyframeButton';
 import { useKeyframeCRUD, type KeyframeProperty, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
 import { getInterpolatedTransform, getInterpolatedEffects } from '@/utils/keyframeTween';
 import { ASSET_CATEGORIES } from '@/constants/assetCategories';
-import { COMPONENT_BLOCK_PREFIX, CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
+import { COMPONENT_BLOCK_PREFIX, CAMERA_BLOCK_ASSET_ID, SUBTITLE_BLOCK_ASSET_ID, TEXT_GADGET_BLOCK_PREFIX, PARTICLES_GADGET_BLOCK_PREFIX } from '@/constants/project';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
 import { AnimationSettingsPanel } from './AnimationSettingsPanel';
 import { StateSettingsPanel } from './StateSettingsPanel';
@@ -51,7 +51,7 @@ interface AssetRow {
   description: string | null;
 }
 
-export type BlockSettingsTab = 'base' | 'sprite' | 'audio' | 'animation' | 'state';
+export type BlockSettingsTab = 'base' | 'sprite' | 'audio' | 'animation' | 'state' | 'text' | 'particles' | 'subtitle' | 'subtitle-style';
 
 interface SelectedBlockSettingsProps {
   project: ProjectInfo;
@@ -63,7 +63,7 @@ interface SelectedBlockSettingsProps {
   /** 乐观更新 blur/opacity/pos/scale，画布立即反映 */
   onBlockUpdate?: (blockId: string, data: Partial<{ blur: number; opacity: number; pos_x: number; pos_y: number; scale_x: number; scale_y: number }>) => void;
   /** 选中素材时是否为精灵图/音效音乐/元件/镜头（用于 header 切换）；frameCount 用于精灵图时长计算 */
-  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number; isAudio?: boolean; isComponent?: boolean; isCamera?: boolean }) => void;
+  onBlockInfo?: (info: { isSprite: boolean; frameCount?: number; isAudio?: boolean; isComponent?: boolean; isCamera?: boolean; isTextGadget?: boolean; isParticlesGadget?: boolean; isSubtitle?: boolean }) => void;
   /** 当前设置 tab（基础设置 | 精灵图设置），由父组件控制 */
   settingsTab?: BlockSettingsTab;
   /** 是否为精灵图（精灵图基础设置无播放时间、素材条不可 resize） */
@@ -75,6 +75,257 @@ interface SelectedBlockSettingsProps {
 }
 
 const KF_TOLERANCE = 0.02;
+
+/** 通用字体选项（CSS 通用族）+ 系统字体；主进程通过 font-list 跨平台获取 */
+const GENERIC_FONTS = ['serif', 'sans-serif', 'cursive', 'monospace', 'system-ui'];
+
+/** 文字组件设置面板：根据 config.json 的 fields 生成 A文字/B文字 等配置项 */
+function TextGadgetSettingsPanel({
+  projectDir,
+  blockId,
+  presetId,
+  textGadgetConfig,
+  onUpdate,
+}: {
+  projectDir: string;
+  blockId: string;
+  presetId: string;
+  textGadgetConfig?: string | null;
+  onUpdate?: () => void;
+}) {
+  const { message } = App.useApp();
+  const [preset, setPreset] = useState<{ fields: Array<{ key: string; label: string; defaults?: { content: string; fontSize: number; color: string; fontFamily: string } }> } | null>(null);
+  const [config, setConfig] = useState<Record<string, { content: string; fontSize: number; color: string; fontFamily: string }>>({});
+  const [systemFonts, setSystemFonts] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!window.yiman?.system?.getFonts) return;
+    window.yiman.system.getFonts().then((list) => setSystemFonts(list ?? []));
+  }, []);
+
+  useEffect(() => {
+    if (!window.yiman?.project?.getTextGadgetConfig) return;
+    window.yiman.project.getTextGadgetConfig(presetId).then((p) => {
+      if (p) setPreset(p);
+    });
+  }, [presetId]);
+
+  useEffect(() => {
+    if (!textGadgetConfig) {
+      const def: Record<string, { content: string; fontSize: number; color: string; fontFamily: string }> = {};
+      preset?.fields?.forEach((f) => {
+        if (f.defaults) def[f.key] = f.defaults;
+      });
+      setConfig(def);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(textGadgetConfig) as Record<string, { content: string; fontSize: number; color: string; fontFamily: string }>;
+      setConfig(parsed);
+    } catch {
+      setConfig({});
+    }
+  }, [textGadgetConfig, preset]);
+
+  const saveConfig = useCallback(
+    async (next: Record<string, { content: string; fontSize: number; color: string; fontFamily: string }>) => {
+      if (!blockId || !window.yiman?.project?.updateTimelineBlock) return;
+      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, {
+        text_gadget_config: JSON.stringify(next),
+      });
+      if (res?.ok) onUpdate?.();
+      else message.error(res?.error || '保存失败');
+    },
+    [projectDir, blockId, onUpdate, message]
+  );
+
+  const handleFieldChange = (key: string, field: keyof { content: string; fontSize: number; color: string; fontFamily: string }, value: string | number) => {
+    const next = { ...config };
+    if (!next[key]) next[key] = { content: '', fontSize: 24, color: '#fff', fontFamily: 'cursive' };
+    (next[key] as Record<string, unknown>)[field] = value;
+    setConfig(next);
+    saveConfig(next);
+  };
+
+  if (!preset?.fields?.length) {
+    return <Text type="secondary">加载中…</Text>;
+  }
+
+  return (
+    <div className="selected-block-settings selected-block-settings--text" style={{ padding: '4px 0' }}>
+      {preset.fields.map((f) => {
+        const val = config[f.key] ?? f.defaults ?? { content: '', fontSize: 24, color: '#fff', fontFamily: 'cursive' };
+        return (
+          <section key={f.key} className="selected-block-settings__section" style={{ marginBottom: 16 }}>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>{f.label}</Text>
+            <Space orientation="vertical" style={{ width: '100%' }} size={8}>
+              <div>
+                <Text type="secondary" style={{ fontSize: 12 }}>内容</Text>
+                <Input
+                  size="small"
+                  value={val.content}
+                  onChange={(e) => handleFieldChange(f.key, 'content', e.target.value)}
+                  placeholder="输入文字"
+                  style={{ marginTop: 4 }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>大小</Text>
+                <InputNumber
+                  size="small"
+                  min={1}
+                  value={val.fontSize}
+                  onChange={(v) => handleFieldChange(f.key, 'fontSize', typeof v === 'number' ? v : 24)}
+                  style={{ width: '100px' }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>颜色</Text>
+                <ColorPicker
+                  size="small"
+                  value={val.color}
+                  onChange={(_, hex) => handleFieldChange(f.key, 'color', hex || '#ffffff')}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>字体</Text>
+                <Select
+                  size="small"
+                  value={val.fontFamily}
+                  onChange={(v) => handleFieldChange(f.key, 'fontFamily', v ?? 'cursive')}
+                  placeholder="选择字体"
+                  showSearch
+                  allowClear={false}
+                  optionFilterProp="label"
+                  style={{ width: '180px' }}
+                  options={[
+                    ...GENERIC_FONTS.map((f) => ({ value: f, label: f })),
+                    ...systemFonts
+                      .filter((s) => !GENERIC_FONTS.includes(s))
+                      .map((f) => ({ value: f, label: f })),
+                    ...(val.fontFamily && !GENERIC_FONTS.includes(val.fontFamily) && !systemFonts.includes(val.fontFamily)
+                      ? [{ value: val.fontFamily, label: val.fontFamily }]
+                      : []),
+                  ]}
+                />
+              </div>
+            </Space>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 脚本特效设置面板：根据 config 的 fields 生成 Select/Slider 配置项 */
+function ParticlesGadgetSettingsPanel({
+  projectDir,
+  blockId,
+  presetId,
+  particlesGadgetConfig,
+  onUpdate,
+}: {
+  projectDir: string;
+  blockId: string;
+  presetId: string;
+  particlesGadgetConfig?: string | null;
+  onUpdate?: () => void;
+}) {
+  const { message } = App.useApp();
+  const [preset, setPreset] = useState<{ fields: Array<{ key: string; label: string; type: string; options?: { value: string; label: string }[]; min?: number; max?: number; step?: number; defaults: Record<string, string | number> }> } | null>(null);
+  const [config, setConfig] = useState<Record<string, string | number>>({});
+
+  useEffect(() => {
+    if (!window.yiman?.project?.getParticlesGadgetConfig) return;
+    window.yiman.project.getParticlesGadgetConfig(presetId).then((p) => {
+      if (p) setPreset(p);
+    });
+  }, [presetId]);
+
+  useEffect(() => {
+    if (!particlesGadgetConfig) {
+      const def: Record<string, string | number> = {};
+      preset?.fields?.forEach((f) => {
+        if (f.defaults) Object.assign(def, f.defaults);
+      });
+      setConfig(def);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(particlesGadgetConfig) as Record<string, string | number>;
+      setConfig(parsed);
+    } catch {
+      setConfig({});
+    }
+  }, [particlesGadgetConfig, preset]);
+
+  const saveConfig = useCallback(
+    async (next: Record<string, string | number>) => {
+      if (!blockId || !window.yiman?.project?.updateTimelineBlock) return;
+      const res = await window.yiman.project.updateTimelineBlock(projectDir, blockId, {
+        particles_gadget_config: JSON.stringify(next),
+      });
+      if (res?.ok) onUpdate?.();
+      else message.error(res?.error || '保存失败');
+    },
+    [projectDir, blockId, onUpdate, message]
+  );
+
+  const handleFieldChange = (key: string, value: string | number) => {
+    const next = { ...config, [key]: value };
+    setConfig(next);
+    saveConfig(next);
+  };
+
+  if (!preset?.fields?.length) {
+    return <Text type="secondary">加载中…</Text>;
+  }
+
+  return (
+    <div className="selected-block-settings selected-block-settings--particles" style={{ padding: '4px 0' }}>
+      {preset.fields.map((f) => {
+        const val = config[f.key] ?? f.defaults?.[f.key];
+        if (f.type === 'select' && f.options) {
+          return (
+            <section key={f.key} className="selected-block-settings__section" style={{ marginBottom: 16 }}>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>{f.label}</Text>
+              <Select
+                size="small"
+                value={String(val ?? '')}
+                onChange={(v) => handleFieldChange(f.key, v ?? '')}
+                options={f.options}
+                style={{ width: '100%' }}
+              />
+            </section>
+          );
+        }
+        if (f.type === 'slider') {
+          const min = f.min ?? 0;
+          const max = f.max ?? 100;
+          const step = f.step ?? 1;
+          const numVal = typeof val === 'number' ? val : (typeof val === 'string' ? parseFloat(val) : min);
+          return (
+            <section key={f.key} className="selected-block-settings__section" style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>{f.label}</Text>
+                <Text style={{ fontSize: 12 }}>{numVal}</Text>
+              </div>
+              <Slider
+                min={min}
+                max={max}
+                step={step}
+                value={numVal}
+                onChange={(v) => handleFieldChange(f.key, typeof v === 'number' ? v : min)}
+              />
+            </section>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
 const AUTO_SAVE_DEBOUNCE_MS = 400;
 /** 数值显示精度：时间 1 位，缩放/位置/旋转 2 位 */
 const PRECISION_TIME = 1;
@@ -293,7 +544,8 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
         setAsset(null);
         if (onBlockInfo && blockId !== lastBlockIdForInfoRef.current) {
           lastBlockIdForInfoRef.current = blockId;
-          onBlockInfo({ isSprite: false, isAudio: false, isComponent: false, isCamera: true });
+          const info = { isSprite: false, isAudio: false, isComponent: false, isCamera: true };
+          setTimeout(() => onBlockInfo(info), 0);
         }
         return;
       }
@@ -374,8 +626,12 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
         }
         const isAudio = !!(a && ['sfx', 'music'].includes(a.type ?? ''));
         const isComponent = !!b.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX);
+        const isTextGadget = !!b.asset_id?.startsWith(TEXT_GADGET_BLOCK_PREFIX);
+        const isParticlesGadget = !!b.asset_id?.startsWith(PARTICLES_GADGET_BLOCK_PREFIX);
         const isCamera = b.asset_id === CAMERA_BLOCK_ASSET_ID;
-        onBlockInfo({ isSprite, frameCount, isAudio, isComponent, isCamera });
+        const isSubtitle = b.asset_id === SUBTITLE_BLOCK_ASSET_ID;
+        const info = { isSprite, frameCount, isAudio, isComponent, isTextGadget, isParticlesGadget, isCamera, isSubtitle };
+        setTimeout(() => onBlockInfo(info), 0);
         if (isSprite) setSpriteFrameCount(frameCount);
       }
     } else {
@@ -384,7 +640,8 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
       setComponentInfo(null);
       if (onBlockInfo) {
         lastBlockIdForInfoRef.current = null;
-        onBlockInfo({ isSprite: false, isAudio: false, isComponent: false, isCamera: false });
+        const info = { isSprite: false, isAudio: false, isComponent: false, isCamera: false };
+        setTimeout(() => onBlockInfo(info), 0);
       }
     }
   }, [blockId, projectDir, getKeyframes, onBlockInfo]);
@@ -568,7 +825,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
   const isComponentBlock = block.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX);
   const assetName = isComponentBlock ? '元件' : (asset?.description || asset?.path?.split(/[/\\]/).pop() || block.asset_id || '—');
   const typeLabel = isComponentBlock ? '元件' : (asset?.type
-    ? (ASSET_CATEGORIES.find((c) => c.value === asset.type)?.label ?? { character: '人物', scene_bg: '场景背景', prop: '情景道具', sticker: '贴纸' }[asset.type] ?? asset.type)
+    ? (ASSET_CATEGORIES.find((c) => c.value === asset.type)?.label ?? { character: '角色', scene_bg: '场景背景', prop: '情景道具', sticker: '贴纸' }[asset.type] ?? asset.type)
     : '—');
 
   const handlePlaybackFpsChange = async (v: number | null) => {
@@ -616,6 +873,32 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           </div>
         </section>
       </div>
+    );
+  }
+
+  if (settingsTab === 'text' && block?.asset_id?.startsWith(TEXT_GADGET_BLOCK_PREFIX)) {
+    const presetId = block.asset_id.slice(TEXT_GADGET_BLOCK_PREFIX.length);
+    return (
+      <TextGadgetSettingsPanel
+        projectDir={projectDir}
+        blockId={blockId}
+        presetId={presetId}
+        textGadgetConfig={(block as { text_gadget_config?: string | null }).text_gadget_config}
+        onUpdate={() => { loadBlock(); onUpdate?.(); }}
+      />
+    );
+  }
+
+  if (settingsTab === 'particles' && block?.asset_id?.startsWith(PARTICLES_GADGET_BLOCK_PREFIX)) {
+    const presetId = block.asset_id.slice(PARTICLES_GADGET_BLOCK_PREFIX.length);
+    return (
+      <ParticlesGadgetSettingsPanel
+        projectDir={projectDir}
+        blockId={blockId}
+        presetId={presetId}
+        particlesGadgetConfig={(block as { particles_gadget_config?: string | null }).particles_gadget_config}
+        onUpdate={() => { loadBlock(); onUpdate?.(); }}
+      />
     );
   }
 
@@ -935,6 +1218,9 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
           saveAssetFromBase64={(dir, base64, ext, type, opt) => window.yiman?.project?.saveAssetFromBase64?.(dir, base64, ext, type, opt) ?? Promise.resolve({ ok: false })}
           matteImageAndSave={(dir, path, opt) => window.yiman?.project?.matteImageAndSave?.(dir, path, opt) ?? Promise.resolve({ ok: false })}
+          saveAssetFromFile={async (dir, filePath, type, opt) =>
+            (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type, opt)) ?? { ok: false }}
+          openFileDialog={(opts) => window.yiman?.dialog?.openFile?.(opts) ?? Promise.resolve(undefined)}
         />
       )}
       {/* 视频预览/编辑 Drawer */}
@@ -945,6 +1231,9 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
           projectDir={projectDir}
           asset={asset}
           onUpdate={() => { loadBlock(); onUpdate?.(); }}
+          saveAssetFromFile={async (dir, filePath, type, opt) =>
+            (await window.yiman?.project?.saveAssetFromFile?.(dir, filePath, type, opt)) ?? { ok: false }}
+          openFileDialog={(opts) => window.yiman?.dialog?.openFile?.(opts) ?? Promise.resolve(undefined)}
         />
       )}
     </div>

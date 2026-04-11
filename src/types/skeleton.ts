@@ -1,5 +1,5 @@
 /**
- * 人物骨骼预设与绑定数据类型（见 docs/06-人物骨骼贴图功能设计.md）
+ * 角色骨骼预设与绑定数据类型（见 docs/06-角色骨骼贴图功能设计.md）
  */
 
 export type SkeletonPresetKind = 'human' | 'animal' | 'bird';
@@ -44,7 +44,7 @@ export interface ContourMesh {
   triangles: [string, string, string][];
 }
 
-/** 人物角度类型：正面、45度、侧面、背面 */
+/** 角色角度类型：正面、45度、侧面、背面 */
 export type HumanAngleView = 'front' | 'front45' | 'side' | 'back';
 
 /** 某角度的骨骼绑定数据 */
@@ -60,7 +60,7 @@ export interface SkeletonBinding {
   contourMesh?: ContourMesh;
 }
 
-/** 人物角度：id、名称（角度如正面/侧面）、可选显示名、该角度贴图、骨骼绑定 */
+/** 角色角度：id、名称（角度如正面/侧面）、可选显示名、该角度贴图、骨骼绑定 */
 export interface CharacterAngle {
   id: string;
   name: string;
@@ -70,10 +70,10 @@ export interface CharacterAngle {
   skeleton?: SkeletonBinding | null;
 }
 
-/** 预设：人物（统一为 12 顶点：头顶-下颌-锁骨-肚脐 / 肩胛-肘-腕-指尖 / 髋-膝-脚跟-脚尖） */
+/** 预设：角色（统一为 12 顶点：头顶-下颌-锁骨-肚脐 / 肩胛-肘-腕-指尖 / 髋-膝-脚跟-脚尖） */
 const HUMAN_PRESET: SkeletonPreset = {
   kind: 'human',
-  label: '人物',
+  label: '角色',
   nodes: [
     { id: 'head_top', label: '头顶', defaultPosition: [0.5, 0.05] },
     { id: 'jaw', label: '下颌', defaultPosition: [0.5, 0.12] },

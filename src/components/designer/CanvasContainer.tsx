@@ -8,14 +8,16 @@ import { PlayCircleOutlined, PauseCircleOutlined, ZoomInOutlined, ZoomOutOutline
 import { Canvas } from './Canvas';
 import { CanvasSelectionOverlay } from './CanvasSelectionOverlay';
 import { CameraFrameOverlay } from './CameraFrameOverlay';
-import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
+import { CAMERA_BLOCK_ASSET_ID, SUBTITLE_BLOCK_ASSET_ID } from '@/constants/project';
 import type { ProjectInfo } from '@/hooks/useProject';
 import { ASSET_LIBRARY_CATEGORIES } from '@/constants/assetCategories';
+import { SubtitleOverlay } from './SubtitleOverlay';
+import type { SubtitleConfig } from './SubtitleSettingsPanel';
 import { useKeyframeCRUD, type KeyframeRow } from '@/hooks/useKeyframeCRUD';
 import { getInterpolatedTransform, getInterpolatedEffects } from '@/utils/keyframeTween';
 import { computeBlockZIndex } from '@/utils/canvasZIndex';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
-import { COMPONENT_BLOCK_PREFIX, STANDALONE_COMPONENTS_CHARACTER_ID, STANDALONE_SPRITES_CHARACTER_ID } from '@/constants/project';
+import { COMPONENT_BLOCK_PREFIX, STANDALONE_COMPONENTS_CHARACTER_ID, STANDALONE_SPRITES_CHARACTER_ID, TEXT_GADGET_BLOCK_PREFIX, PARTICLES_GADGET_BLOCK_PREFIX } from '@/constants/project';
 import { parseStateKeyframes, getEffectiveKeyframe } from '@/utils/stateKeyframes';
 import type { GroupComponentItem } from '@/types/groupComponent';
 import type { SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
@@ -52,6 +54,10 @@ interface BlockRow {
   playback_fps?: number;
   /** 左边 resize 累积偏移（秒），默认 0 */
   clip_start?: number;
+  /** 文字组件配置 JSON */
+  text_gadget_config?: string | null;
+  /** 脚本特效配置 JSON */
+  particles_gadget_config?: string | null;
 }
 
 interface SpriteFrameRect {
@@ -158,11 +164,29 @@ export function CanvasContainer({
   const designHeight = landscape ? DESIGN_HEIGHT_LANDSCAPE : DESIGN_HEIGHT_PORTRAIT;
 
   const [sceneCameraEnabled, setSceneCameraEnabled] = useState(false);
+  const [sceneSubtitleEnabled, setSceneSubtitleEnabled] = useState(false);
+  const [subtitleConfig, setSubtitleConfig] = useState<SubtitleConfig | null>(null);
+  const [subtitleLayerVisible, setSubtitleLayerVisible] = useState(true);
   useEffect(() => {
     if (!sceneId || !window.yiman?.project?.getScene) return;
-    window.yiman.project.getScene(projectDir, sceneId).then((row: { camera_enabled?: number } | null) => {
+    window.yiman.project.getScene(projectDir, sceneId).then((row: { camera_enabled?: number; subtitle_enabled?: number; subtitle_config?: string | null } | null) => {
       setSceneCameraEnabled(!!row?.camera_enabled);
+      setSceneSubtitleEnabled(!!row?.subtitle_enabled);
+      if (row?.subtitle_config) {
+        try {
+          setSubtitleConfig(JSON.parse(row.subtitle_config) as SubtitleConfig);
+        } catch { setSubtitleConfig(null); }
+      } else {
+        setSubtitleConfig(null);
+      }
     });
+    if (sceneId && window.yiman?.project?.getSubtitleLayer) {
+      window.yiman.project.getSubtitleLayer(projectDir, sceneId).then((layer: { visible?: number } | null) => {
+        setSubtitleLayerVisible(!!layer && layer.visible !== 0);
+      });
+    } else {
+      setSubtitleLayerVisible(true);
+    }
   }, [projectDir, sceneId, refreshKey]);
 
   const computeFitZoom = useCallback(
@@ -630,6 +654,29 @@ export function CanvasContainer({
               };
             })()
           : {}),
+        ...(b.asset_id?.startsWith(TEXT_GADGET_BLOCK_PREFIX) && (b as BlockRow).text_gadget_config
+          ? (() => {
+              try {
+                const presetId = b.asset_id!.slice(TEXT_GADGET_BLOCK_PREFIX.length);
+                const cfg = JSON.parse((b as BlockRow).text_gadget_config!) as Record<string, { content: string; fontSize: number; color: string; fontFamily: string }>;
+                return { textGadgetInfo: cfg, textGadgetPresetId: presetId };
+              } catch {
+                return {};
+              }
+            })()
+          : {}),
+        ...(b.asset_id?.startsWith(PARTICLES_GADGET_BLOCK_PREFIX)
+          ? (() => {
+              try {
+                const presetId = b.asset_id!.slice(PARTICLES_GADGET_BLOCK_PREFIX.length);
+                const raw = (b as BlockRow).particles_gadget_config;
+                const cfg = raw ? (JSON.parse(raw) as Record<string, string | number>) : {};
+                return { particlesGadgetInfo: cfg, particlesGadgetPresetId: presetId };
+              } catch {
+                return {};
+              }
+            })()
+          : {}),
       };
     });
 
@@ -1040,52 +1087,62 @@ export function CanvasContainer({
         }}
       >
         <div style={{ transform: `scale(${effectiveZoom})`, transformOrigin: 'center center' }}>
-          {cameraTransform ? (
-            <div
-              style={{
-                width: designWidth,
-                height: designHeight,
-                overflow: 'hidden',
-              }}
-            >
+          <div style={{ position: 'relative', width: designWidth, height: designHeight }}>
+            {cameraTransform ? (
               <div
                 style={{
                   width: designWidth,
                   height: designHeight,
-                  transform: `translate(${cameraTransform.tx}px, ${cameraTransform.ty}px) scale(${cameraTransform.scale})`,
-                  transformOrigin: '0 0',
+                  overflow: 'hidden',
                 }}
               >
-                <Canvas
-                  designWidth={designWidth}
-                  designHeight={designHeight}
-                  zoom={effectiveZoom}
-                  blocks={blockItems}
-                  selectedBlockId={selectedBlockId}
-                  onSelectBlock={setSelectedBlockId}
-                  onBlockMove={handleBlockMove}
-                  onBlockMoveEnd={handleOverlayDragEnd}
-                  playing={playing}
-                  projectDir={projectDir}
-                  getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
-                />
+                <div
+                  style={{
+                    width: designWidth,
+                    height: designHeight,
+                    transform: `translate(${cameraTransform.tx}px, ${cameraTransform.ty}px) scale(${cameraTransform.scale})`,
+                    transformOrigin: '0 0',
+                  }}
+                >
+                  <Canvas
+                    designWidth={designWidth}
+                    designHeight={designHeight}
+                    zoom={effectiveZoom}
+                    blocks={blockItems}
+                    selectedBlockId={selectedBlockId}
+                    onSelectBlock={setSelectedBlockId}
+                    onBlockMove={handleBlockMove}
+                    onBlockMoveEnd={handleOverlayDragEnd}
+                    playing={playing}
+                    projectDir={projectDir}
+                    getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+                  />
+                </div>
               </div>
-            </div>
-          ) : (
-            <Canvas
-              designWidth={designWidth}
-              designHeight={designHeight}
-              zoom={effectiveZoom}
-              blocks={blockItems}
-              selectedBlockId={selectedBlockId}
-              onSelectBlock={setSelectedBlockId}
-              onBlockMove={handleBlockMove}
-              onBlockMoveEnd={handleOverlayDragEnd}
-              playing={playing}
-              projectDir={projectDir}
-              getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
-            />
-          )}
+            ) : (
+              <Canvas
+                designWidth={designWidth}
+                designHeight={designHeight}
+                zoom={effectiveZoom}
+                blocks={blockItems}
+                selectedBlockId={selectedBlockId}
+                onSelectBlock={setSelectedBlockId}
+                onBlockMove={handleBlockMove}
+                onBlockMoveEnd={handleOverlayDragEnd}
+                playing={playing}
+                projectDir={projectDir}
+                getAssetDataUrl={(dir, path) => window.yiman?.project?.getAssetDataUrl?.(dir, path) ?? Promise.resolve(null)}
+              />
+            )}
+            {sceneSubtitleEnabled && subtitleLayerVisible && (
+              <SubtitleOverlay
+                config={subtitleConfig}
+                currentTime={currentTime}
+                designWidth={designWidth}
+                designHeight={designHeight}
+              />
+            )}
+          </div>
         </div>
         {!fullscreen && !playing && (
           <>
@@ -1094,7 +1151,7 @@ export function CanvasContainer({
               zoom={zoom}
               designWidth={designWidth}
               designHeight={designHeight}
-              selectedBlock={selectedBlockId ? (blockItems.find((b) => b.id === selectedBlockId && (b as { asset_id?: string }).asset_id !== CAMERA_BLOCK_ASSET_ID && b.visible !== false) ?? null) : null}
+              selectedBlock={selectedBlockId ? (blockItems.find((b) => b.id === selectedBlockId && (b as { asset_id?: string }).asset_id !== CAMERA_BLOCK_ASSET_ID && (b as { asset_id?: string }).asset_id !== SUBTITLE_BLOCK_ASSET_ID && b.visible !== false) ?? null) : null}
               onResize={handleBlockResize}
               onRotate={handleBlockRotate}
               onBlockMove={handleBlockMove}

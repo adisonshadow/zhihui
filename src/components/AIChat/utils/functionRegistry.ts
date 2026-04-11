@@ -25,6 +25,8 @@ export interface FunctionCallDef<TArgs = Record<string, unknown>, TResult = unkn
   scope: FunctionScope;
   /** 实际处理函数 */
   handler: (args: TArgs) => Promise<TResult>;
+  /** Sender 槽位短文案；缺省为 name。见 docs/06 §13.3 */
+  senderLabel?: string;
 }
 
 /** 内部注册表 */
@@ -122,4 +124,19 @@ export function toOpenAITools(defs: FunctionCallDef[]): Array<{
  */
 export function getAllFunctionCalls(): FunctionCallDef[] {
   return Array.from(_registry.values());
+}
+
+/**
+ * 合并多路 FunctionCall 定义，按 name 去重，**后出现的覆盖先出现的**。
+ */
+export function mergeFunctionCallDefs(
+  ...groups: (FunctionCallDef[] | undefined)[]
+): FunctionCallDef[] {
+  const m = new Map<string, FunctionCallDef>();
+  for (const g of groups) {
+    for (const d of g ?? []) {
+      m.set(d.name, d);
+    }
+  }
+  return Array.from(m.values());
 }

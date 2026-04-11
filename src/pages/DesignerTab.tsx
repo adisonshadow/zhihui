@@ -24,17 +24,19 @@ function getStoredEpisodeScene(projectId: string): { episodeId: string | null; s
   return { episodeId: null, sceneId: null };
 }
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
+import { AssetBundlePickModal, type AssetBundlePickMember } from '@/components/asset/AssetBundlePickModal';
 import { Splitter, Space, Typography, Card, Radio } from 'antd';
 import type { ProjectInfo } from '@/hooks/useProject';
 import type { EpisodeRow } from '@/types/project';
 import { CanvasContainer } from '@/components/designer/CanvasContainer';
 import { TimelinePanel } from '@/components/designer/TimelinePanel';
 import { SceneSettingsAccordion } from '@/components/designer/SceneSettingsAccordion';
-import { AssetBrowsePanel } from '@/components/designer/AssetBrowsePanel';
+import { AssetBrowsePanel, type AssetBrowsePanelHandle } from '@/components/designer/AssetBrowsePanel';
 import { SelectedBlockSettings, type BlockSettingsTab } from '@/components/designer/SelectedBlockSettings';
 import { CameraSettingsPanel } from '@/components/designer/CameraSettingsPanel';
-import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
+import { SubtitleSettingsPanel } from '@/components/designer/SubtitleSettingsPanel';
+import { CAMERA_BLOCK_ASSET_ID, SUBTITLE_BLOCK_ASSET_ID } from '@/constants/project';
 import { ExportModal } from '@/components/designer/ExportModal';
 import { GrowCard } from '@/components/GrowCard';
 
@@ -94,10 +96,31 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   const showChat = showChatProp ?? showChatInternal;
   const setShowChat = onShowChatChange ?? setShowChatInternal;
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const bundlePickResolveRef = useRef<((id: string | null) => void) | null>(null);
+  const [bundlePickBundleId, setBundlePickBundleId] = useState<string | null>(null);
+  const assetBrowsePanelRef = useRef<AssetBrowsePanelHandle>(null);
+
+  const requestAssetBundlePick = useCallback(
+    (bundleId: string) =>
+      new Promise<string | null>((resolve) => {
+        bundlePickResolveRef.current = resolve;
+        setBundlePickBundleId(bundleId);
+      }),
+    []
+  );
+
+  const finishAssetBundlePick = useCallback((assetId: string | null) => {
+    bundlePickResolveRef.current?.(assetId);
+    bundlePickResolveRef.current = null;
+    setBundlePickBundleId(null);
+  }, []);
   const [isSpriteBlock, setIsSpriteBlock] = useState(false);
   const [isAudioBlock, setIsAudioBlock] = useState(false);
   const [isComponentBlock, setIsComponentBlock] = useState(false);
+  const [isTextGadgetBlock, setIsTextGadgetBlock] = useState(false);
+  const [isParticlesGadgetBlock, setIsParticlesGadgetBlock] = useState(false);
   const [isCameraBlock, setIsCameraBlock] = useState(false);
+  const [isSubtitleBlock, setIsSubtitleBlock] = useState(false);
   const [blockSettingsTab, setBlockSettingsTab] = useState<BlockSettingsTab>('base');
   const [characters, setCharacters] = useState<{ id: string; name: string }[]>([]);
   const projectDir = project.project_dir;
@@ -111,12 +134,38 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   /** 仅在新块加载时设置默认 tab，避免 refreshKey 导致 loadBlock 重跑时覆盖用户选择 */
   const lastBlockIdForTabRef = useRef<string | null>(null);
 
+  const handleBlockInfo = useCallback(
+    (
+      info: { isSprite: boolean; frameCount?: number; isAudio?: boolean; isComponent?: boolean; isCamera?: boolean; isTextGadget?: boolean; isParticlesGadget?: boolean; isSubtitle?: boolean },
+      shouldSetTab: boolean
+    ) => {
+      startTransition(() => {
+        setIsSpriteBlock(info.isSprite);
+        setIsAudioBlock(info.isAudio ?? false);
+        setIsComponentBlock(info.isComponent ?? false);
+        setIsTextGadgetBlock(info.isTextGadget ?? false);
+        setIsParticlesGadgetBlock(info.isParticlesGadget ?? false);
+        setIsCameraBlock(info.isCamera ?? false);
+        setIsSubtitleBlock(info.isSubtitle ?? false);
+        if (shouldSetTab) {
+          setBlockSettingsTab(
+            info.isAudio ? 'audio' : info.isSubtitle ? 'subtitle' : info.isSprite ? 'sprite' : info.isComponent ? 'state' : info.isTextGadget ? 'text' : info.isParticlesGadget ? 'particles' : 'base'
+          );
+        }
+      });
+    },
+    []
+  );
+
   useEffect(() => {
     if (!selectedBlockId) {
       setIsSpriteBlock(false);
       setIsAudioBlock(false);
       setIsComponentBlock(false);
+      setIsTextGadgetBlock(false);
+      setIsParticlesGadgetBlock(false);
       setIsCameraBlock(false);
+      setIsSubtitleBlock(false);
       setBlockSettingsTab('base');
       lastBlockIdForTabRef.current = null;
       return;
@@ -125,6 +174,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
     window.yiman?.project?.getTimelineBlockById?.(projectDir, selectedBlockId).then((b: { asset_id?: string | null } | null) => {
       if (cancelled) return;
       setIsCameraBlock(b?.asset_id === CAMERA_BLOCK_ASSET_ID);
+      setIsSubtitleBlock(b?.asset_id === SUBTITLE_BLOCK_ASSET_ID);
     });
     return () => { cancelled = true; };
   }, [selectedBlockId, projectDir]);
@@ -197,7 +247,8 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
       setSelectedSceneId(null);
       return;
     }
-    const list = scenesByEpisode[selectedEpisodeId] ?? [];
+    const list = scenesByEpisode[selectedEpisodeId];
+    if (list === undefined) return; // 场景尚未加载，保留上次选中的 sceneId（见功能文档 1.1）
     setSelectedSceneId((prev) => {
       if (list.length === 0) return null;
       if (prev && list.some((s) => s.id === prev)) return prev;
@@ -244,6 +295,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                   style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}
                 > */}
                   <AssetBrowsePanel
+                    ref={assetBrowsePanelRef}
                     project={project}
                     sceneId={selectedSceneId}
                     episodeCharacterRefs={currentEpisode?.character_refs ?? '[]'}
@@ -256,6 +308,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                     }}
                     refreshKey={refreshKey}
                     assetRefreshKey={assetRefreshKeyFromProject}
+                    requestAssetBundlePick={requestAssetBundlePick}
                   />
                 {/* </div> */}
               </Splitter.Panel>
@@ -294,6 +347,19 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       <span className='designer-panel-content__header-single-tab'>镜头设置</span>
                     ) : isAudioBlock ? (
                       <span className='designer-panel-content__header-single-tab'>声音设置</span>
+                    ) : isSubtitleBlock ? (
+                      <div className="designer-panel-content__header-tabs" style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
+                        <Radio.Group
+                          optionType="button"
+                          buttonStyle="solid"
+                          size="small"
+                          value={blockSettingsTab}
+                          onChange={(e) => setBlockSettingsTab(e.target.value)}
+                        >
+                          <Radio value="subtitle">字幕内容</Radio>
+                          <Radio value="subtitle-style">字幕样式</Radio>
+                        </Radio.Group>
+                      </div>
                     ) : (
                       <div className="designer-panel-content__header-tabs" style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'center' }}>
                         <Radio.Group
@@ -306,6 +372,8 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                           <Radio value="base">基础设置</Radio>
                           {isSpriteBlock && <Radio value="sprite">精灵图设置</Radio>}
                           {isComponentBlock && <Radio value="state">状态</Radio>}
+                          {isTextGadgetBlock && <Radio value="text">文字设置</Radio>}
+                          {isParticlesGadgetBlock && <Radio value="particles">脚本特效设置</Radio>}
                           <Radio value="animation">动画</Radio>
                         </Radio.Group>
                       </div>
@@ -332,6 +400,15 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                         onJumpToTime={handleSetCurrentTime}
                         onBlockUpdate={(blockId, data) => setPendingBlockUpdates((prev) => ({ ...prev, [blockId]: { ...prev[blockId], ...data } }))}
                       />
+                    ) : isSubtitleBlock ? (
+                      <SubtitleSettingsPanel
+                        project={project}
+                        sceneId={selectedSceneId}
+                        currentTime={currentTime}
+                        refreshKey={refreshKey}
+                        settingsTab={blockSettingsTab}
+                        onUpdate={() => setRefreshKey((k) => k + 1)}
+                      />
                     ) : (
                     <SelectedBlockSettings
                       project={project}
@@ -342,14 +419,9 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       onJumpToTime={handleSetCurrentTime}
                       onBlockUpdate={(blockId, data) => setPendingBlockUpdates((prev) => ({ ...prev, [blockId]: { ...prev[blockId], ...data } }))}
                       onBlockInfo={(info) => {
-                        setIsSpriteBlock(info.isSprite);
-                        setIsAudioBlock(info.isAudio ?? false);
-                        setIsComponentBlock(info.isComponent ?? false);
-                        setIsCameraBlock(info.isCamera ?? false);
-                        if (selectedBlockId && selectedBlockId !== lastBlockIdForTabRef.current) {
-                          lastBlockIdForTabRef.current = selectedBlockId;
-                          setBlockSettingsTab(info.isAudio ? 'audio' : info.isSprite ? 'sprite' : 'base');
-                        }
+                        const isNewBlock = !!selectedBlockId && selectedBlockId !== lastBlockIdForTabRef.current;
+                        if (isNewBlock) lastBlockIdForTabRef.current = selectedBlockId;
+                        handleBlockInfo(info, isNewBlock);
                       }}
                       settingsTab={blockSettingsTab}
                       isSpriteBlock={isSpriteBlock}
@@ -364,6 +436,9 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       sceneId={selectedSceneId}
                       onCameraEnabledChange={(cameraBlockId) => {
                         setSelectedBlockId(cameraBlockId ?? null);
+                      }}
+                      onSubtitleEnabledChange={(subtitleBlockId) => {
+                        setSelectedBlockId(subtitleBlockId ?? null);
                       }}
                       onUpdate={() => setRefreshKey((k) => k + 1)}
                     />
@@ -401,6 +476,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
               const res = await window.yiman?.project?.updateEpisode?.(projectDir, epId, { script_structured: scriptStructured });
               if (res?.ok) loadEpisodes();
             }}
+            requestAssetBundlePick={requestAssetBundlePick}
           />
         </Splitter.Panel>
       </Splitter>
@@ -410,6 +486,24 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
         project={project}
         sceneId={selectedSceneId}
         landscape={!!project.landscape}
+      />
+      <AssetBundlePickModal
+        open={!!bundlePickBundleId}
+        bundleId={bundlePickBundleId}
+        projectDir={projectDir}
+        mode="designer"
+        title="选择组内素材"
+        onCancel={() => finishAssetBundlePick(null)}
+        onPreviewMember={(m: AssetBundlePickMember) => {
+          assetBrowsePanelRef.current?.openBundleMemberPreview(m);
+        }}
+        onPlaceMember={(m) => finishAssetBundlePick(m.id)}
+        setDragPayload={(e, asset) => {
+          e.dataTransfer.setData('assetId', asset.id);
+          e.dataTransfer.setData('assetType', asset.type);
+          const d = 10;
+          e.dataTransfer.setData('assetDuration', String(d));
+        }}
       />
     </div>
   );

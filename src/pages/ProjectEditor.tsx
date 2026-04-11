@@ -1,11 +1,11 @@
 /**
- * 项目编辑页：剧情大纲、人物设计、AI 配置、漫剧视频设计器（见功能文档 4、开发计划 2.5）
+ * 项目编辑页：剧情大纲、角色设计、AI 配置、漫剧视频设计器（见功能文档 4、开发计划 2.5）
  * 默认选中的 Tab 持久化到 localStorage（见功能文档 1.1）
  */
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button, Result, Spin, Space, Typography, Tooltip } from 'antd';
-import { ArrowLeftOutlined, FileTextOutlined, UserOutlined, SettingOutlined, VideoCameraOutlined, FolderOutlined, CommentOutlined, MenuOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, FileTextOutlined, UserOutlined, SettingOutlined, VideoCameraOutlined, FolderOutlined, CommentOutlined, MenuOutlined, PlayCircleOutlined, LeftOutlined } from '@ant-design/icons';
 import { useConfigModal } from '@/contexts/ConfigContext';
 import { useProject } from '@/hooks/useProject';
 import OutlineTab from './OutlineTab';
@@ -105,9 +105,7 @@ const ProjectEditor: React.FC = () => {
   if (loading) {
     return (
       <div style={{ padding: 24, display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 300 }}>
-        <Spin size="large" tip="加载项目…">
-          <div style={{ minHeight: 120 }} />
-        </Spin>
+        <Spin size="large" />
       </div>
     );
   }
@@ -115,7 +113,7 @@ const ProjectEditor: React.FC = () => {
   if (error || !project) {
     return (
       <div style={{ padding: 24 }}>
-        <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/')} style={{ marginBottom: 16 }}>
+        <Button type="text" icon={<LeftOutlined />} onClick={() => navigate('/')} style={{ marginBottom: 16 }}>
           返回项目列表
         </Button>
         <Result status="warning" title="项目不存在或加载失败" subTitle={error ?? '请返回列表重新打开项目'} extra={<Button type="primary" onClick={() => navigate('/')}>返回列表</Button>} />
@@ -137,10 +135,10 @@ const ProjectEditor: React.FC = () => {
       key: 'characters',
       label: (
         <span>
-          <UserOutlined /> 人物
+          <UserOutlined /> 角色
         </span>
       ),
-      children: <CharactersTab project={project} />,
+      children: <CharactersTab project={project} onAssetUpdated={() => setAssetRefreshKey((k) => k + 1)} />,
     },
     {
       key: 'ai-config',
@@ -172,10 +170,8 @@ const ProjectEditor: React.FC = () => {
   ];
 
   const operationsSlot: any = {
-    left: <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>
-              项目列表
-            </Button>
+    left: <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 16 }}>
+            <Button type="text" icon={<LeftOutlined />} onClick={() => navigate('/')} />
             <span style={{ fontWeight: 600 }}>{project.name}</span>
             {currentEpisode && <Text type="secondary">{currentEpisode.title || '未命名集'}</Text>}
           </div>,

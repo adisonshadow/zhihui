@@ -4,8 +4,9 @@
  * 支持 AI 抠图（火山引擎）：配置了 aiMattingConfigs 时在模型列表中显示，选择后走云端
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Drawer, Button, Space, Typography, App, Modal, Slider, Switch, Tag, Input, Popover, Radio } from 'antd';
-import { UploadOutlined, PictureOutlined, BuildOutlined, ScissorOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { Drawer, Button, Space, Typography, App, Modal, Slider, Switch, Tag, Input, Popover, Radio, Dropdown } from 'antd';
+import { UploadOutlined, PictureOutlined, BuildOutlined, ScissorOutlined, DeleteOutlined, PlusOutlined, MoreOutlined } from '@ant-design/icons';
+import { ChangeCategoryModal, type ChangeCategoryTarget } from '@/components/asset/ChangeCategoryModal';
 import { MattingSettingsPanel } from './MattingSettingsPanel';
 import { EditableTitle } from '@/components/antd-plus/EditableTitle';
 import { CHECKERBOARD_BACKGROUND } from '@/styles/checkerboardBackground';
@@ -37,6 +38,8 @@ export interface SpriteSheetItem {
   playback_fps?: number;
   /** 是否需要抠图：false 表示已抠好，仅识别帧 */
   need_matting?: boolean;
+  /** 素材面板 UI 分类（scene/prop/effect），未设则默认归入道具 */
+  uiCategory?: 'scene' | 'prop' | 'effect';
   /** 是否为标签精灵：选中后支持属性 tag 与帧 tag */
   is_tagged_sprite?: boolean;
   /** 属性 tag 名称列表，如 ["表情", "状态"] */
@@ -71,6 +74,10 @@ export interface SpriteSheetPanelProps {
     background: { r: number; g: number; b: number; a: number } | null,
     options?: { backgroundThreshold?: number; minGapPixels?: number; useTransparentBackground?: boolean }
   ) => Promise<{ raw: SpriteFrameRect[]; normalized: SpriteFrameRect[] }>;
+  /** 变更分类回调：itemId, 目标分类, 角色ID（仅 category='character' 时有值） */
+  onChangeCategory?: (itemId: string, category: string, characterId?: string) => void;
+  /** 删除精灵图回调 */
+  onDelete?: (itemId: string) => void;
   /** ONNX 抠图并重新排列为透明、等宽高、等间距的精灵图，支持 RVM 与 BiRefNet */
   processSpriteWithOnnx?: (
     projectDir: string,
@@ -131,9 +138,13 @@ export function SpriteSheetPanel({
   openDirectoryDialog: _openDirectoryDialog,
   getSpriteFrames: _getSpriteFrames,
   extractSpriteCover,
+  onChangeCategory,
+  onDelete,
 }: SpriteSheetPanelProps) {
   const { message, modal } = App.useApp();
   const [item, setItem] = useState<SpriteSheetItem | null>(initialItem);
+  const [changeCategoryOpen, setChangeCategoryOpen] = useState(false);
+  const initialSnapshotRef = useRef<string>('');
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
   const [frameCount, setFrameCount] = useState(DEFAULT_FRAME_COUNT);
@@ -210,6 +221,44 @@ export function SpriteSheetPanel({
       setFrameTags([]);
     }
   }, [initialItem, open]);
+
+  /** 当前状态的保存快照，用于 dirty 检测 */
+  const buildCurrentSnapshot = useCallback(() => {
+    if (!item) return '';
+    const payload = {
+      ...item,
+      name: item.name?.trim() || undefined,
+      frame_count: frameCount,
+      chroma_key: chromaEnabled ? '#00ff00' : undefined,
+      background_color: backgroundColor ?? undefined,
+      frames: frames.length > 0 ? frames : undefined,
+      playback_fps: playbackFps,
+      is_tagged_sprite: isTaggedSprite || undefined,
+      property_tags: isTaggedSprite && propertyTags.length > 0 ? propertyTags : undefined,
+      frame_tags: isTaggedSprite && frameTags.length > 0 ? frameTags : undefined,
+    };
+    return JSON.stringify(payload);
+  }, [item, frameCount, chromaEnabled, backgroundColor, frames, playbackFps, isTaggedSprite, propertyTags, frameTags]);
+
+  useEffect(() => {
+    if (open && initialItem) {
+      const payload = {
+        ...initialItem,
+        name: initialItem.name?.trim() || undefined,
+        frame_count: initialItem.frame_count ?? DEFAULT_FRAME_COUNT,
+        chroma_key: initialItem.chroma_key ? '#00ff00' : undefined,
+        background_color: initialItem.background_color ?? undefined,
+        frames: (initialItem.frames ?? []).length > 0 ? initialItem.frames : undefined,
+        playback_fps: initialItem.playback_fps ?? DEFAULT_PLAYBACK_FPS,
+        is_tagged_sprite: initialItem.is_tagged_sprite || undefined,
+        property_tags: initialItem.is_tagged_sprite && (initialItem.property_tags ?? []).length > 0 ? initialItem.property_tags : undefined,
+        frame_tags: initialItem.is_tagged_sprite && (initialItem.frame_tags ?? []).length > 0 ? initialItem.frame_tags : undefined,
+      };
+      initialSnapshotRef.current = JSON.stringify(payload);
+    }
+  }, [open, initialItem]);
+
+  const dirty = item ? buildCurrentSnapshot() !== initialSnapshotRef.current : false;
 
   /** 标签精灵：默认选中第一个属性的第一个 tag 值 */
   useEffect(() => {
@@ -680,19 +729,31 @@ export function SpriteSheetPanel({
         open={open}
         onClose={onClose}
         extra={
-          <Button type="primary" onClick={handleSave} loading={saving}>
-            保存
-          </Button>
+          <Space size={4}>
+            <Button type="primary" onClick={handleSave} loading={saving} disabled={!dirty}>
+              保存
+            </Button>
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'change-category', label: '变更分类' },
+                  { key: 'delete', label: '删除', danger: true },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'change-category') setChangeCategoryOpen(true);
+                  else if (key === 'delete') {
+                    if (item) onDelete?.(item.id);
+                    onClose();
+                  }
+                },
+              }}
+            >
+              <Button icon={<MoreOutlined />} />
+            </Dropdown>
+          </Space>
         }
-        maskClosable={false}
-        // footer={
-        //   <Space>
-        //     <Button onClick={onClose}>取消</Button>
-        //     <Button type="primary" onClick={handleSave} loading={saving}>
-        //       保存
-        //     </Button>
-        //   </Space>
-        // }
+        maskClosable={!dirty}
       >
         {!item ? (
           <Text type="secondary">请先保存新建项后再编辑。</Text>
@@ -1230,6 +1291,21 @@ export function SpriteSheetPanel({
           </div>
         </Drawer>
       )}
+
+      <ChangeCategoryModal
+        open={changeCategoryOpen}
+        onCancel={() => setChangeCategoryOpen(false)}
+        currentCategory={(item?.uiCategory ?? 'prop') as ChangeCategoryTarget}
+        assetType="sprite"
+        projectDir={projectDir}
+        onConfirm={(category, characterId) => {
+          setChangeCategoryOpen(false);
+          if (item) {
+            onChangeCategory?.(item.id, category, characterId);
+          }
+          onClose();
+        }}
+      />
     </>
   );
 }

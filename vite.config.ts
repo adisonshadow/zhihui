@@ -3,6 +3,7 @@ import path from 'node:path';
 import { defineConfig, build } from 'vite';
 import react from '@vitejs/plugin-react';
 import electron from 'vite-plugin-electron/simple';
+import { volcTosDevFetchPlugin } from './vite-plugins/volcTosDevFetch';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => {
@@ -27,6 +28,7 @@ export default defineConfig(({ command }) => {
     },
     plugins: [
       react(),
+      ...(command === 'serve' ? [volcTosDevFetchPlugin()] : []),
       electron({
         main: {
           entry: 'electron/main/index.ts',
@@ -53,7 +55,7 @@ export default defineConfig(({ command }) => {
               minify: isBuild,
               outDir: 'dist-electron/main',
               rollupOptions: {
-                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'node:http', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg'],
+                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'node:http', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg', 'font-list'],
               },
             },
           },

@@ -46,7 +46,7 @@ export interface GroupPreviewProps {
   showCheckerboard?: boolean;
   /** 标签精灵模式下，每个 sprite 画布项选中的 tag 值，用于过滤显示帧 */
   selectedTagsBySpriteItemId?: Record<string, Record<string, string>>;
-  /** 跨人物时，用于解析 sprite 的精灵图列表 */
+  /** 跨角色时，用于解析 sprite 的精灵图列表 */
   allCharactersData?: { characterId: string; spriteSheets: SpriteSheetItem[] }[];
 }
 

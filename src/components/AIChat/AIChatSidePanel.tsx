@@ -2,13 +2,15 @@
  * AI 对话 - SidePanel 布局模式
  * 使用 Ant Design Layout：Header（agent+对话历史）、Content（提示词/对话）、Footer（Sender，agent+选中对象以 slot 形式在 Sender 内）
  */
-import { useState } from 'react';
+import { forwardRef, useImperativeHandle, useState } from 'react';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
 import { Button, Space, Divider, Flex, Select, Layout, Dropdown, InputNumber, Tooltip } from 'antd';
 import { PlusOutlined, LinkOutlined, RollbackOutlined, MessageOutlined } from '@ant-design/icons';
 import { useAIChatCore } from './AIChatCore';
 import type { AIChatCoreProps } from './AIChatCore';
+import type { AIChatSidePanelHandle } from './aiChatPanelHandles';
 import { DrawerBubbleContent } from './utils/drawerContentRender';
+import './AIChatSidePanel.css';
 
 const { Header, Content, Footer } = Layout;
 
@@ -18,7 +20,8 @@ export interface AIChatSidePanelProps extends AIChatCoreProps {
   onAgentChange?: (key: string) => void;
 }
 
-export function AIChatSidePanel(props: AIChatSidePanelProps) {
+export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanelProps>(
+  function AIChatSidePanel(props, ref) {
   const {
     agentKey,
     onAgentChange,
@@ -28,6 +31,26 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
 
   const core = useAIChatCore({ ...coreProps, agentKey, onAgentChange, enableReasoning });
   const [historyOpen, setHistoryOpen] = useState(false);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      updateGlobalContext: core.updateGlobalContext,
+      getSender: () => ({
+        setAgentKey: (key: string) => onAgentChange?.(key),
+        applyPromptTemplate: core.applyPromptTemplate,
+        addImageAttachment: core.attachDrawerImageFromSrc,
+        setForcedFunctionCalls: core.setForcedFunctionCallNames,
+      }),
+    }),
+    [
+      core.updateGlobalContext,
+      core.applyPromptTemplate,
+      core.attachDrawerImageFromSrc,
+      core.setForcedFunctionCallNames,
+      onAgentChange,
+    ]
+  );
 
   const {
     convItems,
@@ -41,7 +64,9 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
     missingHint,
     hasValidModel,
     allowAgentSwitch,
-    AGENT_CONFIGS,
+    mergedAgents,
+    composerNonce,
+    composerDefaultText,
     senderSlotConfig,
     senderSkill,
     drawerOptions,
@@ -53,6 +78,7 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
     handleSenderChange,
     handleRollbackTo,
     userTurnIndices,
+    onSenderPasteFile,
     Sender,
     Bubble,
     Prompts,
@@ -61,7 +87,10 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
   } = core;
 
   return (
-    <Layout style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    <Layout
+      className="yiman-ai-chat-side-panel"
+      style={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}
+    >
       <Header style={{ padding: '0 16px', height: 40, flexShrink: 0, background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           {allowAgentSwitch && onAgentChange && (
@@ -69,7 +98,7 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
               size="small"
               value={agentKey}
               onChange={onAgentChange}
-              options={AGENT_CONFIGS.map((e) => ({ value: e.key, label: e.label }))}
+              options={mergedAgents.map((e) => ({ value: e.key, label: e.label }))}
               style={{ width: 120 }}
               variant="borderless"
             />
@@ -210,22 +239,36 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
               user: {
                 placement: 'end',
                 variant: 'borderless',
-                footer: (_content, info) => {
-                  const idx = (info?.extraInfo as { index?: number })?.index;
-                  if (idx == null || !userTurnIndices.includes(idx)) return null;
+                contentRender: (content: string, info?: unknown) => {
+                  const idx = (info as { extraInfo?: { index?: number } })?.extraInfo?.index;
+                  const showRollback = idx != null && userTurnIndices.includes(idx);
                   return (
-                    <Tooltip 
-                      title="撤回到此步"
-                    >
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<RollbackOutlined />}
-                        title="撤回到此步"
-                        onClick={() => handleRollbackTo(idx)}
-                        style={{ fontSize: 11, marginRight: 4 }}
-                      />
-                    </Tooltip>
+                    <Flex align="flex-start" gap={8} style={{ width: '100%' }}>
+                      {showRollback ? (
+                        <Tooltip title="撤回到此步">
+                          <Button
+                            color="default"
+                            variant="filled"
+                            // shape="circle"
+                            size="small"
+                            icon={<RollbackOutlined />}
+                            title="撤回到此步"
+                            onClick={() => handleRollbackTo(idx)}
+                            style={{ flexShrink: 0, marginTop: 2, fontSize: 14 }}
+                          />
+                        </Tooltip>
+                      ) : null}
+                      <div
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                        }}
+                      >
+                        {content}
+                      </div>
+                    </Flex>
                   );
                 },
               },
@@ -241,10 +284,12 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
         {missingHint && (
           <div style={{ fontSize: 12, color: 'rgba(255,100,100,0.9)', marginBottom: 4 }}>{missingHint}</div>
         )}
-        <div className="aichat-sender-wrap">
+        {/* 与 docs/AI-demo/demo.tsx chatSender 一致：纵向留白，输入区独立成块 */}
+        <Flex vertical gap={12} className="aichat-sender-wrap" style={{ width: '100%' }}>
         <Sender
-          key={agentKey}
+          key={`${agentKey}-${composerNonce}`}
           ref={senderRef}
+          {...(composerDefaultText != null ? { defaultValue: composerDefaultText } : {})}
           slotConfig={senderSlotConfig as readonly SlotConfigType[]}
           skill={senderSkill}
           header={senderHeader}
@@ -255,6 +300,7 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
             senderRef.current?.clear?.();
           }}
           onChange={handleSenderChange}
+          onPasteFile={onSenderPasteFile}
           disabled={!hasValidModel}
           autoSize={{ minRows: 1, maxRows: 6 }}
           
@@ -323,7 +369,7 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
           onCancel={() => {}}
           suffix={false}
         />
-        </div>
+        </Flex>
         {writeBackActions && (
           <>
             <Divider style={{ margin: '8px 0' }} />
@@ -333,4 +379,4 @@ export function AIChatSidePanel(props: AIChatSidePanelProps) {
       </Footer>
     </Layout>
   );
-}
+});

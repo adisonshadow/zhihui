@@ -11,6 +11,7 @@ import ProjectList from './pages/ProjectList';
 import ProjectEditor from './pages/ProjectEditor';
 import Settings from './pages/Settings';
 import AIChatPreview from './pages/AIChatPreview';
+import { ImageEditorPage } from './components/imageEditor/ImageEditorPage';
 
 const { Content } = Layout;
 
@@ -25,6 +26,7 @@ function App() {
             <Route path="/project/:id" element={<Content style={{ padding: '0px' }}><ProjectEditor /></Content>} />
             <Route path="/settings" element={<Content style={{ padding: '24px' }}><Settings /></Content>} />
             <Route path="/aichat-preview" element={<Content style={{ padding: '24px' }}><AIChatPreview /></Content>} />
+            <Route path="/image-editor" element={<Content style={{ padding: 0 }}><ImageEditorPage /></Content>} />
           </Routes>
         </Layout>
       </BrowserRouter>

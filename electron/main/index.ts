@@ -3,7 +3,7 @@
  * 见技术文档 7、开发计划 2.1
  * AI 模型服务（MVANet、BiRefNet）以独立 HTTP 子进程运行，隔离内存压力
  */
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,6 +29,9 @@ import {
   getCameraBlock,
   getSceneContentDuration,
   ensureCameraLayerAndBlock,
+  getSubtitleLayer,
+  getSubtitleBlock,
+  ensureSubtitleLayerAndBlock,
   getScene,
   updateScene,
   getTimelineBlocks,
@@ -54,6 +57,7 @@ import {
   getAiConfig,
   saveAiConfig,
   getAssets,
+  getAssetsByUiCategory,
   getAssetById,
   saveAssetFromFile,
   saveAssetFromBase64,
@@ -62,16 +66,62 @@ import {
   getAssetDataUrl,
   getExportsPath,
   getAssetsPath,
+  getBundledAssetIds,
+  getAssetBundlesByUiCategory,
+  getAssetBundleById,
+  getAssetBundleMembersOrdered,
+  getAssetBundleForAsset,
+  createAssetBundle,
+  updateAssetBundle,
+  deleteAssetBundle,
+  addAssetBundleMember,
+  removeAssetBundleMember,
+  reorderAssetBundleMembers,
+  addSimilarAssetToBundle,
 } from './projectDb';
 import { getPackages } from './projectPackages';
 import { exportSceneVideo } from './exportService';
 import { extractVideoFrame, getVideoMetadata } from './videoCoverService';
-import { processTransparentVideo, type ChromaKeyColor } from './transparentVideoService';
+import { processTransparentVideo, processSingleFrameColorkey, type ChromaKeyColor } from './transparentVideoService';
 import { getSpriteBackgroundColor, getSpriteFrames, extractSpriteCoverToTemp } from './spriteService';
 import { processSpriteWithOnnx, matteImageForContour, matteImageAndSave } from './spriteOnnxService';
 import { exportSpriteSheetToZip, importSpriteSheetFromZip } from './spriteSheetExportService';
+import { getTextGadgetPresets, getTextGadgetConfig } from './textGadgetService';
+import { getParticlesGadgetPresets, getParticlesGadgetConfig } from './particlesGadgetService';
+import { getSystemFonts, getSystemFontFaces } from './fontService';
+import { extractKeyFrames, extractFramesUniform, keyFramesToDataUrls, generateSpriteSheet, cleanupDir } from './videoToSpriteService';
+import { ensureLamaCleanerRunning, openLamaCleanerInstallTerminal } from './lamaCleanerHost';
+import { fetchVolcTosImageAsDataUrl } from './volcTosImageFetch';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** 图片编辑器：dataUrl → 临时 PNG → matteImageForContour（与 app:editor 命名相比统一走 app:project 注册点） */
+async function handleMatteImageFromDataUrl(
+  _: unknown,
+  dataUrl: string,
+  options?: { mattingModel?: string; downsampleRatio?: number }
+): Promise<{ ok: boolean; dataUrl?: string; error?: string }> {
+  try {
+    const trimmed = dataUrl.trim();
+    const m = /^data:image\/\w+;base64,(.+)$/i.exec(trimmed);
+    const base64 = m ? m[1] : trimmed.replace(/^data:image\/\w+;base64,/i, '');
+    const tmpDir = fs.realpathSync(os.tmpdir());
+    const fname = `yiman_editor_matte_${Date.now()}_${Math.random().toString(36).slice(2, 9)}.png`;
+    const fullPath = path.join(tmpDir, fname);
+    fs.writeFileSync(fullPath, Buffer.from(base64, 'base64'));
+    try {
+      return await matteImageForContour(tmpDir, fname, options);
+    } finally {
+      try {
+        fs.unlinkSync(fullPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 // AI 模型服务独立进程模式：仅启动 HTTP API，不启动主窗口（回退路径，Node 版优先）
 const isAiModelServer = process.argv.includes('--ai-model-server');
@@ -80,9 +130,17 @@ if (isAiModelServer) {
   await startServer();
   // 服务保持运行，不退出
 } else {
+  ipcMain.handle('app:project:matteImageFromDataUrl', handleMatteImageFromDataUrl);
+  // 兼容旧 preload 通道（若仍有点击旧构建的客户端可工作）
+  ipcMain.handle('app:editor:matteImageFromDataUrl', handleMatteImageFromDataUrl);
+  ipcMain.handle('app:net:fetchVolcTosImageAsDataUrl', (_evt, url: string) => fetchVolcTosImageAsDataUrl(url));
+
 if (process.env.NODE_ENV !== 'production') {
   app.disableHardwareAcceleration();
 }
+
+/** 窗口与系统 UI 固定为深色（标题栏、traffic light 区域等），不随系统浅色模式变化 */
+nativeTheme.themeSource = 'dark';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -94,6 +152,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
+    backgroundColor: '#141414',
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -250,6 +309,67 @@ ipcMain.handle('app:dialog:saveFile', async (_, options?: { defaultPath?: string
   return r.canceled ? null : r.filePath ?? null;
 });
 ipcMain.handle('app:fs:pathExists', (_, p: string) => fs.existsSync(p));
+
+/**
+ * 用户选定保存路径后，若同目录已存在同名项，则依次使用 `base (1).ext`、`base (2).ext`… 直至可用（与常见桌面软件一致）
+ */
+ipcMain.handle('app:fs:getSafeFilePath', async (_, fullCandidatePath: string) => {
+  const raw = fullCandidatePath?.trim();
+  if (!raw) return '';
+  try {
+    const normalized = path.normalize(raw);
+    const dir = path.dirname(normalized);
+    const name = path.basename(normalized);
+    if (!name) return normalized;
+    const ext = path.extname(name);
+    const base = path.basename(name, ext);
+    let n = 0;
+    for (;;) {
+      const piece = n === 0 ? name : `${base} (${n})${ext}`;
+      const candidatePath = path.normalize(path.join(dir, piece));
+      try {
+        await fs.promises.access(candidatePath, fs.constants.F_OK);
+        n += 1;
+      } catch {
+        return candidatePath;
+      }
+    }
+  } catch {
+    return path.normalize(raw);
+  }
+});
+
+/** 将纯 base64（无 data: 前缀）写入用户选定路径（图片编辑导出等） */
+ipcMain.handle('app:fs:writeBase64File', (_, fullPath: string, base64: string) => {
+  try {
+    if (!fullPath?.trim()) return { ok: false, error: '路径无效' };
+    const buf = Buffer.from(base64, 'base64');
+    fs.writeFileSync(path.normalize(fullPath), buf);
+    return { ok: true as const };
+  } catch (e: unknown) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+/** 读取本地文件为 data URL（图片编辑打开本机图片） */
+ipcMain.handle('app:fs:readFileAsDataUrl', (_, fullPath: string) => {
+  try {
+    if (!fullPath?.trim() || !fs.existsSync(fullPath)) return null;
+    const normalized = path.normalize(fullPath);
+    const buf = fs.readFileSync(normalized);
+    const ext = path.extname(normalized).toLowerCase();
+    const mime =
+      ext === '.png'
+        ? 'image/png'
+        : ext === '.gif'
+          ? 'image/gif'
+          : ext === '.webp'
+            ? 'image/webp'
+            : 'image/jpeg';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+});
 ipcMain.handle('app:shell:showItemInFolder', (_, fullPath: string) => shell.showItemInFolder(fullPath));
 ipcMain.handle('app:shell:openPath', (_: unknown, path: string) => shell.openPath(path));
 
@@ -278,6 +398,9 @@ ipcMain.handle('app:project:getCameraLayer', (_, projectDir: string, sceneId: st
 ipcMain.handle('app:project:getCameraBlock', (_, projectDir: string, sceneId: string) => getCameraBlock(projectDir, sceneId));
 ipcMain.handle('app:project:getSceneContentDuration', (_, projectDir: string, sceneId: string) => getSceneContentDuration(projectDir, sceneId));
 ipcMain.handle('app:project:ensureCameraLayerAndBlock', (_, projectDir: string, sceneId: string) => ensureCameraLayerAndBlock(projectDir, sceneId));
+ipcMain.handle('app:project:getSubtitleLayer', (_, projectDir: string, sceneId: string) => getSubtitleLayer(projectDir, sceneId));
+ipcMain.handle('app:project:getSubtitleBlock', (_, projectDir: string, sceneId: string) => getSubtitleBlock(projectDir, sceneId));
+ipcMain.handle('app:project:ensureSubtitleLayerAndBlock', (_, projectDir: string, sceneId: string) => ensureSubtitleLayerAndBlock(projectDir, sceneId));
 ipcMain.handle('app:project:getScene', (_, projectDir: string, sceneId: string) => getScene(projectDir, sceneId));
 ipcMain.handle('app:project:updateScene', (_, projectDir: string, id: string, data: unknown) => updateScene(projectDir, id, data as Parameters<typeof updateScene>[2]));
 ipcMain.handle('app:project:getTimelineBlocks', (_, projectDir: string, layerId: string) => getTimelineBlocks(projectDir, layerId));
@@ -323,7 +446,75 @@ ipcMain.handle('app:project:saveAiConfig', (_, projectDir: string, data: unknown
   saveAiConfig(projectDir, data as Parameters<typeof saveAiConfig>[1])
 );
 ipcMain.handle('app:project:getAssets', (_, projectDir: string, type?: string) => getAssets(projectDir, type));
+ipcMain.handle(
+  'app:project:getAssetsByUiCategory',
+  (_, projectDir: string, uiCategory: 'scene' | 'prop' | 'effect' | 'text' | 'sound') =>
+    getAssetsByUiCategory(projectDir, uiCategory)
+);
 ipcMain.handle('app:project:getAssetById', (_, projectDir: string, id: string) => getAssetById(projectDir, id));
+ipcMain.handle(
+  'app:project:extractVideoFrameToDataUrl',
+  async (
+    _: unknown,
+    projectDir: string,
+    relativePath: string,
+    timeSeconds: number,
+    preserveAlpha?: boolean
+  ): Promise<string | null> => {
+    const fullPath = path.join(projectDir, relativePath);
+    if (!fs.existsSync(fullPath)) return null;
+    const tmpPath = path.join(os.tmpdir(), `yiman_frame_${Date.now()}.png`);
+    try {
+      const res = await extractVideoFrame(fullPath, tmpPath, timeSeconds, preserveAlpha);
+      if (!res.ok || !res.path || !fs.existsSync(res.path)) return null;
+      const buf = fs.readFileSync(res.path);
+      return `data:image/png;base64,${buf.toString('base64')}`;
+    } finally {
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+);
+ipcMain.handle(
+  'app:project:processSingleFrameColorkey',
+  async (
+    _: unknown,
+    projectDir: string,
+    relativePath: string,
+    frameTime: number,
+    color: ChromaKeyColor,
+    options?: { tolerance?: number; contiguous?: boolean; blend?: number; despill?: 'green' | 'blue' }
+  ): Promise<{ ok: boolean; dataUrl?: string; error?: string }> => {
+    const fullPath = path.join(projectDir, relativePath);
+    if (!fs.existsSync(fullPath)) return { ok: false, error: '视频文件不存在' };
+    const framePath = path.join(os.tmpdir(), `yiman_frame_ck_${Date.now()}.png`);
+    const frameRes = await extractVideoFrame(fullPath, framePath, frameTime, false);
+    if (!frameRes.ok || !fs.existsSync(framePath)) return { ok: false, error: '提取帧失败' };
+    let outPath: string | null = null;
+    try {
+      const proc = await processSingleFrameColorkey(framePath, color, options);
+      if (!proc.ok || !proc.path || !fs.existsSync(proc.path)) {
+        return { ok: false, error: proc.error ?? '单帧扣色失败' };
+      }
+      outPath = proc.path;
+      const buf = fs.readFileSync(proc.path);
+      return { ok: true, dataUrl: `data:image/png;base64,${buf.toString('base64')}` };
+    } finally {
+      try { if (fs.existsSync(framePath)) fs.unlinkSync(framePath); } catch { /* ignore */ }
+      try { if (outPath && fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { /* ignore */ }
+    }
+  }
+);
+ipcMain.handle(
+  'app:project:getVideoMetadata',
+  async (_: unknown, projectDir: string, relativePath: string) => {
+    const fullPath = path.join(projectDir, relativePath);
+    return getVideoMetadata(fullPath);
+  }
+);
 ipcMain.handle(
   'app:project:saveAssetFromFile',
   async (
@@ -383,9 +574,59 @@ ipcMain.handle('app:project:updateAsset', (_, projectDir: string, id: string, da
   updateAsset(projectDir, id, data as Parameters<typeof updateAsset>[2])
 );
 ipcMain.handle('app:project:deleteAsset', (_, projectDir: string, id: string) => deleteAsset(projectDir, id));
+ipcMain.handle('app:project:getBundledAssetIds', (_, projectDir: string) => getBundledAssetIds(projectDir));
+ipcMain.handle('app:project:getAssetBundlesByUiCategory', (_, projectDir: string, uiCategory: 'scene' | 'prop' | 'effect' | 'text' | 'sound') =>
+  getAssetBundlesByUiCategory(projectDir, uiCategory)
+);
+ipcMain.handle('app:project:getAssetBundleById', (_, projectDir: string, bundleId: string) => getAssetBundleById(projectDir, bundleId));
+ipcMain.handle('app:project:getAssetBundleMembersOrdered', (_, projectDir: string, bundleId: string) =>
+  getAssetBundleMembersOrdered(projectDir, bundleId)
+);
+ipcMain.handle('app:project:getAssetBundleForAsset', (_, projectDir: string, assetId: string) => getAssetBundleForAsset(projectDir, assetId));
+ipcMain.handle('app:project:createAssetBundle', (_, projectDir: string, data: unknown) =>
+  createAssetBundle(projectDir, data as Parameters<typeof createAssetBundle>[1])
+);
+ipcMain.handle('app:project:updateAssetBundle', (_, projectDir: string, bundleId: string, data: unknown) =>
+  updateAssetBundle(projectDir, bundleId, data as Parameters<typeof updateAssetBundle>[2])
+);
+ipcMain.handle('app:project:deleteAssetBundle', (_, projectDir: string, bundleId: string) => deleteAssetBundle(projectDir, bundleId));
+ipcMain.handle('app:project:addAssetBundleMember', (_, projectDir: string, bundleId: string, assetId: string) =>
+  addAssetBundleMember(projectDir, bundleId, assetId)
+);
+ipcMain.handle('app:project:removeAssetBundleMember', (_, projectDir: string, bundleId: string, assetId: string) =>
+  removeAssetBundleMember(projectDir, bundleId, assetId)
+);
+ipcMain.handle('app:project:reorderAssetBundleMembers', (_, projectDir: string, bundleId: string, orderedAssetIds: string[]) =>
+  reorderAssetBundleMembers(projectDir, bundleId, orderedAssetIds)
+);
+ipcMain.handle('app:project:addSimilarAssetToBundle', (_, projectDir: string, existingAssetId: string, newAssetId: string) =>
+  addSimilarAssetToBundle(projectDir, existingAssetId, newAssetId)
+);
 ipcMain.handle('app:project:getAssetDataUrl', (_, projectDir: string, relativePath: string) =>
   getAssetDataUrl(projectDir, relativePath)
 );
+ipcMain.handle('app:project:getTextGadgetPresets', () => getTextGadgetPresets());
+  ipcMain.handle('app:project:getTextGadgetConfig', (_, presetId: string) => getTextGadgetConfig(presetId));
+  ipcMain.handle('app:project:getParticlesGadgetPresets', () => getParticlesGadgetPresets());
+  ipcMain.handle('app:project:getParticlesGadgetConfig', (_, presetId: string) => getParticlesGadgetConfig(presetId));
+ipcMain.handle('app:system:getFonts', () => getSystemFonts());
+ipcMain.handle('app:system:getFontFaces', () => getSystemFontFaces());
+ipcMain.handle('app:plugins:lama:ensure', async () => ensureLamaCleanerRunning());
+ipcMain.handle('app:plugins:lama:openInstallTerminal', async () => {
+  if (process.platform !== 'darwin') {
+    return {
+      ok: false as const,
+      error:
+        '自动打开安装终端目前仅在 macOS 上可用。请在应用数据目录下自行创建 venv：Python 3.10 推荐；pip install torch torchvision torchaudio && pip install iopaint；Apple Silicon 可用 python -m iopaint start --device mps --port 9380。',
+    };
+  }
+  try {
+    openLamaCleanerInstallTerminal();
+    return { ok: true as const };
+  } catch (e) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+});
 /** 保存透明视频时更新封面 + 元数据的复用函数 */
 async function updateTransparentVideoMeta(
   projectDir: string,
@@ -470,24 +711,42 @@ ipcMain.handle(
     projectDir: string,
     assetId: string,
     color: ChromaKeyColor,
-    options?: { tolerance?: number; contiguous?: boolean }
+    options?: { tolerance?: number; contiguous?: boolean; blend?: number; despill?: 'green' | 'blue' }
   ) => {
     const asset = getAssetById(projectDir, assetId);
-    if (!asset || !asset.original_path) return { ok: false, error: '未找到原始视频，无法重新扣色' };
-    const origFullPath = path.join(projectDir, asset.original_path);
-    if (!fs.existsSync(origFullPath)) return { ok: false, error: '原始视频文件不存在' };
+    if (!asset) return { ok: false, error: '素材不存在' };
+    // 有 original_path 时基于原始视频重处理，否则基于 path 首次处理（应用后保留原始视频）
+    const sourcePath = asset.original_path ?? asset.path;
+    const sourceFullPath = path.join(projectDir, sourcePath);
+    if (!fs.existsSync(sourceFullPath)) return { ok: false, error: '视频文件不存在' };
 
-    const proc = await processTransparentVideo(origFullPath, color, {
+    const proc = await processTransparentVideo(sourceFullPath, color, {
       tolerance: options?.tolerance,
       contiguous: options?.contiguous,
+      blend: options?.blend,
+      despill: options?.despill,
     });
-    if (!proc.ok || !proc.path) return { ok: false, error: proc.error ?? '重新扣色失败' };
+    if (!proc.ok || !proc.path) return { ok: false, error: proc.error ?? '扣色失败' };
     const tempPath = proc.path;
     try {
-      // 替换现有 webm 文件
-      const assetFullPath = path.join(projectDir, asset.path);
-      fs.copyFileSync(tempPath, assetFullPath);
-      await updateTransparentVideoMeta(projectDir, assetId, assetFullPath);
+      const assetsDir = getAssetsPath(projectDir);
+      if (asset.original_path) {
+        // 已有原始视频：替换现有 webm
+        const assetFullPath = path.join(projectDir, asset.path);
+        fs.copyFileSync(tempPath, assetFullPath);
+        await updateTransparentVideoMeta(projectDir, assetId, assetFullPath);
+      } else {
+        // 首次处理：保留原始视频，保存 webm 到新路径
+        const webmPath = path.join(assetsDir, `${assetId}.webm`);
+        fs.copyFileSync(tempPath, webmPath);
+        const relativeWebm = `assets/${assetId}.webm`;
+        updateAsset(projectDir, assetId, {
+          path: relativeWebm,
+          original_path: asset.path,
+          type: 'transparent_video',
+        });
+        await updateTransparentVideoMeta(projectDir, assetId, webmPath);
+      }
       return { ok: true };
     } finally {
       try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
@@ -534,9 +793,17 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle('app:project:matteImageForContour', async (_, projectDir: string, relativePath: string) => {
-  return matteImageForContour(projectDir, relativePath);
-});
+ipcMain.handle(
+  'app:project:matteImageForContour',
+  async (
+    _: unknown,
+    projectDir: string,
+    relativePath: string,
+    options?: { mattingModel?: string; downsampleRatio?: number }
+  ) => {
+    return matteImageForContour(projectDir, relativePath, options);
+  }
+);
 
 ipcMain.handle('app:project:matteImageAndSave', async (_, projectDir: string, relativePath: string, options?: { mattingModel?: string; downsampleRatio?: number; replaceAssetId?: string }) => {
   return matteImageAndSave(projectDir, relativePath, options);
@@ -602,6 +869,78 @@ ipcMain.handle(
 ipcMain.handle('app:project:importSpriteSheet', async (_, projectDir: string, zipPath: string) => {
   return importSpriteSheetFromZip(projectDir, zipPath);
 });
+
+// 视频转精灵图：提取关键帧
+const videoToSpriteTmpDirs = new Map<string, { frames: string[]; tmpDir: string }>();
+
+ipcMain.handle(
+  'app:project:videoToSpriteExtract',
+  async (_, projectDir: string, videoRelativePath: string, options: { mode: 'scene' | 'uniform'; sceneThreshold?: number; totalFrames?: number }) => {
+    const fullPath = path.join(projectDir, videoRelativePath);
+    const res = options.mode === 'uniform'
+      ? await extractFramesUniform(fullPath, options.totalFrames ?? 8)
+      : await extractKeyFrames(fullPath, options.sceneThreshold ?? 0.3);
+    if (!res.ok || !res.frames || !res.tmpDir) return { ok: false, error: res.error };
+
+    const dataUrls = await keyFramesToDataUrls(res.frames);
+    const key = `${projectDir}:${videoRelativePath}`;
+    const old = videoToSpriteTmpDirs.get(key);
+    if (old?.tmpDir) cleanupDir(old.tmpDir);
+    videoToSpriteTmpDirs.set(key, { frames: res.frames, tmpDir: res.tmpDir });
+
+    return { ok: true, frameCount: dataUrls.length, dataUrls };
+  }
+);
+
+ipcMain.handle(
+  'app:project:videoToSpriteSave',
+  async (_, projectDir: string, videoRelativePath: string) => {
+    const key = `${projectDir}:${videoRelativePath}`;
+    const cached = videoToSpriteTmpDirs.get(key);
+    if (!cached || cached.frames.length === 0) {
+      return { ok: false, error: '请先提取关键帧' };
+    }
+
+    const tmpOut = path.join(fs.realpathSync(os.tmpdir()), `yiman_sprite_${Date.now()}.png`);
+    const res = await generateSpriteSheet(cached.frames, tmpOut);
+    if (!res.ok || !res.path) {
+      return { ok: false, error: res.error };
+    }
+
+    try {
+      const saveRes = saveAssetFromFile(projectDir, res.path, 'sprite');
+      try { fs.unlinkSync(res.path); } catch { /* ignore */ }
+      if (!saveRes.ok || !saveRes.path) {
+        return { ok: false, error: saveRes.error ?? '保存精灵图失败' };
+      }
+
+      // 将第一帧复制到 assets 目录作为封面（不写入数据库，避免污染素材列表）
+      let cover_path: string | undefined;
+      if (cached.frames.length > 0) {
+        try {
+          const assetsDir = getAssetsPath(projectDir);
+          const coverId = `cover_${Date.now()}`;
+          const coverDest = path.join(assetsDir, `${coverId}.png`);
+          fs.copyFileSync(cached.frames[0], coverDest);
+          cover_path = `assets/${coverId}.png`;
+        } catch { /* ignore */ }
+      }
+
+      cleanupDir(cached.tmpDir);
+      videoToSpriteTmpDirs.delete(key);
+
+      return {
+        ok: true,
+        path: saveRes.path,
+        frameCount: res.frameCount,
+        frames: res.frames,
+        cover_path,
+      };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+);
 
 // 视频导出（见开发计划 2.13）；进度通过 event.sender 推送
 ipcMain.handle(

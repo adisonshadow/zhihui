@@ -1,9 +1,10 @@
 /**
  * 元件编辑面板：多状态（由 tag 构成）、画板可插入图片/精灵动作/嵌套元件、预览支持 tag 指定与向内传递
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Drawer, Button, Space, Typography, App, Input, Tag, Dropdown, Modal, Radio } from 'antd';
 import { PlusOutlined, DeleteOutlined, MoreOutlined, PictureOutlined, EyeOutlined } from '@ant-design/icons';
+import { ChangeCategoryModal, type ChangeCategoryTarget } from '@/components/asset/ChangeCategoryModal';
 import type { MenuProps } from 'antd';
 import type { GroupComponentItem, GroupComponentState, GroupCanvasItem } from '@/types/groupComponent';
 import { GROUP_CANVAS_SIZE } from '@/types/groupComponent';
@@ -25,9 +26,9 @@ export interface GroupComponentPanelProps {
   characterId: string;
   item: GroupComponentItem | null;
   onSave: (item: GroupComponentItem) => void;
-  /** 当前人物的精灵动作列表 */
+  /** 当前角色的精灵动作列表 */
   spriteSheets: SpriteSheetItem[];
-  /** 当前人物的元件列表（不含自身，用于嵌套选择） */
+  /** 当前角色的元件列表（不含自身，用于嵌套选择） */
   componentGroups: GroupComponentItem[];
   getAssetDataUrl: (projectDir: string, path: string) => Promise<string | null>;
   getAssets: (projectDir: string) => Promise<{ id: string; path: string; type: string }[]>;
@@ -39,10 +40,14 @@ export interface GroupComponentPanelProps {
     path: string,
     options?: { mattingModel?: string; downsampleRatio?: number }
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
-  /** 从人物元件打开时，可获取全部人物的精灵图/元件以支持「仅查看本人物的」筛选 */
+  /** 从角色元件打开时，可获取全部角色的精灵图/元件以支持「仅查看本角色的」筛选 */
   getAllCharactersData?: () => Promise<
     { characterId: string; characterName?: string; spriteSheets: SpriteSheetItem[]; componentGroups: GroupComponentItem[] }[]
   >;
+  /** 变更分类回调：itemId, 目标分类, 角色ID（仅 category='character' 时有值） */
+  onChangeCategory?: (itemId: string, category: string, characterId?: string) => void;
+  /** 删除元件回调 */
+  onDelete?: (itemId: string) => void;
 }
 
 export function GroupComponentPanel({
@@ -61,9 +66,13 @@ export function GroupComponentPanel({
   openFileDialog,
   matteImageAndSave,
   getAllCharactersData,
+  onChangeCategory,
+  onDelete,
 }: GroupComponentPanelProps) {
   const { message } = App.useApp();
   const [item, setItem] = useState<GroupComponentItem | null>(initialItem);
+  const [changeCategoryOpen, setChangeCategoryOpen] = useState(false);
+  const initialSnapshotRef = useRef<string>('');
   const [selectedStateId, setSelectedStateId] = useState<string | null>(() =>
     initialItem?.states?.length ? initialItem.states[0]!.id : null
   );
@@ -83,6 +92,9 @@ export function GroupComponentPanel({
 
   useEffect(() => {
     setItem(initialItem);
+    if (open && initialItem) {
+      initialSnapshotRef.current = JSON.stringify(initialItem);
+    }
     if (initialItem?.states?.length) {
       const firstId = initialItem.states[0]!.id;
       setSelectedStateId((prev) => (prev && initialItem.states.some((s) => s.id === prev) ? prev : firstId));
@@ -91,7 +103,9 @@ export function GroupComponentPanel({
     }
   }, [initialItem, open]);
 
-  /** 预览面板打开时，加载全部人物数据、初始化各 tag 选中 */
+  const dirty = item ? JSON.stringify(item) !== initialSnapshotRef.current : false;
+
+  /** 预览面板打开时，加载全部角色数据、初始化各 tag 选中 */
   useEffect(() => {
     if (!previewDrawerOpen || !item) return;
     const run = async () => {
@@ -316,7 +330,7 @@ export function GroupComponentPanel({
 
   const parsedPreviewTags = Object.values(selectedTagsByGroupId).filter(Boolean);
 
-  /** 合并全部人物的元件，用于预览时解析跨人物的嵌套元件 */
+  /** 合并全部角色的元件，用于预览时解析跨角色的嵌套元件 */
   const mergedComponentGroups =
     allCharactersDataForPreview.length > 0
       ? (() => {
@@ -372,17 +386,35 @@ export function GroupComponentPanel({
         open={open}
         onClose={onClose}
         styles={{ body: { overflowY: 'auto', paddingBottom: 24 } }}
+        maskClosable={!dirty}
         extra={
-          <Space>
+          <Space size={4}>
             <Button icon={<EyeOutlined />} onClick={() => setPreviewDrawerOpen(true)}>
               预览
             </Button>
-            <Button type="primary" onClick={handleSave} loading={saving}>
+            <Button type="primary" onClick={handleSave} loading={saving} disabled={!dirty}>
               保存
             </Button>
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'change-category', label: '变更分类' },
+                  { key: 'delete', label: '删除', danger: true },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'change-category') setChangeCategoryOpen(true);
+                  else if (key === 'delete') {
+                    if (item) onDelete?.(item.id);
+                    onClose();
+                  }
+                },
+              }}
+            >
+              <Button icon={<MoreOutlined />} />
+            </Dropdown>
           </Space>
         }
-        maskClosable={false}
       >
         {!item ? (
           <Text type="secondary">请先保存新建项后再编辑。</Text>
@@ -592,6 +624,21 @@ export function GroupComponentPanel({
           )}
         </div>
       </Modal>
+
+      <ChangeCategoryModal
+        open={changeCategoryOpen}
+        onCancel={() => setChangeCategoryOpen(false)}
+        currentCategory={(item?.uiCategory ?? 'prop') as ChangeCategoryTarget}
+        assetType="component"
+        projectDir={projectDir}
+        onConfirm={(category, characterId) => {
+          setChangeCategoryOpen(false);
+          if (item) {
+            onChangeCategory?.(item.id, category, characterId);
+          }
+          onClose();
+        }}
+      />
     </>
   );
 }

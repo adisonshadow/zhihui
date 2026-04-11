@@ -7,7 +7,9 @@ import React, { useRef, useCallback, useState, useEffect } from 'react';
 import type { BlockAnimationConfig } from '@/constants/animationRegistry';
 import { getBlockAnimationState } from '@/hooks/useBlockAnimation';
 import { GroupPreview } from '@/components/character/GroupPreview';
-import { CAMERA_BLOCK_ASSET_ID } from '@/constants/project';
+import { CAMERA_BLOCK_ASSET_ID, SUBTITLE_BLOCK_ASSET_ID } from '@/constants/project';
+import { TextGadgetRenderer } from './TextGadgetRenderer';
+import { ParticlesGadgetRenderer } from './ParticlesGadgetRenderer';
 
 export interface SpriteFrameRect {
   x: number;
@@ -69,6 +71,14 @@ export interface BlockItem {
     /** 标签精灵的 tag 选择 */
     selectedTagsBySpriteItemId?: Record<string, Record<string, string>>;
   };
+  /** 文字组件块：presetId 从 asset_id 解析；config 为 { textA: { content, fontSize, color, fontFamily }, textB: {...} } */
+  textGadgetInfo?: Record<string, { content: string; fontSize: number; color: string; fontFamily: string }>;
+  /** 文字组件 presetId（如 simpleText），用于加载 render 模块 */
+  textGadgetPresetId?: string;
+  /** 脚本特效块：presetId 从 asset_id 解析；config 为 { particleType, count, windDirection, ... } */
+  particlesGadgetInfo?: Record<string, string | number>;
+  /** 脚本特效 presetId（如 simpleParticles），用于加载 render 模块 */
+  particlesGadgetPresetId?: string;
 }
 
 interface CanvasProps {
@@ -297,7 +307,10 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
     >
-      {blocks.filter((b) => (b as { asset_id?: string }).asset_id !== CAMERA_BLOCK_ASSET_ID).map((block) => {
+      {blocks.filter((b) => {
+        const aid = (b as { asset_id?: string }).asset_id;
+        return aid !== CAMERA_BLOCK_ASSET_ID && aid !== SUBTITLE_BLOCK_ASSET_ID;
+      }).map((block) => {
         const left = block.pos_x * designWidth - (block.scale_x * designWidth) / 2;
         const top = block.pos_y * designHeight - (block.scale_y * designHeight) / 2;
         const width = block.scale_x * designWidth;
@@ -312,9 +325,12 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
         const animationClass = animState?.cssClass ? `magictime ${animState.cssClass}` : '';
         const animationStyle = animState
           ? {
+              ...(animState.layerStyle ?? {}),
               animationDuration: `${animState.duration}s`,
               ...(animState.delaySeconds != null ? { animationDelay: `${animState.delaySeconds}s` } : {}),
-              ...(animState.repeatCount != null ? { animationIterationCount: animState.repeatCount } : {}),
+              ...(animState.actionIterationCount != null
+                ? { animationIterationCount: animState.actionIterationCount }
+                : {}),
             }
           : {};
         return (
@@ -347,7 +363,25 @@ export function Canvas({ designWidth, designHeight, zoom, blocks, selectedBlockI
                 ...animationStyle,
               }}
             >
-            {block.componentInfo && projectDir && getAssetDataUrl ? (
+            {block.textGadgetInfo && block.textGadgetPresetId ? (
+              <div style={{ width: '100%', height: '100%', background: 'transparent' }}>
+                <TextGadgetRenderer
+                  presetId={block.textGadgetPresetId}
+                  fields={block.textGadgetInfo}
+                  width={width}
+                  height={height}
+                />
+              </div>
+            ) : block.particlesGadgetInfo && block.particlesGadgetPresetId ? (
+              <div style={{ width: '100%', height: '100%', background: 'transparent' }}>
+                <ParticlesGadgetRenderer
+                  presetId={block.particlesGadgetPresetId}
+                  fields={block.particlesGadgetInfo}
+                  width={width}
+                  height={height}
+                />
+              </div>
+            ) : block.componentInfo && projectDir && getAssetDataUrl ? (
               <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                 <GroupPreview
                   projectDir={projectDir}

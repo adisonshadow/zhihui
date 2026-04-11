@@ -5,7 +5,7 @@
 import type { AIModelConfig } from '@/types/settings';
 
 /** 展示模式 */
-export type AIChatMode = 'SidePanel' | 'FloatingBottom' | 'Popover';
+export type AIChatMode = 'SidePanel' | 'FloatingBottom' | 'Popover' | 'BottomSender';
 
 /** 欢迎词中的下拉 slot 配置 */
 export interface WelcomeSlotSelect {
@@ -33,7 +33,7 @@ export interface AgentConfig {
   welcomeSlot?: WelcomeSlotSelect;
   /**
    * 该 Agent 使用的 Provider 类型，默认 'chat'。
-   * 'images' 对应 OpenAIImagesProvider（绘图师）。
+   * 'images' 对应 imagesProviderFactory（基础 OpenAIImagesProvider + 如 VolcArkSeedreamImagesProvider）。
    * 见功能文档 06 § 4.1
    */
   providerType?: AgentProviderType;

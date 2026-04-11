@@ -59,19 +59,30 @@ export interface EpisodeRow {
   updated_at: string;
 }
 
+/** 角色形象项：多形象支持，每项含 path、description */
+export interface CharacterImageItem {
+  id: string;
+  path: string;
+  description: string;
+}
+
 export interface CharacterRow {
   id: string;
   name: string;
   image_path: string | null;
+  /** JSON 数组：角色形象列表，每项 { id, path, description }。为空时兼容 image_path */
+  images: string | null;
   note: string | null;
   tts_voice: string | null;
   tts_speed: number | null;
-  /** JSON 数组：人物角度列表，见 docs/06-人物骨骼贴图功能设计.md。每项 { id, name, image_path?, skeleton? } */
+  /** JSON 数组：角色角度列表，见 docs/06-角色骨骼贴图功能设计.md。每项 { id, name, image_path?, skeleton? } */
   angles: string | null;
   /** JSON 数组：精灵动作图列表。每项 { id, name?, image_path, frame_count?, chroma_key? } */
   sprite_sheets: string | null;
   /** JSON 数组：元件列表。每项 { id, name, states: [{ id, tags: string[], items: CanvasItem[] }] } */
   component_groups: string | null;
+  /** JSON 数组：角色关联的透明视频，每项 { id, asset_id }，与素材库透明视频本质相同 */
+  transparent_videos: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -351,6 +362,9 @@ export interface SceneRow {
   camera_y?: number;
   camera_z?: number;
   auto_center_speaker?: number;
+  subtitle_enabled?: number;
+  /** 字幕配置 JSON：{ items: [{ speaker, startTime, content }], style: { fontSize, color, ... } } */
+  subtitle_config?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -376,6 +390,8 @@ const SCENE_SETTINGS_COLUMNS: { name: string; sql: string }[] = [
   { name: 'camera_y', sql: 'REAL NOT NULL DEFAULT 0' },
   { name: 'camera_z', sql: 'REAL NOT NULL DEFAULT 1' },
   { name: 'auto_center_speaker', sql: 'INTEGER NOT NULL DEFAULT 0' },
+  { name: 'subtitle_enabled', sql: 'INTEGER NOT NULL DEFAULT 0' },
+  { name: 'subtitle_config', sql: 'TEXT' },
 ];
 
 function ensureSceneSettingsColumns(projectDir: string): void {
@@ -391,7 +407,7 @@ function ensureSceneSettingsColumns(projectDir: string): void {
 export function updateScene(
   projectDir: string,
   id: string,
-  data: Partial<Pick<SceneRow, 'name' | 'sort_order' | 'play_speed' | 'camera_enabled' | 'camera_x' | 'camera_y' | 'camera_z' | 'auto_center_speaker'>>
+  data: Partial<Pick<SceneRow, 'name' | 'sort_order' | 'play_speed' | 'camera_enabled' | 'camera_x' | 'camera_y' | 'camera_z' | 'auto_center_speaker' | 'subtitle_enabled' | 'subtitle_config'>>
 ): { ok: boolean; error?: string } {
   try {
     ensureSceneSettingsColumns(projectDir);
@@ -407,9 +423,11 @@ export function updateScene(
     const camera_y = data.camera_y !== undefined ? data.camera_y : (row.camera_y ?? 0);
     const camera_z = data.camera_z !== undefined ? data.camera_z : (row.camera_z ?? 1);
     const auto_center_speaker = data.auto_center_speaker !== undefined ? data.auto_center_speaker : (row.auto_center_speaker ?? 0);
+    const subtitle_enabled = data.subtitle_enabled !== undefined ? data.subtitle_enabled : (row.subtitle_enabled ?? 0);
+    const subtitle_config = data.subtitle_config !== undefined ? data.subtitle_config : (row.subtitle_config ?? null);
     db.prepare(
-      `UPDATE scenes SET name = ?, sort_order = ?, play_speed = ?, camera_enabled = ?, camera_x = ?, camera_y = ?, camera_z = ?, auto_center_speaker = ?, updated_at = ? WHERE id = ?`
-    ).run(name, sort_order, play_speed, camera_enabled, camera_x, camera_y, camera_z, auto_center_speaker, now, id);
+      `UPDATE scenes SET name = ?, sort_order = ?, play_speed = ?, camera_enabled = ?, camera_x = ?, camera_y = ?, camera_z = ?, auto_center_speaker = ?, subtitle_enabled = ?, subtitle_config = ?, updated_at = ? WHERE id = ?`
+    ).run(name, sort_order, play_speed, camera_enabled, camera_x, camera_y, camera_z, auto_center_speaker, subtitle_enabled, subtitle_config, now, id);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -554,6 +572,9 @@ export function deleteLayer(projectDir: string, layerId: string): { ok: boolean;
 /** 镜头块 asset_id 常量，与 src/constants/project.ts 保持一致 */
 const CAMERA_BLOCK_ASSET_ID = '__camera__';
 
+/** 字幕块 asset_id 常量，与 src/constants/project.ts 保持一致 */
+const SUBTITLE_BLOCK_ASSET_ID = '__subtitle__';
+
 /** 获取场景的镜头层（layer_type='camera'）；见功能文档 6.6 镜头层 */
 export function getCameraLayer(projectDir: string, sceneId: string): LayerRow | null {
   ensureLayersLayerTypeColumn(projectDir);
@@ -633,6 +654,69 @@ export function ensureCameraLayerAndBlock(projectDir: string, sceneId: string): 
   }
 }
 
+/** 获取场景的字幕层（layer_type='subtitle'） */
+export function getSubtitleLayer(projectDir: string, sceneId: string): LayerRow | null {
+  ensureLayersLayerTypeColumn(projectDir);
+  const db = getDb(projectDir);
+  const row = db.prepare("SELECT * FROM layers WHERE scene_id = ? AND layer_type = 'subtitle' LIMIT 1").get(sceneId) as LayerRow | undefined;
+  return row ?? null;
+}
+
+/** 获取字幕块（asset_id='__subtitle__'） */
+export function getSubtitleBlock(projectDir: string, sceneId: string): TimelineBlockRow | null {
+  const layer = getSubtitleLayer(projectDir, sceneId);
+  if (!layer) return null;
+  const blocks = getTimelineBlocks(projectDir, layer.id);
+  return blocks.find((b) => b.asset_id === SUBTITLE_BLOCK_ASSET_ID) ?? null;
+}
+
+/** 启用字幕时确保字幕层与字幕块存在；字幕条与场景时长一致；返回字幕块 id */
+export function ensureSubtitleLayerAndBlock(projectDir: string, sceneId: string): { ok: boolean; subtitleBlockId?: string; error?: string } {
+  try {
+    ensureLayersLayerTypeColumn(projectDir);
+    ensureTimelineBlocksTransformColumns(projectDir);
+    const db = getDb(projectDir);
+    let layer = getSubtitleLayer(projectDir, sceneId);
+    if (!layer) {
+      const maxZ = db.prepare('SELECT COALESCE(MAX(z_index), -1) + 1 AS z FROM layers WHERE scene_id = ?').get(sceneId) as { z: number };
+      const layerId = `layer_subtitle_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      createLayer(projectDir, {
+        id: layerId,
+        scene_id: sceneId,
+        name: '字幕层',
+        z_index: maxZ.z,
+        is_main: 0,
+        layer_type: 'subtitle',
+      } as { id: string; scene_id: string; name?: string; z_index?: number; is_main?: number; layer_type?: string });
+      layer = getSubtitleLayer(projectDir, sceneId)!;
+    }
+    const contentDuration = Math.max(1, getSceneContentDuration(projectDir, sceneId));
+    let block = getSubtitleBlock(projectDir, sceneId);
+    if (!block) {
+      const blockId = `block_subtitle_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      createTimelineBlock(projectDir, {
+        id: blockId,
+        layer_id: layer.id,
+        asset_id: SUBTITLE_BLOCK_ASSET_ID,
+        start_time: 0,
+        end_time: contentDuration,
+        pos_x: 0.5,
+        pos_y: 0.5,
+        scale_x: 1,
+        scale_y: 1,
+        rotation: 0,
+      });
+      return { ok: true, subtitleBlockId: blockId };
+    }
+    if (Math.abs(block.end_time - contentDuration) > 0.01) {
+      updateTimelineBlock(projectDir, block.id, { end_time: contentDuration });
+    }
+    return { ok: true, subtitleBlockId: block.id };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // ---------- timeline_blocks（见功能文档 6.7、开发计划 2.10；位置/缩放/旋转归一化存储）----------
 export interface TimelineBlockRow {
   id: string;
@@ -664,6 +748,10 @@ export interface TimelineBlockRow {
   state_keyframes?: string | null;
   /** 视频/精灵图/音频裁剪起始点（秒），左边 resize 时更新；播放公式：(clip_start + (t - start_time)) % nativeDuration */
   clip_start?: number;
+  /** 文字组件配置 JSON，见 public/TextGadgets */
+  text_gadget_config?: string | null;
+  /** 脚本特效配置 JSON，见 public/ParticlesGadgets */
+  particles_gadget_config?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -734,12 +822,30 @@ function ensureTimelineBlocksClipStartColumn(projectDir: string): void {
   }
 }
 
+function ensureTimelineBlocksTextGadgetConfigColumn(projectDir: string): void {
+  const db = getDb(projectDir);
+  const columns = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('text_gadget_config')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN text_gadget_config TEXT').run();
+  }
+}
+
+function ensureTimelineBlocksParticlesGadgetConfigColumn(projectDir: string): void {
+  const db = getDb(projectDir);
+  const columns = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
+  if (!columns.includes('particles_gadget_config')) {
+    db.prepare('ALTER TABLE timeline_blocks ADD COLUMN particles_gadget_config TEXT').run();
+  }
+}
+
 export function getTimelineBlocks(projectDir: string, layerId: string): TimelineBlockRow[] {
   ensureTimelineBlocksTransformColumns(projectDir);
   ensureTimelineBlocksAudioColumns(projectDir);
   ensureTimelineBlocksAnimationColumn(projectDir);
   ensureTimelineBlocksStateKeyframesColumn(projectDir);
   ensureTimelineBlocksClipStartColumn(projectDir);
+  ensureTimelineBlocksTextGadgetConfigColumn(projectDir);
+  ensureTimelineBlocksParticlesGadgetConfigColumn(projectDir);
   const db = getDb(projectDir);
   const rows = db.prepare('SELECT * FROM timeline_blocks WHERE layer_id = ? ORDER BY start_time ASC').all(layerId) as TimelineBlockRow[];
   return rows.map((r) => ({
@@ -761,6 +867,8 @@ export function getTimelineBlockById(projectDir: string, blockId: string): Timel
   ensureTimelineBlocksAudioColumns(projectDir);
   ensureTimelineBlocksAnimationColumn(projectDir);
   ensureTimelineBlocksStateKeyframesColumn(projectDir);
+  ensureTimelineBlocksTextGadgetConfigColumn(projectDir);
+  ensureTimelineBlocksParticlesGadgetConfigColumn(projectDir);
   const db = getDb(projectDir);
   const row = db.prepare('SELECT * FROM timeline_blocks WHERE id = ?').get(blockId) as TimelineBlockRow | undefined;
   if (!row) return null;
@@ -779,29 +887,69 @@ export function getTimelineBlockById(projectDir: string, blockId: string): Timel
 
 export function createTimelineBlock(
   projectDir: string,
-  data: { id: string; layer_id: string; asset_id?: string | null; start_time?: number; end_time?: number; pos_x?: number; pos_y?: number; scale_x?: number; scale_y?: number; rotation?: number }
+  data: { id: string; layer_id: string; asset_id?: string | null; start_time?: number; end_time?: number; pos_x?: number; pos_y?: number; scale_x?: number; scale_y?: number; rotation?: number; text_gadget_config?: string | null; particles_gadget_config?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     ensureTimelineBlocksTransformColumns(projectDir);
+    ensureTimelineBlocksTextGadgetConfigColumn(projectDir);
+    ensureTimelineBlocksParticlesGadgetConfigColumn(projectDir);
     const now = new Date().toISOString();
     const db = getDb(projectDir);
-    db.prepare(
-      `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      data.id,
-      data.layer_id,
-      data.asset_id ?? null,
-      data.start_time ?? 0,
-      data.end_time ?? 1,
-      data.pos_x ?? 0.5,
-      data.pos_y ?? 0.5,
-      data.scale_x ?? 1,
-      data.scale_y ?? 1,
-      data.rotation ?? 0,
-      now,
-      now
-    );
+    const cols = db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[];
+    const hasTextGadgetConfig = cols.some((c) => c.name === 'text_gadget_config');
+    const hasParticlesGadgetConfig = cols.some((c) => c.name === 'particles_gadget_config');
+    const needTextConfig = hasTextGadgetConfig && data.text_gadget_config !== undefined;
+    const needParticlesConfig = hasParticlesGadgetConfig && data.particles_gadget_config !== undefined;
+    if (needTextConfig || needParticlesConfig) {
+      const configCols: string[] = [];
+      const configVals: unknown[] = [];
+      if (hasTextGadgetConfig) {
+        configCols.push('text_gadget_config');
+        configVals.push(data.text_gadget_config ?? null);
+      }
+      if (hasParticlesGadgetConfig) {
+        configCols.push('particles_gadget_config');
+        configVals.push(data.particles_gadget_config ?? null);
+      }
+      const configColsStr = configCols.join(', ');
+      const configPlaceholders = configCols.map(() => '?').join(', ');
+      db.prepare(
+        `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, ${configColsStr}, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${configPlaceholders}, ?, ?)`
+      ).run(
+        data.id,
+        data.layer_id,
+        data.asset_id ?? null,
+        data.start_time ?? 0,
+        data.end_time ?? 1,
+        data.pos_x ?? 0.5,
+        data.pos_y ?? 0.5,
+        data.scale_x ?? 1,
+        data.scale_y ?? 1,
+        data.rotation ?? 0,
+        ...configVals,
+        now,
+        now
+      );
+    } else {
+      db.prepare(
+        `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        data.id,
+        data.layer_id,
+        data.asset_id ?? null,
+        data.start_time ?? 0,
+        data.end_time ?? 1,
+        data.pos_x ?? 0.5,
+        data.pos_y ?? 0.5,
+        data.scale_x ?? 1,
+        data.scale_y ?? 1,
+        data.rotation ?? 0,
+        now,
+        now
+      );
+    }
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -811,7 +959,7 @@ export function createTimelineBlock(
 export function updateTimelineBlock(
   projectDir: string,
   id: string,
-  data: Partial<Pick<TimelineBlockRow, 'layer_id' | 'asset_id' | 'start_time' | 'end_time' | 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'lock_aspect' | 'blur' | 'opacity' | 'playback_fps' | 'playback_count' | 'volume' | 'fade_in' | 'fade_out' | 'animation_config' | 'state_keyframes'>>
+  data: Partial<Pick<TimelineBlockRow, 'layer_id' | 'asset_id' | 'start_time' | 'end_time' | 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'lock_aspect' | 'blur' | 'opacity' | 'playback_fps' | 'playback_count' | 'volume' | 'fade_in' | 'fade_out' | 'animation_config' | 'state_keyframes' | 'text_gadget_config' | 'particles_gadget_config'>>
 ): { ok: boolean; error?: string } {
   try {
     ensureTimelineBlocksTransformColumns(projectDir);
@@ -832,13 +980,19 @@ export function updateTimelineBlock(
     const fadeIn = data.fade_in !== undefined ? data.fade_in : ((row as { fade_in?: number }).fade_in ?? 0);
     const fadeOut = data.fade_out !== undefined ? data.fade_out : ((row as { fade_out?: number }).fade_out ?? 0);
     ensureTimelineBlocksStateKeyframesColumn(projectDir);
+    ensureTimelineBlocksTextGadgetConfigColumn(projectDir);
     const animationConfig = data.animation_config !== undefined ? data.animation_config : ((row as { animation_config?: string | null }).animation_config ?? null);
     const stateKeyframes = data.state_keyframes !== undefined ? data.state_keyframes : ((row as { state_keyframes?: string | null }).state_keyframes ?? null);
+    ensureTimelineBlocksParticlesGadgetConfigColumn(projectDir);
+    const textGadgetConfig = data.text_gadget_config !== undefined ? data.text_gadget_config : ((row as { text_gadget_config?: string | null }).text_gadget_config ?? null);
+    const particlesGadgetConfig = data.particles_gadget_config !== undefined ? data.particles_gadget_config : ((row as { particles_gadget_config?: string | null }).particles_gadget_config ?? null);
     const cols = (db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[]).map((c) => c.name);
     const hasPlaybackCount = cols.includes('playback_count');
     const hasVolume = cols.includes('volume');
     const hasAnimationConfig = cols.includes('animation_config');
     const hasStateKeyframes = cols.includes('state_keyframes');
+    const hasTextGadgetConfig = cols.includes('text_gadget_config');
+    const hasParticlesGadgetConfig = cols.includes('particles_gadget_config');
     const setClause = hasStateKeyframes
       ? (hasAnimationConfig
         ? (hasVolume
@@ -870,6 +1024,12 @@ export function updateTimelineBlock(
     baseParams.push(now, id);
     const params = baseParams;
     db.prepare(setClause).run(...params);
+    if (hasTextGadgetConfig) {
+      db.prepare('UPDATE timeline_blocks SET text_gadget_config = ?, updated_at = ? WHERE id = ?').run(textGadgetConfig, now, id);
+    }
+    if (hasParticlesGadgetConfig) {
+      db.prepare('UPDATE timeline_blocks SET particles_gadget_config = ?, updated_at = ? WHERE id = ?').run(particlesGadgetConfig, now, id);
+    }
     const startDelta = newStart - row.start_time;
     if (Math.abs(startDelta) >= 1e-9) shiftKeyframesForBlock(projectDir, id, startDelta);
     const layerRow = db.prepare('SELECT scene_id FROM layers WHERE id = ? AND is_main = 1').get(row.layer_id) as { scene_id: string } | undefined;
@@ -912,7 +1072,7 @@ export function deleteTimelineBlock(projectDir: string, id: string): { ok: boole
 export function insertBlockAtMainTrack(
   projectDir: string,
   sceneId: string,
-  data: { id: string; asset_id: string | null; duration: number; insertAt: number; pos_x?: number; pos_y?: number; scale_x?: number; scale_y?: number; rotation?: number }
+  data: { id: string; asset_id: string | null; duration: number; insertAt: number; pos_x?: number; pos_y?: number; scale_x?: number; scale_y?: number; rotation?: number; text_gadget_config?: string | null; particles_gadget_config?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     ensureTimelineBlocksTransformColumns(projectDir);
@@ -943,22 +1103,60 @@ export function insertBlockAtMainTrack(
       }
 
       // 创建新块
-      db.prepare(
-        `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        data.id,
-        mainLayerId,
-        data.asset_id ?? null,
-        insertAt,
-        insertAt + duration,
-        data.pos_x ?? 0.5,
-        data.pos_y ?? 0.5,
-        data.scale_x ?? 0.25,
-        data.scale_y ?? 0.25,
-        data.rotation ?? 0,
-        now,
-        now
-      );
+      ensureTimelineBlocksTextGadgetConfigColumn(projectDir);
+      ensureTimelineBlocksParticlesGadgetConfigColumn(projectDir);
+      const cols = db.prepare('PRAGMA table_info(timeline_blocks)').all() as { name: string }[];
+      const hasTextGadgetConfig = cols.some((c) => c.name === 'text_gadget_config');
+      const hasParticlesGadgetConfig = cols.some((c) => c.name === 'particles_gadget_config');
+      const needConfig = (hasTextGadgetConfig && data.text_gadget_config !== undefined) || (hasParticlesGadgetConfig && data.particles_gadget_config !== undefined);
+      if (needConfig) {
+        const configCols: string[] = [];
+        const configVals: unknown[] = [];
+        if (hasTextGadgetConfig) {
+          configCols.push('text_gadget_config');
+          configVals.push(data.text_gadget_config ?? null);
+        }
+        if (hasParticlesGadgetConfig) {
+          configCols.push('particles_gadget_config');
+          configVals.push(data.particles_gadget_config ?? null);
+        }
+        const configColsStr = configCols.join(', ');
+        const configPlaceholders = configCols.map(() => '?').join(', ');
+        db.prepare(
+          `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, ${configColsStr}, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${configPlaceholders}, ?, ?)`
+        ).run(
+          data.id,
+          mainLayerId,
+          data.asset_id ?? null,
+          insertAt,
+          insertAt + duration,
+          data.pos_x ?? 0.5,
+          data.pos_y ?? 0.5,
+          data.scale_x ?? 0.25,
+          data.scale_y ?? 0.25,
+          data.rotation ?? 0,
+          ...configVals,
+          now,
+          now
+        );
+      } else {
+        db.prepare(
+          `INSERT INTO timeline_blocks (id, layer_id, asset_id, start_time, end_time, pos_x, pos_y, scale_x, scale_y, rotation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          data.id,
+          mainLayerId,
+          data.asset_id ?? null,
+          insertAt,
+          insertAt + duration,
+          data.pos_x ?? 0.5,
+          data.pos_y ?? 0.5,
+          data.scale_x ?? 0.25,
+          data.scale_y ?? 0.25,
+          data.rotation ?? 0,
+          now,
+          now
+        );
+      }
     })();
     compactMainTrack(projectDir, sceneId);
     return { ok: true };
@@ -1333,18 +1531,32 @@ function ensureCharactersComponentGroupsColumn(db: Database.Database): void {
     db.prepare('ALTER TABLE characters ADD COLUMN component_groups TEXT').run();
   }
 }
+function ensureCharactersImagesColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(characters)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'images')) {
+    db.prepare('ALTER TABLE characters ADD COLUMN images TEXT').run();
+  }
+}
+function ensureCharactersTransparentVideosColumn(db: Database.Database): void {
+  const info = db.prepare('PRAGMA table_info(characters)').all() as { name: string }[];
+  if (!info.some((c) => c.name === 'transparent_videos')) {
+    db.prepare('ALTER TABLE characters ADD COLUMN transparent_videos TEXT').run();
+  }
+}
 
 export function getCharacters(projectDir: string): CharacterRow[] {
   const db = getDb(projectDir);
   ensureCharactersAnglesColumn(db);
   ensureCharactersSpriteSheetsColumn(db);
   ensureCharactersComponentGroupsColumn(db);
+  ensureCharactersImagesColumn(db);
+  ensureCharactersTransparentVideosColumn(db);
   return db.prepare('SELECT * FROM characters ORDER BY created_at ASC').all() as CharacterRow[];
 }
 
 export function createCharacter(
   projectDir: string,
-  data: { id: string; name?: string; image_path?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null; sprite_sheets?: string | null; component_groups?: string | null }
+  data: { id: string; name?: string; image_path?: string | null; images?: string | null; note?: string | null; tts_voice?: string | null; tts_speed?: number | null; angles?: string | null; sprite_sheets?: string | null; component_groups?: string | null; transparent_videos?: string | null }
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
@@ -1352,19 +1564,23 @@ export function createCharacter(
     ensureCharactersAnglesColumn(db);
     ensureCharactersSpriteSheetsColumn(db);
     ensureCharactersComponentGroupsColumn(db);
+    ensureCharactersImagesColumn(db);
+    ensureCharactersTransparentVideosColumn(db);
     db.prepare(
-      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO characters (id, name, image_path, images, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, transparent_videos, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       data.id,
       data.name ?? '',
       data.image_path ?? null,
+      data.images ?? null,
       data.note ?? null,
       data.tts_voice ?? null,
       data.tts_speed ?? null,
       data.angles ?? null,
       data.sprite_sheets ?? null,
       data.component_groups ?? null,
+      data.transparent_videos ?? null,
       now,
       now
     );
@@ -1377,7 +1593,7 @@ export function createCharacter(
 export function updateCharacter(
   projectDir: string,
   id: string,
-  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'note' | 'tts_voice' | 'tts_speed' | 'angles' | 'sprite_sheets' | 'component_groups'>>
+  data: Partial<Pick<CharacterRow, 'name' | 'image_path' | 'images' | 'note' | 'tts_voice' | 'tts_speed' | 'angles' | 'sprite_sheets' | 'component_groups' | 'transparent_videos'>>
 ): { ok: boolean; error?: string } {
   try {
     const now = new Date().toISOString();
@@ -1385,19 +1601,26 @@ export function updateCharacter(
     ensureCharactersAnglesColumn(db);
     ensureCharactersSpriteSheetsColumn(db);
     ensureCharactersComponentGroupsColumn(db);
+    ensureCharactersImagesColumn(db);
+    ensureCharactersTransparentVideosColumn(db);
     const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as CharacterRow | undefined;
-    if (!row) return { ok: false, error: '人物不存在' };
+    if (!row) return { ok: false, error: '角色不存在' };
+    const imagesVal = data.images !== undefined ? data.images : row.images ?? null;
+    const imagePathVal = data.image_path !== undefined ? data.image_path : row.image_path;
+    const transparentVideosVal = data.transparent_videos !== undefined ? data.transparent_videos : row.transparent_videos ?? null;
     db.prepare(
-      `UPDATE characters SET name = ?, image_path = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, sprite_sheets = ?, component_groups = ?, updated_at = ? WHERE id = ?`
+      `UPDATE characters SET name = ?, image_path = ?, images = ?, note = ?, tts_voice = ?, tts_speed = ?, angles = ?, sprite_sheets = ?, component_groups = ?, transparent_videos = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.name ?? row.name,
-      data.image_path !== undefined ? data.image_path : row.image_path,
+      imagePathVal,
+      imagesVal,
       data.note !== undefined ? data.note : row.note,
       data.tts_voice !== undefined ? data.tts_voice : row.tts_voice,
       data.tts_speed !== undefined ? data.tts_speed : row.tts_speed,
       data.angles !== undefined ? data.angles : row.angles ?? null,
       data.sprite_sheets !== undefined ? data.sprite_sheets : row.sprite_sheets ?? null,
       data.component_groups !== undefined ? data.component_groups : row.component_groups ?? null,
+      transparentVideosVal,
       now,
       id
     );
@@ -1407,23 +1630,25 @@ export function updateCharacter(
   }
 }
 
-/** 项目级未绑定人物的精灵图存储：使用虚拟 character 的 sprite_sheets */
+/** 项目级未绑定角色的精灵图存储：使用虚拟 character 的 sprite_sheets */
 export const STANDALONE_SPRITES_CHARACTER_ID = '__standalone_sprites__';
 
-/** 项目级未绑定人物的元件存储：使用虚拟 character 的 component_groups */
+/** 项目级未绑定角色的元件存储：使用虚拟 character 的 component_groups */
 export const STANDALONE_COMPONENTS_CHARACTER_ID = '__standalone_components__';
 
 export function getOrCreateStandaloneSpritesCharacter(projectDir: string): CharacterRow {
   const db = getDb(projectDir);
   ensureCharactersSpriteSheetsColumn(db);
   ensureCharactersComponentGroupsColumn(db);
+  ensureCharactersImagesColumn(db);
+  ensureCharactersTransparentVideosColumn(db);
   let row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_SPRITES_CHARACTER_ID) as CharacterRow | undefined;
   if (!row) {
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(STANDALONE_SPRITES_CHARACTER_ID, '(项目精灵图)', null, null, null, null, null, '[]', null, now, now);
+      `INSERT INTO characters (id, name, image_path, images, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, transparent_videos, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(STANDALONE_SPRITES_CHARACTER_ID, '(项目精灵图)', null, null, null, null, null, null, '[]', null, null, now, now);
     row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_SPRITES_CHARACTER_ID) as CharacterRow;
   }
   return row;
@@ -1433,13 +1658,15 @@ export function getOrCreateStandaloneComponentsCharacter(projectDir: string): Ch
   const db = getDb(projectDir);
   ensureCharactersSpriteSheetsColumn(db);
   ensureCharactersComponentGroupsColumn(db);
+  ensureCharactersImagesColumn(db);
+  ensureCharactersTransparentVideosColumn(db);
   let row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_COMPONENTS_CHARACTER_ID) as CharacterRow | undefined;
   if (!row) {
     const now = new Date().toISOString();
     db.prepare(
-      `INSERT INTO characters (id, name, image_path, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(STANDALONE_COMPONENTS_CHARACTER_ID, '(项目元件)', null, null, null, null, null, null, '[]', now, now);
+      `INSERT INTO characters (id, name, image_path, images, note, tts_voice, tts_speed, angles, sprite_sheets, component_groups, transparent_videos, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(STANDALONE_COMPONENTS_CHARACTER_ID, '(项目元件)', null, null, null, null, null, null, null, '[]', null, now, now);
     row = db.prepare('SELECT * FROM characters WHERE id = ?').get(STANDALONE_COMPONENTS_CHARACTER_ID) as CharacterRow;
   }
   return row;
@@ -1546,6 +1773,44 @@ export function getAssets(projectDir: string, type?: string): AssetRow[] {
   return db.prepare('SELECT * FROM assets_index ORDER BY created_at DESC').all() as AssetRow[];
 }
 
+/** 按 UI 分类读取素材（布景/道具/特效/文字/声音），统一按 created_at DESC 排序（见文档 09-素材面板分类方案） */
+export type UiCategoryParam = 'scene' | 'prop' | 'effect' | 'text' | 'sound';
+
+export function getAssetsByUiCategory(projectDir: string, uiCategory: UiCategoryParam): AssetRow[] {
+  const db = getDb(projectDir);
+  ensureAssetsCoverPathColumn(db);
+  ensureAssetsTagsColumn(db);
+  ensureAssetsVideoMetadataColumns(db);
+  const orderBy = 'ORDER BY created_at DESC';
+  ensureAssetBundleTables(db);
+  const excludeBundled = 'AND id NOT IN (SELECT asset_id FROM asset_bundle_members)';
+  if (uiCategory === 'sound') {
+    return db
+      .prepare(`SELECT * FROM assets_index WHERE type IN ('sfx', 'music') ${excludeBundled} ${orderBy}`)
+      .all() as AssetRow[];
+  }
+  if (uiCategory === 'text') {
+    return db
+      .prepare(`SELECT * FROM assets_index WHERE type = 'text_gadget' ${excludeBundled} ${orderBy}`)
+      .all() as AssetRow[];
+  }
+  // scene / prop / effect：视觉素材（image, video, transparent_video），按 tags 中的 __cat: 筛选
+  const typeCond = "type IN ('image', 'video', 'transparent_video')";
+  let tagCond: string;
+  if (uiCategory === 'scene') {
+    tagCond = "INSTR(COALESCE(tags,''), '__cat:scene') > 0";
+  } else if (uiCategory === 'effect') {
+    tagCond = "INSTR(COALESCE(tags,''), '__cat:effect') > 0";
+  } else {
+    // prop：无标记或 __cat:prop 或 既非 scene 也非 effect
+    tagCond =
+      "(tags IS NULL OR tags = '') OR INSTR(COALESCE(tags,''), '__cat:prop') > 0 OR (INSTR(COALESCE(tags,''), '__cat:scene') = 0 AND INSTR(COALESCE(tags,''), '__cat:effect') = 0)";
+  }
+  return db
+    .prepare(`SELECT * FROM assets_index WHERE ${typeCond} AND (${tagCond}) ${excludeBundled} ${orderBy}`)
+    .all() as AssetRow[];
+}
+
 export function getAssetById(projectDir: string, id: string): AssetRow | null {
   const db = getDb(projectDir);
   ensureAssetsCoverPathColumn(db);
@@ -1626,7 +1891,7 @@ export function saveAssetFromFile(
   }
 }
 
-/** 更新素材索引（描述、常用标记、封面路径、标签、路径、视频尺寸与时长）（见开发计划 2.8） */
+/** 更新素材索引（描述、常用标记、封面路径、标签、路径、类型、视频尺寸与时长）（见开发计划 2.8） */
 export function updateAsset(
   projectDir: string,
   id: string,
@@ -1636,6 +1901,7 @@ export function updateAsset(
     cover_path?: string | null;
     tags?: string | null;
     path?: string | null;
+    type?: string;
     width?: number | null;
     height?: number | null;
     duration?: number | null;
@@ -1653,18 +1919,20 @@ export function updateAsset(
     const coverPath = data.cover_path !== undefined ? data.cover_path : (row as AssetRow).cover_path ?? null;
     const tags = data.tags !== undefined ? data.tags : (row as AssetRow).tags ?? null;
     const pathVal = data.path !== undefined ? data.path : (row as AssetRow).path;
+    const typeVal = data.type !== undefined ? data.type : (row as AssetRow).type;
     const widthVal = data.width !== undefined ? data.width : (row as AssetRow).width ?? null;
     const heightVal = data.height !== undefined ? data.height : (row as AssetRow).height ?? null;
     const durationVal = data.duration !== undefined ? data.duration : (row as AssetRow).duration ?? null;
     const originalPathVal = data.original_path !== undefined ? data.original_path : (row as AssetRow).original_path ?? null;
     db.prepare(
-      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, path = ?, width = ?, height = ?, duration = ?, original_path = ?, updated_at = ? WHERE id = ?`
+      `UPDATE assets_index SET description = ?, is_favorite = ?, cover_path = ?, tags = ?, path = ?, type = ?, width = ?, height = ?, duration = ?, original_path = ?, updated_at = ? WHERE id = ?`
     ).run(
       data.description !== undefined ? data.description : row.description,
       data.is_favorite !== undefined ? data.is_favorite : row.is_favorite,
       coverPath,
       tags,
       pathVal,
+      typeVal,
       widthVal,
       heightVal,
       durationVal,
@@ -1678,11 +1946,380 @@ export function updateAsset(
   }
 }
 
-/** 删除素材索引（不删物理文件，见开发计划 2.8） */
+/** 删除素材索引（不删物理文件，见开发计划 2.8）；同步移除同类素材组成员并清理空组（见 docs/11） */
 export function deleteAsset(projectDir: string, id: string): { ok: boolean; error?: string } {
   try {
-    getDb(projectDir).prepare('DELETE FROM assets_index WHERE id = ?').run(id);
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    db.prepare('DELETE FROM asset_bundle_members WHERE asset_id = ?').run(id);
+    db.prepare(
+      `DELETE FROM asset_bundles WHERE id NOT IN (SELECT DISTINCT bundle_id FROM asset_bundle_members)`
+    ).run();
+    db.prepare('DELETE FROM assets_index WHERE id = ?').run(id);
     return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ---------- asset_bundles 同类素材组（见 docs/11-同类素材组扩展方案.md，与功能文档 5.4 YAML Package 不同）----------
+
+export interface AssetBundleRow {
+  id: string;
+  title: string;
+  cover_path: string | null;
+  tags: string | null;
+  is_favorite: number;
+  created_at: string;
+  updated_at: string;
+}
+
+const BUNDLE_ALLOWED_TYPES = new Set(['image', 'video', 'transparent_video', 'sfx', 'music']);
+
+function ensureAssetBundleTables(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS asset_bundles (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      cover_path TEXT,
+      tags TEXT,
+      is_favorite INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS asset_bundle_members (
+      bundle_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (bundle_id, asset_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_bundle_members_asset ON asset_bundle_members(asset_id);
+  `);
+}
+
+function getFirstMemberAsset(db: Database.Database, bundleId: string): AssetRow | null {
+  const row = db
+    .prepare(
+      `SELECT a.* FROM assets_index a
+       INNER JOIN asset_bundle_members m ON m.asset_id = a.id
+       WHERE m.bundle_id = ?
+       ORDER BY m.sort_order ASC, m.asset_id ASC LIMIT 1`
+    )
+    .get(bundleId) as AssetRow | undefined;
+  return row ?? null;
+}
+
+/** 与 getAssetsByUiCategory 规则一致，用于首成员或 bundle 行判断 */
+export function assetRowMatchesUiCategory(asset: AssetRow, uiCategory: UiCategoryParam): boolean {
+  if (uiCategory === 'sound') {
+    return asset.type === 'sfx' || asset.type === 'music';
+  }
+  if (uiCategory === 'text') {
+    return asset.type === 'text_gadget';
+  }
+  if (!['image', 'video', 'transparent_video'].includes(asset.type)) return false;
+  const tags = asset.tags ?? '';
+  if (uiCategory === 'scene') {
+    return tags.includes('__cat:scene');
+  }
+  if (uiCategory === 'effect') {
+    return tags.includes('__cat:effect');
+  }
+  return (
+    tags === '' ||
+    tags.includes('__cat:prop') ||
+    (!tags.includes('__cat:scene') && !tags.includes('__cat:effect'))
+  );
+}
+
+/** 组内子素材类型须一致（见 assertAssetsHomogeneousTypes），故以首成员即可判断包所属 UI 分类 */
+export function bundleMatchesUiCategory(projectDir: string, bundle: AssetBundleRow, uiCategory: UiCategoryParam): boolean {
+  const db = getDb(projectDir);
+  ensureAssetBundleTables(db);
+  const first = getFirstMemberAsset(db, bundle.id);
+  if (!first) return false;
+  const tagsForMatch = bundle.tags?.trim() ? bundle.tags : first.tags;
+  const pseudo: AssetRow = { ...first, tags: tagsForMatch };
+  return assetRowMatchesUiCategory(pseudo, uiCategory);
+}
+
+export type AssetBundleListRow = AssetBundleRow & {
+  member_count: number;
+  first_member_fallback?: string | null;
+};
+
+export function getAssetBundlesByUiCategory(projectDir: string, uiCategory: UiCategoryParam): AssetBundleListRow[] {
+  const db = getDb(projectDir);
+  ensureAssetBundleTables(db);
+  const bundles = db
+    .prepare(
+      `SELECT b.*,
+        (SELECT COUNT(*) FROM asset_bundle_members m WHERE m.bundle_id = b.id) AS member_count,
+        (SELECT COALESCE(NULLIF(TRIM(a.description), ''), a.path)
+         FROM asset_bundle_members m2
+         INNER JOIN assets_index a ON a.id = m2.asset_id
+         WHERE m2.bundle_id = b.id
+         ORDER BY m2.sort_order ASC, m2.asset_id ASC
+         LIMIT 1) AS first_member_fallback
+       FROM asset_bundles b
+       ORDER BY b.updated_at DESC`
+    )
+    .all() as AssetBundleListRow[];
+  return bundles.filter((b) => bundleMatchesUiCategory(projectDir, b, uiCategory));
+}
+
+/** 已在任一同类组中的素材 id（用于素材面板去重展示） */
+export function getBundledAssetIds(projectDir: string): string[] {
+  const db = getDb(projectDir);
+  ensureAssetBundleTables(db);
+  return (db.prepare('SELECT asset_id FROM asset_bundle_members').all() as { asset_id: string }[]).map((r) => r.asset_id);
+}
+
+export function getAssetBundleMembersOrdered(projectDir: string, bundleId: string): AssetRow[] {
+  const db = getDb(projectDir);
+  ensureAssetBundleTables(db);
+  return db
+    .prepare(
+      `SELECT a.* FROM assets_index a
+       INNER JOIN asset_bundle_members m ON m.asset_id = a.id
+       WHERE m.bundle_id = ?
+       ORDER BY m.sort_order ASC, m.asset_id ASC`
+    )
+    .all(bundleId) as AssetRow[];
+}
+
+export function getAssetBundleById(projectDir: string, bundleId: string): AssetBundleRow | null {
+  const db = getDb(projectDir);
+  ensureAssetBundleTables(db);
+  return db.prepare('SELECT * FROM asset_bundles WHERE id = ?').get(bundleId) as AssetBundleRow | null;
+}
+
+/** 若 asset 属于某组，返回该组及有序成员 */
+export function getAssetBundleForAsset(projectDir: string, assetId: string): {
+  bundle: AssetBundleRow;
+  members: AssetRow[];
+} | null {
+  const db = getDb(projectDir);
+  ensureAssetBundleTables(db);
+  const row = db
+    .prepare('SELECT bundle_id FROM asset_bundle_members WHERE asset_id = ? LIMIT 1')
+    .get(assetId) as { bundle_id: string } | undefined;
+  if (!row) return null;
+  const bundle = getAssetBundleById(projectDir, row.bundle_id);
+  if (!bundle) return null;
+  const members = getAssetBundleMembersOrdered(projectDir, row.bundle_id);
+  return { bundle, members };
+}
+
+/** 同类组子素材须为同一 assets_index.type（如 video 与 transparent_video 不可混组） */
+function assertAssetsHomogeneousTypes(db: Database.Database, assetIds: string[]): { ok: true; type: string } | { ok: false; error: string } {
+  if (assetIds.length < 1) return { ok: false, error: '至少需要一个素材' };
+  const types = new Set<string>();
+  for (const aid of assetIds) {
+    const a = db.prepare('SELECT type FROM assets_index WHERE id = ?').get(aid) as { type: string } | undefined;
+    if (!a) return { ok: false, error: `素材不存在: ${aid}` };
+    if (!BUNDLE_ALLOWED_TYPES.has(a.type)) return { ok: false, error: `类型 ${a.type} 不支持归入同类组` };
+    types.add(a.type);
+  }
+  if (types.size !== 1) return { ok: false, error: '同类组内素材类型须一致' };
+  return { ok: true, type: [...types][0] };
+}
+
+function assertAssetNotInBundle(db: Database.Database, assetId: string): { ok: boolean; error?: string } {
+  const existing = db.prepare('SELECT bundle_id FROM asset_bundle_members WHERE asset_id = ?').get(assetId) as
+    | { bundle_id: string }
+    | undefined;
+  if (existing) return { ok: false, error: '该素材已在其他同类组中' };
+  return { ok: true };
+}
+
+function refreshBundleCoverFromFirstMember(db: Database.Database, bundleId: string): void {
+  const first = getFirstMemberAsset(db, bundleId);
+  if (!first?.path) return;
+  const cover = first.cover_path ?? (first.type === 'image' ? first.path : first.cover_path);
+  const now = new Date().toISOString();
+  db.prepare('UPDATE asset_bundles SET cover_path = ?, updated_at = ? WHERE id = ?').run(cover ?? null, now, bundleId);
+}
+
+export function createAssetBundle(
+  projectDir: string,
+  data: {
+    title?: string;
+    tags?: string | null;
+    is_favorite?: number;
+    memberAssetIds: string[];
+    cover_path?: string | null;
+  }
+): { ok: boolean; bundleId?: string; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetsCoverPathColumn(db);
+    ensureAssetsTagsColumn(db);
+    ensureAssetsVideoMetadataColumns(db);
+    ensureAssetBundleTables(db);
+    const ids = [...new Set(data.memberAssetIds)];
+    if (ids.length < 2) return { ok: false, error: '同类组至少需要 2 个素材' };
+    const homo = assertAssetsHomogeneousTypes(db, ids);
+    if (!homo.ok) return { ok: false, error: homo.error };
+    for (const aid of ids) {
+      const chk = assertAssetNotInBundle(db, aid);
+      if (!chk.ok) return { ok: false, error: chk.error };
+    }
+    const now = new Date().toISOString();
+    const bundleId = crypto.randomUUID();
+    const first = db.prepare('SELECT * FROM assets_index WHERE id = ?').get(ids[0]) as AssetRow;
+    const title = (data.title?.trim() || first?.description || path.basename(first?.path || '未命名')) as string;
+    const tags = data.tags !== undefined ? data.tags : first?.tags ?? null;
+    const fav = data.is_favorite ?? 0;
+    const cover = data.cover_path !== undefined ? data.cover_path : (first?.cover_path ?? (first?.type === 'image' ? first?.path : first?.cover_path)) ?? null;
+    db.prepare(
+      `INSERT INTO asset_bundles (id, title, cover_path, tags, is_favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(bundleId, title, cover, tags, fav, now, now);
+    const ins = db.prepare(
+      'INSERT INTO asset_bundle_members (bundle_id, asset_id, sort_order) VALUES (?, ?, ?)'
+    );
+    ids.forEach((aid, i) => ins.run(bundleId, aid, i));
+    refreshBundleCoverFromFirstMember(db, bundleId);
+    return { ok: true, bundleId };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 仅更新 asset_bundles 行，不会修改组内各素材的 description/tags（包名与子素材名称独立） */
+export function updateAssetBundle(
+  projectDir: string,
+  bundleId: string,
+  data: { title?: string; tags?: string | null; is_favorite?: number; cover_path?: string | null }
+): { ok: boolean; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    const row = db.prepare('SELECT * FROM asset_bundles WHERE id = ?').get(bundleId) as AssetBundleRow | undefined;
+    if (!row) return { ok: false, error: '同类组不存在' };
+    const now = new Date().toISOString();
+    db.prepare(
+      `UPDATE asset_bundles SET title = ?, cover_path = ?, tags = ?, is_favorite = ?, updated_at = ? WHERE id = ?`
+    ).run(
+      data.title !== undefined ? data.title : row.title,
+      data.cover_path !== undefined ? data.cover_path : row.cover_path,
+      data.tags !== undefined ? data.tags : row.tags,
+      data.is_favorite !== undefined ? data.is_favorite : row.is_favorite,
+      now,
+      bundleId
+    );
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 仅删除组与关联，不删素材文件与 assets_index */
+export function deleteAssetBundle(projectDir: string, bundleId: string): { ok: boolean; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    db.prepare('DELETE FROM asset_bundle_members WHERE bundle_id = ?').run(bundleId);
+    db.prepare('DELETE FROM asset_bundles WHERE id = ?').run(bundleId);
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export function addAssetBundleMember(projectDir: string, bundleId: string, assetId: string): { ok: boolean; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    const bundle = getAssetBundleById(projectDir, bundleId);
+    if (!bundle) return { ok: false, error: '同类组不存在' };
+    const existingMembers = db
+      .prepare('SELECT asset_id FROM asset_bundle_members WHERE bundle_id = ? ORDER BY sort_order ASC')
+      .all(bundleId) as { asset_id: string }[];
+    const existedIds = existingMembers.map((m) => m.asset_id);
+    const homo = assertAssetsHomogeneousTypes(db, [...existedIds, assetId]);
+    if (!homo.ok) return { ok: false, error: homo.error };
+    const chk = assertAssetNotInBundle(db, assetId);
+    if (!chk.ok) return { ok: false, error: chk.error };
+    const sortOrder = existingMembers.length;
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO asset_bundle_members (bundle_id, asset_id, sort_order) VALUES (?, ?, ?)').run(
+      bundleId,
+      assetId,
+      sortOrder
+    );
+    db.prepare('UPDATE asset_bundles SET updated_at = ? WHERE id = ?').run(now, bundleId);
+    refreshBundleCoverFromFirstMember(db, bundleId);
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export function removeAssetBundleMember(projectDir: string, bundleId: string, assetId: string): { ok: boolean; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    db.prepare('DELETE FROM asset_bundle_members WHERE bundle_id = ? AND asset_id = ?').run(bundleId, assetId);
+    const cnt = db.prepare('SELECT COUNT(*) as c FROM asset_bundle_members WHERE bundle_id = ?').get(bundleId) as { c: number };
+    if (cnt.c < 2) {
+      db.prepare('DELETE FROM asset_bundle_members WHERE bundle_id = ?').run(bundleId);
+      db.prepare('DELETE FROM asset_bundles WHERE id = ?').run(bundleId);
+    } else {
+      const rows = db
+        .prepare('SELECT asset_id FROM asset_bundle_members WHERE bundle_id = ? ORDER BY sort_order ASC, asset_id ASC')
+        .all(bundleId) as { asset_id: string }[];
+      db.prepare('DELETE FROM asset_bundle_members WHERE bundle_id = ?').run(bundleId);
+      const ins = db.prepare('INSERT INTO asset_bundle_members (bundle_id, asset_id, sort_order) VALUES (?, ?, ?)');
+      rows.forEach((r, i) => ins.run(bundleId, r.asset_id, i));
+      db.prepare('UPDATE asset_bundles SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), bundleId);
+      refreshBundleCoverFromFirstMember(db, bundleId);
+    }
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export function reorderAssetBundleMembers(projectDir: string, bundleId: string, orderedAssetIds: string[]): { ok: boolean; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    const cur = db
+      .prepare('SELECT asset_id FROM asset_bundle_members WHERE bundle_id = ? ORDER BY sort_order ASC')
+      .all(bundleId) as { asset_id: string }[];
+    const curSet = new Set(cur.map((c) => c.asset_id));
+    if (orderedAssetIds.length !== curSet.size || orderedAssetIds.some((id) => !curSet.has(id))) {
+      return { ok: false, error: '成员列表与组内不一致' };
+    }
+    db.prepare('DELETE FROM asset_bundle_members WHERE bundle_id = ?').run(bundleId);
+    const ins = db.prepare('INSERT INTO asset_bundle_members (bundle_id, asset_id, sort_order) VALUES (?, ?, ?)');
+    orderedAssetIds.forEach((aid, i) => ins.run(bundleId, aid, i));
+    db.prepare('UPDATE asset_bundles SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), bundleId);
+    refreshBundleCoverFromFirstMember(db, bundleId);
+    return { ok: true };
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** 从单机素材创建双素材组，或向已有组追加（用于「添加同类素材」） */
+export function addSimilarAssetToBundle(
+  projectDir: string,
+  existingAssetId: string,
+  newAssetId: string
+): { ok: boolean; bundleId?: string; error?: string } {
+  try {
+    const db = getDb(projectDir);
+    ensureAssetBundleTables(db);
+    const current = db.prepare('SELECT bundle_id FROM asset_bundle_members WHERE asset_id = ?').get(existingAssetId) as
+      | { bundle_id: string }
+      | undefined;
+    if (current) {
+      const addRes = addAssetBundleMember(projectDir, current.bundle_id, newAssetId);
+      return addRes.ok ? { ok: true, bundleId: current.bundle_id } : addRes;
+    }
+    return createAssetBundle(projectDir, { memberAssetIds: [existingAssetId, newAssetId] });
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

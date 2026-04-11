@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { SettingOutlined, VideoCameraOutlined, CommentOutlined } from '@ant-design/icons';
+import { SettingOutlined, VideoCameraOutlined, CommentOutlined, EditOutlined } from '@ant-design/icons';
 import { useConfigModal } from '@/contexts/ConfigContext';
 import './AppHeader.css';
 
@@ -16,7 +16,8 @@ const AppHeader: React.FC = () => {
   const location = useLocation();
   const { openConfigModal } = useConfigModal();
   const isProjectEditor = location.pathname.startsWith('/project/');
-  if (isProjectEditor) return null;
+  const isImageEditor = location.pathname === '/image-editor';
+  if (isProjectEditor || isImageEditor) return null;
 
   return (
     <div className="yiman-header">
@@ -44,6 +45,19 @@ const AppHeader: React.FC = () => {
               <VideoCameraOutlined />
             </span>
             <span className="yiman-header-label">漫剧项目</span>
+          </a>
+          <a
+            className={`yiman-header-link ${location.pathname === '/image-editor' ? 'active' : ''}`}
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate('/image-editor');
+            }}
+          >
+            <span className="yiman-header-icon">
+              <EditOutlined />
+            </span>
+            <span className="yiman-header-label">图片编辑</span>
           </a>
           <a
             className={`yiman-header-link ${location.pathname === '/settings' ? 'active' : ''}`}
