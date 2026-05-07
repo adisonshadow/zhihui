@@ -1,0 +1,143 @@
+/* 小说编写工作台（暗色，与编剧抽卡区协调） */
+
+.screenwriter-novel-workbench {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 2px);
+  background: #141414;
+  color: rgba(255, 255, 255, 0.88);
+  overflow: hidden;
+}
+
+.milkdown .ProseMirror::selection {
+  background-color: #ff6600; /* 选中背景色（你想要的颜色） */
+}
+
+.screenwriter-novel-topbar {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(28, 28, 28, 0.95);
+}
+
+.screenwriter-novel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.novel-episode-pane {
+  background: rgba(24, 24, 24, 0.88);
+}
+
+.novel-episode-scroll {
+  flex: 1;
+  overflow: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.novel-episode-item {
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  padding: 10px 12px;
+  width: 100%;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.novel-episode-item:hover {
+  border-color: rgba(120, 180, 255, 0.35);
+}
+
+.novel-episode-item-active {
+  border-color: rgba(76, 140, 255, 0.55);
+  background: rgba(76, 140, 255, 0.12);
+}
+
+.novel-episode-item-title {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.novel-episode-item-sub {
+  display: block;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.novel-ai-pane {
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.novel-crepe-editor-root {
+  flex: 1;
+  padding: 8px 12px;
+}
+
+.novel-crepe-editor-root .milkdown .ProseMirror {
+  padding: 30px 90px;
+}
+
+.novel-crepe-editor-root .milkdown .ProseMirror h1 {
+  font-size: 32px;
+}
+
+.novel-crepe-editor-root .milkdown .ProseMirror h2 {
+  font-size: 26px;
+}
+
+.novel-crepe-editor-root .milkdown .ProseMirror h3 {
+  font-size: 20px;
+}
+
+.novel-editor-stream-mask {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 16px 20px;
+  overflow: auto;
+}
+
+.novel-editor-writing-pill {
+  flex-shrink: 0;
+  margin-bottom: 16px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.novel-editor-stream-body {
+  width: min(760px, 100%);
+}
+
+.novel-editor-full {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  height: 100%;
+}
+
+/* Sender 收窄：与工作台 flex 共处 */
+.screenwriter-novel-workbench .yiman-ai-chat-side-panel {
+  min-width: 0;
+}
+
+.screenwriter-novel-workbench .ant-sender {
+  width: 100%;
+  min-width: 1px;
+  max-width: 100%;
+}

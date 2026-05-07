@@ -29,6 +29,7 @@ import { getItemDescription } from '@/types/scriptChat';
 import { SceneEditor } from '@/components/script/SceneEditor';
 import { ScriptExpertChat } from '@/components/script/ScriptExpertChat';
 import { useConfigSubscribe, useConfigContext } from '@/contexts/ConfigContext';
+import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
 
 const { TextArea } = Input;
@@ -56,6 +57,8 @@ interface OutlineTabProps {
 interface CharacterOption {
   id: string;
   name: string;
+  tts_voice?: string | null;
+  tts_speed?: number | null;
 }
 
 interface EpisodeStructuredData {
@@ -80,7 +83,7 @@ function createEmptyScene(epIdx: number, sceneIdx: number): ScriptScene {
   return {
     id,
     path,
-    title: `场景 ${sceneIdx + 1}`,
+    title: `分镜 ${sceneIdx + 1}`,
     items: [],
     dramaTags: [],
   };
@@ -187,11 +190,16 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
     if (!window.yiman?.project?.getCharacters) return;
     window.yiman.project
       .getCharacters(projectDir)
-      .then((list: { id: string; name: string }[]) => {
+      .then((list: { id: string; name: string; tts_voice?: string | null; tts_speed?: number | null }[]) => {
         setCharacters(
           list
             .filter((c) => c.id !== '__standalone_sprites__')
-            .map((c) => ({ id: c.id, name: c.name }))
+            .map((c) => ({
+              id: c.id,
+              name: c.name,
+              tts_voice: c.tts_voice,
+              tts_speed: c.tts_speed,
+            }))
         );
       })
       .catch(() => setCharacters([]));
@@ -233,7 +241,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
         ...missingFromScript.map((s: DbScene, i: number) => ({
           id: s.id,
           path: `episode.${epIdx + 1}.scene.${i + 1}`,
-          title: s.name || `场景 ${s.sort_order + 1}`,
+          title: s.name || `分镜 ${s.sort_order + 1}`,
           items: [],
           dramaTags: [],
         })),
@@ -314,7 +322,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
         const dbIds = new Set(dbScenes.map((s: DbScene) => s.id));
         for (let i = 0; i < scenesToSave.length; i++) {
           const s = scenesToSave[i];
-          const name = s.title || `场景 ${i + 1}`;
+          const name = s.title || `分镜 ${i + 1}`;
           if (dbIds.has(s.id)) {
             await api?.updateScene?.(projectDir, s.id, { name, sort_order: i });
           } else {
@@ -486,7 +494,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                     />
                   </Form.Item>
 
-                  <Divider>场景</Divider>
+                  <Divider>分镜</Divider>
                   <div style={{ marginBottom: 16 }}>
                     <Space wrap size={[8, 8]} style={{ marginBottom: 12 }}>
                       {(structuredData?.scenes ?? []).map((scene, si) => (
@@ -496,11 +504,11 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                           onClick={() => setSelectedSceneIndex(si)}
                           enabledStyle={{ background: 'rgba(23,119,255,0.25)' }}
                         >
-                          {scene.title || `场景 ${si + 1}`}
+                          {scene.title || `分镜 ${si + 1}`}
                         </IconButton>
                       ))}
                       <Button type="dashed" size="small" icon={<PlusOutlined />} onClick={handleAddScene}>
-                        添加场景
+                        添加分镜
                       </Button>
                     </Space>
 
@@ -513,21 +521,49 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                       return (
                         <div style={{ padding: '8px 0' }}>
                           <Space orientation="vertical" style={{ width: '100%' }} size="small">
-                            <Input
-                              placeholder="场景标题"
-                              value={scene.title}
-                              onChange={(e) => handleUpdateScene(si, { title: e.target.value })}
-                              addonBefore="标题"
-                            />
-                            <Input
-                              placeholder="地点"
-                              value={scene.location ?? ''}
-                              onChange={(e) => handleUpdateScene(si, { location: e.target.value || undefined })}
-                              addonBefore="地点"
-                            />
+                            <Space.Compact style={{ width: '100%' }}>
+                              <Input
+                                readOnly
+                                tabIndex={-1}
+                                value="标题"
+                                style={{
+                                  width: 56,
+                                  textAlign: 'center',
+                                  cursor: 'default',
+                                  color: 'var(--ant-color-text-secondary)',
+                                  background: 'var(--ant-color-fill-tertiary)',
+                                }}
+                              />
+                              <Input
+                                style={{ width: 'calc(100% - 56px)' }}
+                                placeholder="分镜标题"
+                                value={scene.title}
+                                onChange={(e) => handleUpdateScene(si, { title: e.target.value })}
+                              />
+                            </Space.Compact>
+                            <Space.Compact style={{ width: '100%' }}>
+                              <Input
+                                readOnly
+                                tabIndex={-1}
+                                value="地点"
+                                style={{
+                                  width: 56,
+                                  textAlign: 'center',
+                                  cursor: 'default',
+                                  color: 'var(--ant-color-text-secondary)',
+                                  background: 'var(--ant-color-fill-tertiary)',
+                                }}
+                              />
+                              <Input
+                                style={{ width: 'calc(100% - 56px)' }}
+                                placeholder="地点"
+                                value={scene.location ?? ''}
+                                onChange={(e) => handleUpdateScene(si, { location: e.target.value || undefined })}
+                              />
+                            </Space.Compact>
                             <TextArea
                               rows={sceneSummaryFocused ? 5 : 1}
-                              placeholder="场景概要"
+                              placeholder="分镜概要"
                               value={scene.summary ?? ''}
                               onChange={(e) => handleUpdateScene(si, { summary: e.target.value || undefined })}
                               onFocus={() => setSceneSummaryFocused(true)}
@@ -535,7 +571,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                             />
                             <Select<DramaTag[]>
                               mode="multiple"
-                              placeholder="场景戏剧标签"
+                              placeholder="分镜戏剧标签"
                               allowClear
                               value={scene.dramaTags}
                               onChange={(tags) => handleUpdateScene(si, { dramaTags: tags })}
@@ -550,7 +586,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                                 addScriptContext({
                                   id: `scene_${scene.id}`,
                                   type: 'scene',
-                                  description: scene.title || `场景 ${si + 1}`,
+                                  description: scene.title || `分镜 ${si + 1}`,
                                   scene: {
                                     title: scene.title,
                                     summary: scene.summary,
@@ -573,6 +609,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                             sceneIndex={si}
                             epIndex={epIndex}
                             characters={characters}
+                            projectDir={projectDir}
                             onUpdate={(patch) => handleUpdateScene(si, patch)}
                             onAddItemToContext={(item) => {
                               addScriptContext({
@@ -595,7 +632,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                             onClick={() => handleRemoveScene(si)}
                             style={{ marginTop: 12 }}
                           >
-                            删除场景
+                            删除分镜
                           </Button>
                         </div>
                       );
@@ -603,7 +640,7 @@ export default function OutlineTab({ project, onEpisodesChange }: OutlineTabProp
                   </div>
 
                   <Form.Item name="script_text" label="剧本文本（纯文本，供 AI 参考）" style={{ display: 'none' }}>
-                    <TextArea rows={6} placeholder="详细剧本文本或从结构化场景导出" />
+                    <TextArea rows={6} placeholder="详细剧本文本或从结构化分镜导出" />
                   </Form.Item>
                   <Form.Item name="character_refs" label="绑定角色" style={{ display: 'none' }}>
                     <Select

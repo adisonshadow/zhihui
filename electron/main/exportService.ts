@@ -1,5 +1,5 @@
 /**
- * 视频导出流水线：按场景时间轴与分层生成帧序列，ffmpeg 合成 MP4（见功能文档 6、技术文档 5、开发计划 2.13）
+ * 视频导出流水线：按分镜时间轴与分层生成帧序列，ffmpeg 合成 MP4（见功能文档 6、技术文档 5、开发计划 2.13）
  */
 import path from 'node:path';
 import fs from 'node:fs';
@@ -53,7 +53,7 @@ export interface ExportResult {
   error?: string;
 }
 
-/** 获取场景时长（秒） */
+/** 获取分镜时长（秒） */
 function getSceneDuration(projectDir: string, sceneId: string): number {
   const layers = getLayers(projectDir, sceneId);
   let maxEnd = 0;
@@ -210,7 +210,7 @@ async function renderFrame(
   return base.composite(inputs).png().toBuffer();
 }
 
-/** 导出场景视频 */
+/** 导出分镜视频 */
 export async function exportSceneVideo(
   projectDir: string,
   sceneId: string,
@@ -225,7 +225,7 @@ export async function exportSceneVideo(
 
     const duration = getSceneDuration(projectDir, sceneId);
     if (duration <= 0) {
-      return { ok: false, error: '场景无有效时间轴内容' };
+      return { ok: false, error: '分镜无有效时间轴内容' };
     }
 
     const totalFrames = Math.ceil(duration * options.fps);
@@ -279,7 +279,7 @@ export async function exportSceneVideo(
       const framePattern = path.join(frameDir, 'frame_%05d.png');
       const frameCount = fs.readdirSync(frameDir).filter((f) => /^frame_\d{5}\.png$/.test(f)).length;
       if (frameCount === 0) {
-        throw new Error('未生成任何帧，请检查场景是否有有效素材');
+        throw new Error('未生成任何帧，请检查分镜是否有有效素材');
       }
 
       await new Promise<void>((resolve, reject) => {

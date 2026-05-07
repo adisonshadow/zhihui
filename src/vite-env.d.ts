@@ -1,11 +1,24 @@
 /// <reference types="vite/client" />
 
 declare global {
+  interface ProjectAiConfig {
+    script_expert_prompt: string | null;
+    painting_prompt: string | null;
+    updated_at: string;
+  }
+
   interface Window {
     yiman?: {
       projects: {
         list: () => Promise<Array<{ id: string; name: string; landscape: number; project_dir: string; cover_path: string | null; created_at: string; updated_at: string }>>;
-        create: (p: { id: string; name: string; landscape: number; project_dir: string; cover_path?: string | null }) => Promise<{ ok: boolean; error?: string }>;
+        create: (p: {
+          id: string;
+          name: string;
+          landscape: number;
+          project_dir: string;
+          cover_path?: string | null;
+          registerInAppList?: boolean;
+        }) => Promise<{ ok: boolean; error?: string }>;
         delete: (id: string, deleteOnDisk: boolean) => Promise<{ ok: boolean; error?: string }>;
         import: (projectDir: string) => Promise<{ ok: boolean; id?: string; error?: string }>;
       };
@@ -17,6 +30,7 @@ declare global {
       shell: {
         showItemInFolder: (fullPath: string) => Promise<string>;
         openPath: (path: string) => Promise<string>;
+        openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
       };
       net: {
         fetchVolcTosImageAsDataUrl: (
@@ -25,10 +39,22 @@ declare global {
       };
       fs: {
         pathExists: (p: string) => Promise<boolean>;
+        pathDirname: (p: string) => Promise<string>;
+        pathJoin: (...parts: string[]) => Promise<string>;
+        /** 在目录 `dir` 内为文件名生成第一个不存在的完整路径（供保存对话框 defaultPath） */
+        getUnusedSaveDefaultPath: (dir: string, fileName: string) => Promise<string | null>;
         /** 若路径已存在则返回 `base (1).ext` 形式的不冲突完整路径 */
         getSafeFilePath: (fullCandidatePath: string) => Promise<string>;
         writeBase64File: (fullPath: string, base64: string) => Promise<{ ok: boolean; error?: string }>;
         readFileAsDataUrl: (fullPath: string) => Promise<string | null>;
+        readImageFileForEditor: (
+          fullPath: string
+        ) => Promise<
+          | { ok: true; kind: 'raster'; dataUrl: string }
+          | { ok: true; kind: 'svg'; svgText: string }
+          | { ok: false; error: string }
+        >;
+        getPathForFile: (file: File) => string;
       };
       settings: {
         get: () => Promise<import('@/types/settings').AISettings>;
@@ -198,8 +224,11 @@ declare global {
           options?: { description?: string | null; is_favorite?: number; tags?: string | null; tolerance?: number; contiguous?: boolean }
         ) => Promise<{ ok: boolean; id?: string; path?: string; error?: string }>;
         saveAssetFromBase64: (projectDir: string, base64Data: string, ext?: string, type?: string, options?: { replaceAssetId?: string }) => Promise<{ ok: boolean; path?: string; id?: string; error?: string }>;
-        getAiConfig: (projectDir: string) => Promise<unknown>;
-        saveAiConfig: (projectDir: string, data: unknown) => Promise<{ ok: boolean; error?: string }>;
+        getAiConfig: (projectDir: string) => Promise<ProjectAiConfig | null>;
+        saveAiConfig: (
+          projectDir: string,
+          data: { script_expert_prompt?: string | null; painting_prompt?: string | null }
+        ) => Promise<{ ok: boolean; error?: string }>;
       };
     };
   }

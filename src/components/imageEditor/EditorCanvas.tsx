@@ -30,6 +30,7 @@ import { createKonvaCheckerboardTile } from '@/utils/konvaCheckerboardPattern';
 import { EDITOR_SNAP_SCREEN_PX, snapDragRect } from './editorSnap';
 import { applyZoomAroundCenter, getFullImageDisplayFrameInDoc, type CropDocRect } from './imageCropHelpers';
 import { objectRotatedBounds } from './editorContentBounds';
+import { serializeSubpathToD, tryParsePathData } from '@/utils/svgPathEditModel';
 import { composeBackdropFrostedTexture } from '@/utils/frostedGlassCanvas';
 import {
   centeredGradientLine,
@@ -39,6 +40,11 @@ import {
   rectLocalRadialGradient,
   resolveShapeGradientAngleDeg,
 } from './shapeGradientEndpoints';
+import {
+  PathVectorEditOverlay,
+  type PathVectorEditUiState,
+  type PathVectorSimplifyPreview,
+} from './PathVectorEditOverlay';
 
 /** 多选：整组替换 / 单 id 开关 / 追加框选结果 */
 export type EditorSelectAction =
@@ -118,11 +124,37 @@ export interface EditorCanvasProps {
   fontFaces?: EditorFontFaceInfo[];
   /** 将本地/拖入的图片按文档坐标落点插入（与工具栏插入规则一致，仅位置不同） */
   onDropImageFiles?: (files: File[], docPoint: { x: number; y: number }) => void;
+  /** 简化路径预览时压低该 path 图层本体不透明度，便于看清叠在上面的预览 */
+  pathSimplifyDimPathId?: string | null;
+  /** 矢量路径锚点编辑（仅 path 图层） */
+  pathVectorEdit?: {
+    objectId: string;
+    ui: PathVectorEditUiState;
+    onUiChange: (patch: Partial<PathVectorEditUiState>) => void;
+    onCommitPathData: (pathData: string) => void;
+    onGestureStart: () => void;
+    /** 文档坐标系框选子路径；shift 为 true 时与当前 activeSubpaths 并集 */
+    onMarqueeSelectSubpaths?: (
+      docRect: { minX: number; minY: number; maxX: number; maxY: number },
+      shiftKey: boolean
+    ) => void;
+    simplifyPreview?: PathVectorSimplifyPreview | null;
+    suspendVectorInteraction?: boolean;
+  } | null;
 }
+
+export type ExportDocRasterOptions = {
+  pixelRatio?: number;
+  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp';
+  /** JPEG/WebP 质量 0…1 */
+  quality?: number;
+};
 
 export interface EditorCanvasHandle {
   /** 导出文档区域 PNG data URL */
   exportDocPngDataUrl: (pixelRatio?: number) => string | null;
+  /** 导出文档区域栅格（PNG/JPEG/WebP） */
+  exportDocRasterDataUrl: (options?: ExportDocRasterOptions) => string | null;
 }
 
 function useHtmlImage(src: string | undefined): HTMLImageElement | undefined {
@@ -862,6 +894,8 @@ function PathObjectNode({
   registerNode,
   dragSnap,
   layerLocked,
+  vectorEditLock = false,
+  simplifyPreviewDim = false,
 }: {
   obj: EditorPathObject;
   pickObject: (id: string, shiftKey: boolean) => void;
@@ -869,9 +903,12 @@ function PathObjectNode({
   registerNode: (id: string, n: Konva.Node | null) => void;
   dragSnap: EditorDragSnapHandlers;
   layerLocked: boolean;
+  /** 矢量锚点编辑中时禁止拖移整层 */
+  vectorEditLock?: boolean;
+  /** 简化路径调整：压低图层可见度，预览叠在上面 */
+  simplifyPreviewDim?: boolean;
 }) {
   const grpRef = useRef<Konva.Group>(null);
-  const pathRef = useRef<Konva.Path>(null);
   const [patternImage, setPatternImage] = useState<HTMLImageElement | null>(null);
   const [patternLoadFailed, setPatternLoadFailed] = useState(false);
 
@@ -913,20 +950,31 @@ function PathObjectNode({
   const usePatternFill =
     obj.fillKind === 'pattern' && !!obj.patternSrc?.trim() && patternImage && !patternLoadFailed;
 
+  const parsedModel = useMemo(() => tryParsePathData(obj.pathData), [obj.pathData]);
+  const nSub = parsedModel?.subpaths.length ?? 0;
+  const useSplitPathRender =
+    !!parsedModel &&
+    !!obj.pathSubpathStyles &&
+    obj.pathSubpathStyles.length === nSub &&
+    nSub > 0;
+
+  const pathsContentRef = useRef<Konva.Group>(null);
+
   useEffect(() => {
-    const p = pathRef.current;
-    if (!p) return;
-    p.clearCache();
+    const g = pathsContentRef.current;
+    if (!g) return;
+    g.clearCache();
     if (obj.blurRadius > 0) {
-      p.filters([Konva.Filters.Blur]);
-      p.blurRadius(obj.blurRadius);
-      cacheAfterFilters(p, obj.blurRadius);
+      g.filters([Konva.Filters.Blur]);
+      g.blurRadius(obj.blurRadius);
+      cacheAfterFilters(g, obj.blurRadius);
     } else {
-      p.filters([]);
+      g.filters([]);
     }
   }, [
     obj.blurRadius,
     obj.pathData,
+    obj.pathSubpathStyles,
     obj.fill,
     obj.fillKind,
     obj.patternSrc,
@@ -935,14 +983,29 @@ function PathObjectNode({
     obj.stroke,
     obj.strokeWidth,
     obj.opacity,
+    simplifyPreviewDim,
     obj.width,
     obj.height,
     obj.naturalW,
     obj.naturalH,
+    useSplitPathRender,
   ]);
 
   const sx = obj.naturalW > 0 ? obj.width / obj.naturalW : 1;
   const sy = obj.naturalH > 0 ? obj.height / obj.naturalH : 1;
+  const pathBodyOpacity = simplifyPreviewDim ? Math.min(1, obj.opacity * 0.14) : obj.opacity;
+
+  const patternCommon = usePatternFill
+    ? {
+        fillPriority: 'pattern' as const,
+        fillPatternImage: patternImage!,
+        fillPatternRepeat: 'no-repeat' as const,
+        fillPatternX: 0,
+        fillPatternY: 0,
+        fillPatternScaleX: obj.naturalW / Math.max(1, patternImage!.naturalWidth || obj.naturalW),
+        fillPatternScaleY: obj.naturalH / Math.max(1, patternImage!.naturalHeight || obj.naturalH),
+      }
+    : { fillPriority: 'color' as const };
 
   return (
     <Group
@@ -953,7 +1016,7 @@ function PathObjectNode({
       width={obj.width}
       height={obj.height}
       rotation={obj.rotation}
-      draggable={!layerLocked}
+      draggable={!layerLocked && !vectorEditLock}
       onMouseDown={(e) => {
         e.cancelBubble = true;
         pickObject(obj.id, e.evt.shiftKey);
@@ -974,38 +1037,49 @@ function PathObjectNode({
         width={obj.width}
         height={obj.height}
         fill="rgba(0,0,0,0.02)"
-        listening
+        listening={!vectorEditLock}
       />
-      <Path
-        ref={pathRef}
-        data={obj.pathData}
-        fillRule="evenodd"
-        scaleX={sx}
-        scaleY={sy}
-        fill={obj.fill}
-        fillPriority={usePatternFill ? 'pattern' : 'color'}
-        fillPatternImage={usePatternFill ? patternImage! : undefined}
-        fillPatternRepeat={usePatternFill ? 'no-repeat' : undefined}
-        fillPatternX={usePatternFill ? 0 : undefined}
-        fillPatternY={usePatternFill ? 0 : undefined}
-        fillPatternScaleX={
-          usePatternFill
-            ? obj.naturalW / Math.max(1, patternImage!.naturalWidth || obj.naturalW)
-            : undefined
-        }
-        fillPatternScaleY={
-          usePatternFill
-            ? obj.naturalH / Math.max(1, patternImage!.naturalHeight || obj.naturalH)
-            : undefined
-        }
-        stroke={obj.strokeWidth > 0 && obj.stroke !== 'transparent' ? obj.stroke : undefined}
-        strokeWidth={obj.strokeWidth}
-        strokeScaleEnabled={false}
-        opacity={obj.opacity}
-        listening={false}
-        perfectDrawEnabled={false}
-        shadowForStrokeEnabled={false}
-      />
+      <Group ref={pathsContentRef} scaleX={sx} scaleY={sy}>
+        {useSplitPathRender && parsedModel ? (
+          parsedModel.subpaths.map((sp, i) => {
+            const d = serializeSubpathToD(sp);
+            const ovr = obj.pathSubpathStyles![i]!;
+            const fill = ovr.fill ?? obj.fill;
+            const stroke = ovr.stroke ?? obj.stroke;
+            const sw = ovr.strokeWidth ?? obj.strokeWidth;
+            return (
+              <Path
+                key={i}
+                data={d}
+                fillRule="evenodd"
+                fill={fill}
+                {...patternCommon}
+                stroke={sw > 0 && stroke !== 'transparent' ? stroke : undefined}
+                strokeWidth={sw}
+                strokeScaleEnabled={false}
+                opacity={pathBodyOpacity}
+                listening={false}
+                perfectDrawEnabled={false}
+                shadowForStrokeEnabled={false}
+              />
+            );
+          })
+        ) : (
+          <Path
+            data={obj.pathData}
+            fillRule="evenodd"
+            fill={obj.fill}
+            {...patternCommon}
+            stroke={obj.strokeWidth > 0 && obj.stroke !== 'transparent' ? obj.stroke : undefined}
+            strokeWidth={obj.strokeWidth}
+            strokeScaleEnabled={false}
+            opacity={pathBodyOpacity}
+            listening={false}
+            perfectDrawEnabled={false}
+            shadowForStrokeEnabled={false}
+          />
+        )}
+      </Group>
     </Group>
   );
 }
@@ -1154,10 +1228,14 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
     onBeforeObjectGesture,
     fontFaces = [],
     onDropImageFiles,
+    pathSimplifyDimPathId = null,
+    pathVectorEdit = null,
   },
   ref
 ) {
   const layerLocked = canvasEditMode || adjustOverlayLock;
+  const pathVectorEditRef = useRef(pathVectorEdit);
+  pathVectorEditRef.current = pathVectorEdit;
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
   /** 避免父组件传入的非稳定回调导致 resize 引用变化，进而反复触发 ResizeObserver 的 effect */
@@ -1228,7 +1306,6 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
         if (!g) return null;
         const dw = Math.max(1, Math.round(docWidth));
         const dh = Math.max(1, Math.round(docHeight));
-        // 在屏幕上的 Group 带 zoom 缩放；toDataURL 须用 scale=1 的副本，否则导出会随缩放失真且.bounds 不一致
         const clone = g.clone();
         clone.setAttrs({
           x: 0,
@@ -1249,6 +1326,50 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
             pixelRatio,
             mimeType: 'image/png',
           });
+        } finally {
+          clone.destroy();
+        }
+      },
+      exportDocRasterDataUrl: (options = {}) => {
+        const g = docGroupRef.current;
+        if (!g) return null;
+        const dw = Math.max(1, Math.round(docWidth));
+        const dh = Math.max(1, Math.round(docHeight));
+        const pixelRatio = options.pixelRatio ?? 2;
+        const mimeType = options.mimeType ?? 'image/png';
+        const quality = options.quality;
+        const clone = g.clone();
+        clone.setAttrs({
+          x: 0,
+          y: 0,
+          scaleX: 1,
+          scaleY: 1,
+          clipX: 0,
+          clipY: 0,
+          clipWidth: dw,
+          clipHeight: dh,
+        });
+        try {
+          const cfg: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+            pixelRatio: number;
+            mimeType: string;
+            quality?: number;
+          } = {
+            x: 0,
+            y: 0,
+            width: dw,
+            height: dh,
+            pixelRatio,
+            mimeType,
+          };
+          if (mimeType !== 'image/png' && quality != null) {
+            cfg.quality = quality;
+          }
+          return clone.toDataURL(cfg);
         } finally {
           clone.destroy();
         }
@@ -1376,6 +1497,7 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
       return;
     }
     const nodes = selectedIds
+      .filter((id) => id !== pathVectorEdit?.objectId)
       .filter((id) => {
         const o = objects.find((x) => x.id === id);
         return o && o.layerVisible !== false;
@@ -1384,7 +1506,7 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
       .filter(Boolean) as Konva.Node[];
     tr.nodes(nodes);
     tr.getLayer()?.batchDraw();
-  }, [selectedIds, objects, imageCropModeId, layerLocked]);
+  }, [selectedIds, objects, imageCropModeId, layerLocked, pathVectorEdit?.objectId]);
 
   const pickObject = useCallback((id: string, shiftKey: boolean) => {
     onSelectChange(shiftKey ? { type: 'toggle', id } : { type: 'set', ids: [id] });
@@ -1493,11 +1615,21 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
       const mw = Math.abs(b.x1 - b.x0);
       const mh = Math.abs(b.y1 - b.y0);
       if (mw < 5 && mh < 5) {
-        if (!ev.shiftKey) onSelectChangeRef.current({ type: 'set', ids: [] });
+        const pv = pathVectorEditRef.current;
+        if (pv) {
+          pv.onUiChange({ activeSubpaths: [], selectedVertices: [] });
+        } else if (!ev.shiftKey) {
+          onSelectChangeRef.current({ type: 'set', ids: [] });
+        }
         return;
       }
       const { cx: lcx, cy: lcy, z: lz } = viewLayoutRef.current;
       const docM = docMarqueeFromScreen(b.x0, b.y0, b.x1, b.y1, lcx, lcy, lz);
+      const pv = pathVectorEditRef.current;
+      if (pv?.onMarqueeSelectSubpaths) {
+        pv.onMarqueeSelectSubpaths(docM, ev.shiftKey);
+        return;
+      }
       const hits = objectsRef.current
         .filter((o) => o.layerVisible !== false && aabbIntersects(objectRotatedBounds(o), docM))
         .map((o) => o.id);
@@ -1686,6 +1818,8 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
                     registerNode={registerNode}
                     dragSnap={dragSnap}
                     layerLocked={layerLocked}
+                    vectorEditLock={pathVectorEdit?.objectId === obj.id}
+                    simplifyPreviewDim={pathSimplifyDimPathId === obj.id}
                   />
                 );
               else
@@ -1706,6 +1840,29 @@ export const EditorCanvas = forwardRef<EditorCanvasHandle, EditorCanvasProps>(fu
                 </Group>
               );
             })}
+          </Group>
+          {/* 矢量编辑 UI 与 doc 同变换，但不放入 docGroupRef，避免导出栅格/SVG 混入辅助线 */}
+          <Group x={cx} y={cy} scaleX={zoom} scaleY={zoom} listening>
+            {pathVectorEdit
+              ? (() => {
+                  const po = objects.find(
+                    (o) => o.id === pathVectorEdit.objectId && o.type === 'path'
+                  ) as EditorPathObject | undefined;
+                  if (!po) return null;
+                  return (
+                    <PathVectorEditOverlay
+                      obj={po}
+                      zoom={zoom}
+                      ui={pathVectorEdit.ui}
+                      onUiChange={pathVectorEdit.onUiChange}
+                      onCommitPathData={pathVectorEdit.onCommitPathData}
+                      onGestureStart={pathVectorEdit.onGestureStart}
+                      simplifyPreview={pathVectorEdit.simplifyPreview ?? null}
+                      suspendInteraction={!!pathVectorEdit.suspendVectorInteraction}
+                    />
+                  );
+                })()
+              : null}
           </Group>
           {/* 吸附辅助线：与 doc 同变换，且不放在 docGroupRef 内以免导出 PNG 混入 */}
           <Group x={cx} y={cy} scaleX={zoom} scaleY={zoom} listening={false}>

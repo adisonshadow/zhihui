@@ -1,6 +1,6 @@
 /**
  * 漫剧视频设计器：第一行固定 + 第二行四列 Splitter（见功能文档 6、开发计划 2.9）
- * 面板 Toggle、默认剧集/场景持久化到 localStorage（见功能文档 1.1）
+ * 面板 Toggle、默认剧集/分镜持久化到 localStorage（见功能文档 1.1）
  */
 const STORAGE_KEY_SHOW_NAV = 'yiman:designer:showNav';
 const STORAGE_KEY_SHOW_ASSETS = 'yiman:designer:showAssets';
@@ -54,7 +54,7 @@ interface SceneRow {
 interface DesignerTabProps {
   project: ProjectInfo;
   onBack?: () => void;
-  /** 受控模式：由父组件（如 ProjectEditor 的 tab header）控制剧集场景面板显隐 */
+  /** 受控模式：由父组件（如 ProjectEditor 的 tab header）控制剧集分镜面板显隐 */
   showNav?: boolean;
   onShowNavChange?: (show: boolean) => void;
   /** 受控模式：由父组件（如 ProjectEditor 的 tab header）控制 AI Chat 显隐 */
@@ -122,14 +122,28 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
   const [isCameraBlock, setIsCameraBlock] = useState(false);
   const [isSubtitleBlock, setIsSubtitleBlock] = useState(false);
   const [blockSettingsTab, setBlockSettingsTab] = useState<BlockSettingsTab>('base');
-  const [characters, setCharacters] = useState<{ id: string; name: string }[]>([]);
+  const [characters, setCharacters] = useState<
+    { id: string; name: string; tts_voice?: string | null; tts_speed?: number | null }[]
+  >([]);
   const projectDir = project.project_dir;
 
   useEffect(() => {
     if (!window.yiman?.project?.getCharacters) return;
-    window.yiman.project.getCharacters(projectDir).then((list: { id: string; name: string }[]) => {
-      setCharacters(list?.filter((c) => c.id !== '__standalone_sprites__') ?? []);
-    }).catch(() => setCharacters([]));
+    window.yiman.project
+      .getCharacters(projectDir)
+      .then((list: { id: string; name: string; tts_voice?: string | null; tts_speed?: number | null }[]) => {
+        setCharacters(
+          (list ?? [])
+            .filter((c) => c.id !== '__standalone_sprites__')
+            .map((c) => ({
+              id: c.id,
+              name: c.name,
+              tts_voice: c.tts_voice,
+              tts_speed: c.tts_speed,
+            }))
+        );
+      })
+      .catch(() => setCharacters([]));
   }, [projectDir]);
   /** 仅在新块加载时设置默认 tab，避免 refreshKey 导致 loadBlock 重跑时覆盖用户选择 */
   const lastBlockIdForTabRef = useRef<string | null>(null);
@@ -232,7 +246,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
         let scenes = (await window.yiman!.project.getScenes(projectDir, ep.id)) as SceneRow[];
         if (scenes.length === 0 && window.yiman?.project?.createScene) {
           const sceneId = `scene_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-          await window.yiman.project.createScene(projectDir, { id: sceneId, episode_id: ep.id, name: '场景 1', sort_order: 0 });
+          await window.yiman.project.createScene(projectDir, { id: sceneId, episode_id: ep.id, name: '分镜 1', sort_order: 0 });
           scenes = (await window.yiman!.project.getScenes(projectDir, ep.id)) as SceneRow[];
         }
         next[ep.id] = scenes;
@@ -248,7 +262,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
       return;
     }
     const list = scenesByEpisode[selectedEpisodeId];
-    if (list === undefined) return; // 场景尚未加载，保留上次选中的 sceneId（见功能文档 1.1）
+    if (list === undefined) return; // 分镜尚未加载，保留上次选中的 sceneId（见功能文档 1.1）
     setSelectedSceneId((prev) => {
       if (list.length === 0) return null;
       if (prev && list.some((s) => s.id === prev)) return prev;
@@ -271,7 +285,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480 }}>
-      {/* 剧集场景、AI Chat 在 ProjectEditor tab header；撤销/重做、导出视频在 TimelinePanel header */}
+      {/* 剧集分镜、AI Chat 在 ProjectEditor tab header；撤销/重做、导出视频在 TimelinePanel header */}
       <Splitter style={{ flex: 1, minHeight: 0 }} orientation="vertical">
         <Splitter.Panel defaultSize="60%" min={200}>
           <Splitter style={{ height: '100%' }} orientation="horizontal">
@@ -337,7 +351,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                 }}
               />
             </Splitter.Panel>
-            {/* 列 3：功能面板（无选中显示当前场景设置，有选中显示基础设置/精灵图设置） */}
+            {/* 列 3：功能面板（无选中显示当前分镜设置，有选中显示基础设置/精灵图设置） */}
             <Splitter.Panel defaultSize={280} min={200} max={420} className="designer-panel-panel">
               <GrowCard
                 className="designer-panel-content"
@@ -379,7 +393,7 @@ export default function DesignerTab({ project, onBack, showNav: showNavProp, onS
                       </div>
                     )
                   ) : (
-                    <span className='designer-panel-content__header-single-tab'>当前场景设置</span>
+                    <span className='designer-panel-content__header-single-tab'>当前分镜设置</span>
                   )
                 }
                 headerClassName="designer-panel-content__header"
@@ -525,7 +539,7 @@ function EpisodeSceneNav({
   onSelectScene: (id: string | null) => void;
 }) {
   return (
-    <Card size="small" title="剧集与场景" style={{ height: '100%', overflow: 'auto' }}>
+    <Card size="small" title="剧集与分镜" style={{ height: '100%', overflow: 'auto' }}>
       <Space orientation="vertical" style={{ width: '100%' }} size="small">
         {episodes.map((ep) => {
           const scenes = scenesByEpisode[ep.id] ?? [];
@@ -547,7 +561,7 @@ function EpisodeSceneNav({
               {isEpSelected && (
                 <div style={{ paddingLeft: 16, marginTop: 4 }}>
                   {scenes.length === 0 ? (
-                    <Text type="secondary" style={{ fontSize: 12 }}>空场景</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>空分镜</Text>
                   ) : (
                     scenes.map((s) => (
                       <div
@@ -562,7 +576,7 @@ function EpisodeSceneNav({
                         }}
                         onClick={() => onSelectScene(s.id)}
                       >
-                        {s.name || `场景 ${s.sort_order + 1}`}
+                        {s.name || `分镜 ${s.sort_order + 1}`}
                       </div>
                     ))
                   )}

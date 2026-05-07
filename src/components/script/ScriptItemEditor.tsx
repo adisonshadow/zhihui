@@ -1,13 +1,10 @@
 /**
- * 场景内容项编辑：根据 type 渲染对应表单，编辑后立即保存
+ * 分镜内容项编辑：根据 type 渲染对应表单，编辑后立即保存
  */
-import React from 'react';
 import { Input, InputNumber, Select, Space, Button } from 'antd';
-import { DeleteOutlined } from '@ant-design/icons';
+import { DeleteOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import type { SceneContentItem, SceneContentType } from '@/types/script';
 import { SCENE_CONTENT_TYPE_LABELS } from '@/types/script';
-
-const { TextArea } = Input;
 
 interface ScriptItemEditorProps {
   item: SceneContentItem;
@@ -15,12 +12,25 @@ interface ScriptItemEditorProps {
   onUpdate: (patch: Partial<SceneContentItem>) => void;
   onRemove?: () => void;
   compact?: boolean;
+  /** 有工程目录且传入时，对白/旁白可在有文本时打开 TTS Modal */
+  projectDir?: string;
+  onRequestTts?: () => void;
 }
 
-export function ScriptItemEditor({ item, characters, onUpdate, onRemove, compact }: ScriptItemEditorProps) {
+export function ScriptItemEditor({
+  item,
+  characters,
+  onUpdate,
+  onRemove,
+  compact,
+  projectDir: _projectDir,
+  onRequestTts,
+}: ScriptItemEditorProps) {
   const isDialogue = item.type === 'dialogue';
   const isNarration = item.type === 'narration';
   const hasDescription = ['action', 'stage', 'prop', 'foreground', 'music', 'sfx'].includes(item.type);
+  const showTts = !!_projectDir && !!onRequestTts;
+  const canTtsPlay = showTts && (item.text ?? '').trim().length > 0;
 
   if (compact) {
     if (isDialogue) {
@@ -55,13 +65,26 @@ export function ScriptItemEditor({ item, characters, onUpdate, onRemove, compact
             style={{ width: 70 }}
             allowClear
           />
-          <Input
-            size="small"
-            placeholder="台词"
-            value={item.text ?? ''}
-            onChange={(e) => onUpdate({ text: e.target.value })}
-            style={{ minWidth: 140, flex: 1 }}
-          />
+          {canTtsPlay ? (
+            <Space.Compact style={{ minWidth: 140, flex: 1 }}>
+              <Input
+                size="small"
+                placeholder="台词"
+                value={item.text ?? ''}
+                onChange={(e) => onUpdate({ text: e.target.value })}
+                style={{ minWidth: 100, flex: 1 }}
+              />
+              <Button size="small" type="default" icon={<PlayCircleOutlined />} title="TTS" onClick={onRequestTts} />
+            </Space.Compact>
+          ) : (
+            <Input
+              size="small"
+              placeholder="台词"
+              value={item.text ?? ''}
+              onChange={(e) => onUpdate({ text: e.target.value })}
+              style={{ minWidth: 140, flex: 1 }}
+            />
+          )}
         </Space>
       );
     }
@@ -87,13 +110,26 @@ export function ScriptItemEditor({ item, characters, onUpdate, onRemove, compact
             onChange={(e) => onUpdate({ emotion: e.target.value || undefined })}
             style={{ width: 70 }}
           />
-          <Input
-            size="small"
-            placeholder="旁白内容"
-            value={item.text ?? ''}
-            onChange={(e) => onUpdate({ text: e.target.value })}
-            style={{ minWidth: 140, flex: 1 }}
-          />
+          {canTtsPlay ? (
+            <Space.Compact style={{ minWidth: 140, flex: 1 }}>
+              <Input
+                size="small"
+                placeholder="旁白内容"
+                value={item.text ?? ''}
+                onChange={(e) => onUpdate({ text: e.target.value })}
+                style={{ minWidth: 100, flex: 1 }}
+              />
+              <Button size="small" type="default" icon={<PlayCircleOutlined />} title="TTS" onClick={onRequestTts} />
+            </Space.Compact>
+          ) : (
+            <Input
+              size="small"
+              placeholder="旁白内容"
+              value={item.text ?? ''}
+              onChange={(e) => onUpdate({ text: e.target.value })}
+              style={{ minWidth: 140, flex: 1 }}
+            />
+          )}
         </Space>
       );
     }
@@ -194,13 +230,26 @@ export function ScriptItemEditor({ item, characters, onUpdate, onRemove, compact
             style={{ width: 70, flexShrink: 0 }}
             allowClear
           />
-          <Input
-            size="small"
-            placeholder="台词"
-            value={item.text ?? ''}
-            onChange={(e) => onUpdate({ text: e.target.value })}
-            style={{ flex: 1, minWidth: 60 }}
-          />
+          {canTtsPlay ? (
+            <Space.Compact style={{ flex: 1, minWidth: 60 }}>
+              <Input
+                size="small"
+                placeholder="台词"
+                value={item.text ?? ''}
+                onChange={(e) => onUpdate({ text: e.target.value })}
+                style={{ flex: 1, minWidth: 40 }}
+              />
+              <Button size="small" type="default" icon={<PlayCircleOutlined />} title="TTS" onClick={onRequestTts} />
+            </Space.Compact>
+          ) : (
+            <Input
+              size="small"
+              placeholder="台词"
+              value={item.text ?? ''}
+              onChange={(e) => onUpdate({ text: e.target.value })}
+              style={{ flex: 1, minWidth: 60 }}
+            />
+          )}
         </>
       )}
       {isNarration && (
@@ -217,13 +266,26 @@ export function ScriptItemEditor({ item, characters, onUpdate, onRemove, compact
             ]}
             style={{ width: 110, flexShrink: 0 }}
           />
-          <Input
-            size="small"
-            placeholder="旁白内容"
-            value={item.text ?? ''}
-            onChange={(e) => onUpdate({ text: e.target.value })}
-            style={{ flex: 1, minWidth: 60 }}
-          />
+          {canTtsPlay ? (
+            <Space.Compact style={{ flex: 1, minWidth: 60 }}>
+              <Input
+                size="small"
+                placeholder="旁白内容"
+                value={item.text ?? ''}
+                onChange={(e) => onUpdate({ text: e.target.value })}
+                style={{ flex: 1, minWidth: 40 }}
+              />
+              <Button size="small" type="default" icon={<PlayCircleOutlined />} title="TTS" onClick={onRequestTts} />
+            </Space.Compact>
+          ) : (
+            <Input
+              size="small"
+              placeholder="旁白内容"
+              value={item.text ?? ''}
+              onChange={(e) => onUpdate({ text: e.target.value })}
+              style={{ flex: 1, minWidth: 60 }}
+            />
+          )}
           <Input
             size="small"
             placeholder="情绪"

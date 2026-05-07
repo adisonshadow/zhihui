@@ -1,6 +1,6 @@
 /**
  * Potrace 风格位图矢量化（独立核心）
- * 管线：输入 RGBA → 灰度 → 二值化 → 连通域过滤 → marching squares 轮廓 → RDP 简化 → 角点分段 + Catmull-Rom 转三次贝塞尔闭合路径（SVG d）
+ * 管线：输入 RGBA → 灰度（低 alpha 视为背景）→ 二值化 →（可选）浅色边缘剔除 → 忽略高亮 → 连通域过滤 →（可选）前景腐蚀 → marching squares → RDP 简化 → 角点分段 + Catmull-Rom 转三次贝塞尔（SVG d）
  * 说明：与 Selinger 原 Potrace 的曲线最优划分不同，此处采用工程上常用的轮廓 + 平滑贝塞尔拟合，满足交互式编辑预览与导出。
  */
 
@@ -28,6 +28,20 @@ export type PotraceCoreOptions = {
   ignoreWhite: boolean;
   /** 与 ignoreWhite 联用：灰度 ≥ 此值视为白（0–255），默认 248 */
   ignoreWhiteMinLuma: number;
+  /**
+   * 二值前景做十字腐蚀次数（0 关闭）。每次向内缩 1 像素，可去掉抗锯齿造成的浅色外扩轮廓、减轻白边。
+   */
+  edgeErosionPasses: number;
+  /**
+   * 若 >0：已判为前景且 min(R,G,B) ≥ 此值的像素改回背景，用于剔除彩色边缘的灰白过渡（锯齿混合色）。
+   * 0 关闭。典型彩色字可试 180–220；灰度图请保持 0。
+   */
+  fringeSuppressMinRgb: number;
+  /**
+   * alpha 低于此值的像素在转灰度时强制为 255（背景），避免四周透明（常为 RGBA=0,0,0,0）被当成黑前景、沿画布边描出整幅矩形；evenodd 与子路径叠加还会导致填充变空。
+   * 设为 0 关闭（不读 alpha，兼容特殊素材）。
+   */
+  traceMinAlpha: number;
 };
 
 export const DEFAULT_POTRACE_OPTIONS: PotraceCoreOptions = {
@@ -40,6 +54,9 @@ export const DEFAULT_POTRACE_OPTIONS: PotraceCoreOptions = {
   adaptiveSimplify: false,
   ignoreWhite: true,
   ignoreWhiteMinLuma: 248,
+  edgeErosionPasses: 0,
+  fringeSuppressMinRgb: 0,
+  traceMinAlpha: 16,
 };
 
 /** 轮廓点过多时自动抬高 RDP epsilon，避免生成数万段贝塞尔拖垮 Konva */
@@ -58,7 +75,7 @@ function clampByte(n: number): number {
   return Math.max(0, Math.min(255, n | 0));
 }
 
-/** RGBA ImageData → 灰度 luminance */
+/** RGBA ImageData → 灰度 luminance（忽略 alpha） */
 export function imageDataToGrayscaleLuma(data: Uint8ClampedArray, width: number, height: number): Uint8Array {
   const out = new Uint8Array(width * height);
   for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
@@ -66,6 +83,31 @@ export function imageDataToGrayscaleLuma(data: Uint8ClampedArray, width: number,
     const g = data[i + 1] ?? 0;
     const b = data[i + 2] ?? 0;
     out[p] = clampByte(0.299 * r + 0.587 * g + 0.114 * b);
+  }
+  return out;
+}
+
+/**
+ * Potrace 用灰度：minAlpha>0 时 alpha<minAlpha 的像素视为背景（255），避免透明边被当成黑墨。
+ */
+export function imageDataToTraceGrayscale(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  minAlpha: number
+): Uint8Array {
+  const out = new Uint8Array(width * height);
+  const cut = Math.max(0, Math.min(255, minAlpha | 0));
+  const useAlpha = cut > 0;
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    if (useAlpha && (data[i + 3] ?? 0) < cut) {
+      out[p] = 255;
+    } else {
+      const r = data[i] ?? 0;
+      const g = data[i + 1] ?? 0;
+      const b = data[i + 2] ?? 0;
+      out[p] = clampByte(0.299 * r + 0.587 * g + 0.114 * b);
+    }
   }
   return out;
 }
@@ -119,39 +161,116 @@ function forceBrightToBackground(bin: Uint8Array, gray: Uint8Array, minLuma: num
   }
 }
 
+/** 每像素 min(R,G,B)，与灰度同分辨率；用于识别偏白的抗锯齿混合色 */
+export function imageDataToMinRgbChannel(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+): Uint8Array {
+  const out = new Uint8Array(width * height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    out[p] = Math.min(r, g, b);
+  }
+  return out;
+}
+
+/**
+ * 与 scaleDownGrayIfNeeded 相同采样（sx=(x+0.5)/scale-0.5），保证与追踪用灰度格对齐。
+ */
+function downscaleUint8ToTraceGrid(
+  src: Uint8Array,
+  sw: number,
+  sh: number,
+  dw: number,
+  dh: number,
+  scale: number
+): Uint8Array {
+  const out = new Uint8Array(dw * dh);
+  for (let y = 0; y < dh; y++) {
+    const sy = (y + 0.5) / scale - 0.5;
+    const y0 = Math.max(0, Math.min(sh - 2, Math.floor(sy)));
+    const y1 = y0 + 1;
+    const fy = sy - y0;
+    for (let x = 0; x < dw; x++) {
+      const sx = (x + 0.5) / scale - 0.5;
+      const x0 = Math.max(0, Math.min(sw - 2, Math.floor(sx)));
+      const x1 = x0 + 1;
+      const fx = sx - x0;
+      const v00 = src[y0 * sw + x0] ?? 0;
+      const v10 = src[y0 * sw + x1] ?? 0;
+      const v01 = src[y1 * sw + x0] ?? 0;
+      const v11 = src[y1 * sw + x1] ?? 0;
+      const v0 = v00 * (1 - fx) + v10 * fx;
+      const v1 = v01 * (1 - fx) + v11 * fx;
+      out[y * dw + x] = clampByte(v0 * (1 - fy) + v1 * fy);
+    }
+  }
+  return out;
+}
+
+function scaleDownUint8IfNeeded(
+  src: Uint8Array,
+  width: number,
+  height: number,
+  maxSide: number
+): { data: Uint8Array; width: number; height: number; scale: number } {
+  const m = Math.max(width, height);
+  if (m <= maxSide) return { data: src, width, height, scale: 1 };
+  const scale = maxSide / m;
+  const nw = Math.max(1, Math.round(width * scale));
+  const nh = Math.max(1, Math.round(height * scale));
+  const out = downscaleUint8ToTraceGrid(src, width, height, nw, nh, scale);
+  return { data: out, width: nw, height: nh, scale };
+}
+
 function scaleDownGrayIfNeeded(
   gray: Uint8Array,
   width: number,
   height: number,
   maxSide: number
 ): { gray: Uint8Array; width: number; height: number; scale: number } {
-  const m = Math.max(width, height);
-  if (m <= maxSide) return { gray, width, height, scale: 1 };
-  const scale = maxSide / m;
-  const nw = Math.max(1, Math.round(width * scale));
-  const nh = Math.max(1, Math.round(height * scale));
-  const out = new Uint8Array(nw * nh);
-  for (let y = 0; y < nh; y++) {
-    const sy = (y + 0.5) / scale - 0.5;
-    const y0 = Math.max(0, Math.min(height - 2, Math.floor(sy)));
-    const y1 = y0 + 1;
-    const fy = sy - y0;
-    for (let x = 0; x < nw; x++) {
-      const sx = (x + 0.5) / scale - 0.5;
-      const x0 = Math.max(0, Math.min(width - 2, Math.floor(sx)));
-      const x1 = x0 + 1;
-      const fx = sx - x0;
-      const v00 = gray[y0 * width + x0] ?? 0;
-      const v10 = gray[y0 * width + x1] ?? 0;
-      const v01 = gray[y1 * width + x0] ?? 0;
-      const v11 = gray[y1 * width + x1] ?? 0;
-      const v0 = v00 * (1 - fx) + v10 * fx;
-      const v1 = v01 * (1 - fx) + v11 * fx;
-      const v = v0 * (1 - fy) + v1 * fy;
-      out[y * nw + x] = clampByte(v);
-    }
+  const r = scaleDownUint8IfNeeded(gray, width, height, maxSide);
+  return { gray: r.data, width: r.width, height: r.height, scale: r.scale };
+}
+
+/** 前景中「min 通道已偏高」的像素视为浅色锯齿，改回背景 */
+function stripFringeForegroundByMinRgb(
+  bin: Uint8Array,
+  minRgb: Uint8Array,
+  w: number,
+  h: number,
+  minCut: number
+): void {
+  const cut = Math.max(0, Math.min(255, minCut | 0));
+  if (cut <= 0) return;
+  const n = w * h;
+  if (minRgb.length !== n) return;
+  for (let i = 0; i < n; i++) {
+    if (bin[i] === 1 && minRgb[i]! >= cut) bin[i] = 0;
   }
-  return { gray: out, width: nw, height: nh, scale };
+}
+
+/** 十字结构元腐蚀；边界外视为背景，可逐层剥掉抗锯齿浅色环 */
+function erodeBinaryCross(bin: Uint8Array, w: number, h: number, passes: number): void {
+  const p = Math.max(0, Math.min(8, passes | 0));
+  if (p === 0) return;
+  const tmp = new Uint8Array(bin.length);
+  for (let pass = 0; pass < p; pass++) {
+    tmp.fill(0);
+    for (let y = 1; y < h - 1; y++) {
+      const row = y * w;
+      for (let x = 1; x < w - 1; x++) {
+        const i = row + x;
+        if (bin[i] !== 1) continue;
+        if (bin[i - 1] !== 1 || bin[i + 1] !== 1 || bin[i - w] !== 1 || bin[i + w] !== 1) continue;
+        tmp[i] = 1;
+      }
+    }
+    bin.set(tmp);
+  }
 }
 
 function getV(bin: Uint8Array, w: number, h: number, x: number, y: number): number {
@@ -686,7 +805,10 @@ function filterTurd(bin: Uint8Array, w: number, h: number, turdSize: number): vo
 export function traceImageDataToSvgPathData(imageData: ImageData, options: Partial<PotraceCoreOptions> = {}): string {
   const opt = { ...DEFAULT_POTRACE_OPTIONS, ...options };
   const { width: iw, height: ih, data } = imageData;
-  let gray = imageDataToGrayscaleLuma(data, iw, ih);
+  let gray =
+    opt.traceMinAlpha > 0
+      ? imageDataToTraceGrayscale(data, iw, ih, opt.traceMinAlpha)
+      : imageDataToGrayscaleLuma(data, iw, ih);
   const scaled = scaleDownGrayIfNeeded(gray, iw, ih, opt.maxTraceSide);
   gray = scaled.gray;
   const w = scaled.width;
@@ -698,12 +820,23 @@ export function traceImageDataToSvgPathData(imageData: ImageData, options: Parti
 
   const threshold = opt.threshold < 0 ? otsuThreshold(gray) : opt.threshold;
   let bin = binarize(gray, w, h, threshold);
+
+  if (opt.fringeSuppressMinRgb > 0) {
+    const minFull = imageDataToMinRgbChannel(data, iw, ih);
+    const minS =
+      scaled.scale < 1
+        ? downscaleUint8ToTraceGrid(minFull, iw, ih, w, h, scaled.scale)
+        : minFull;
+    stripFringeForegroundByMinRgb(bin, minS, w, h, opt.fringeSuppressMinRgb);
+  }
+
   if (opt.ignoreWhite) {
     forceBrightToBackground(bin, gray, opt.ignoreWhiteMinLuma);
   }
   const bc = bin.slice();
   filterTurd(bc, w, h, opt.turdSize);
   bin = bc;
+  erodeBinaryCross(bin, w, h, opt.edgeErosionPasses);
 
   const segs = marchingSquaresSegments(bin, gray, w, h, threshold);
   const loops = segmentsToPolylines(segs);

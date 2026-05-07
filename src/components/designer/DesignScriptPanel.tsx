@@ -1,13 +1,14 @@
 /**
- * 设计器时间线面板的剧本视图：左列场景信息，右列剧本时间线（见功能文档 6.7）
+ * 设计器时间线面板的剧本视图：左列分镜信息，右列剧本时间线（见功能文档 6.7）
  */
-import React, { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { Button, Input, Select, Space, Splitter, Typography } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
-import type { ScriptScene, DramaTag, SceneContentType } from '@/types/script';
+import type { ScriptScene, DramaTag, SceneContentType, SceneContentItemTtsState } from '@/types/script';
 import { getSceneItems, SCENE_CONTENT_TYPE_LABELS } from '@/types/script';
 import { ScriptTimeline } from '@/components/script/ScriptTimeline';
 import { ScriptItemEditor } from '@/components/script/ScriptItemEditor';
+import { TtsEditModal } from '@/components/tts/TtsEditModal';
 
 const SCENE_CONTENT_TYPES: SceneContentType[] = [
   'dialogue', 'action', 'narration', 'stage', 'prop', 'foreground', 'music', 'sfx',
@@ -36,14 +37,14 @@ interface DesignScriptPanelProps {
   sceneIndex: number;
   epIndex: number;
   scriptScene: ScriptScene | null;
-  characters: { id: string; name: string }[];
+  characters: { id: string; name: string; tts_voice?: string | null; tts_speed?: number | null }[];
   onUpdate: (patch: Partial<ScriptScene> | ((prev: ScriptScene) => ScriptScene)) => void;
 }
 
 export function DesignScriptPanel({
   projectDir,
-  episodeId,
-  sceneId,
+  episodeId: _episodeId,
+  sceneId: _sceneId,
   sceneIndex,
   epIndex,
   scriptScene,
@@ -51,8 +52,10 @@ export function DesignScriptPanel({
   onUpdate,
 }: DesignScriptPanelProps) {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [ttsItemId, setTtsItemId] = useState<string | null>(null);
 
   const items = scriptScene ? getSceneItems(scriptScene, epIndex, sceneIndex) : [];
+  const ttsItem = useMemo(() => (ttsItemId ? items.find((it) => it.id === ttsItemId) ?? null : null), [ttsItemId, items]);
 
   const handleUpdateItem = useCallback(
     (itemId: string, patch: Partial<import('@/types/script').SceneContentItem>) => {
@@ -64,6 +67,13 @@ export function DesignScriptPanel({
       });
     },
     [scriptScene, onUpdate, epIndex, sceneIndex]
+  );
+
+  const handlePersistTts = useCallback(
+    (itemId: string, tts: SceneContentItemTtsState) => {
+      handleUpdateItem(itemId, { tts });
+    },
+    [handleUpdateItem]
   );
 
   const handleUpdateItems = useCallback(
@@ -109,12 +119,13 @@ export function DesignScriptPanel({
   }
 
   return (
+    <>
     <Splitter style={{ flex: 1, minHeight: 0 }} orientation="horizontal">
       <Splitter.Panel defaultSize="35%" min={180} max={400}>
         <div style={{ padding: 12, overflow: 'auto', height: '100%' }}>
           <Space orientation="vertical" style={{ width: '100%' }} size="small">
             <Input
-              placeholder="场景标题"
+              placeholder="分镜标题"
               value={scriptScene.title}
               onChange={(e) => onUpdate({ title: e.target.value })}
               addonBefore="标题"
@@ -127,13 +138,13 @@ export function DesignScriptPanel({
             />
             <TextArea
               rows={2}
-              placeholder="场景概要"
+              placeholder="分镜概要"
               value={scriptScene.summary ?? ''}
               onChange={(e) => onUpdate({ summary: e.target.value || undefined })}
             />
             <Select<DramaTag[]>
               mode="multiple"
-              placeholder="场景戏剧标签"
+              placeholder="分镜戏剧标签"
               allowClear
               value={scriptScene.dramaTags}
               onChange={(tags) => onUpdate({ dramaTags: tags })}
@@ -172,6 +183,12 @@ export function DesignScriptPanel({
                     <ScriptItemEditor
                       item={item}
                       characters={characters}
+                      projectDir={projectDir}
+                      onRequestTts={
+                        item.type === 'dialogue' || item.type === 'narration'
+                          ? () => setTtsItemId(selectedItemId)
+                          : undefined
+                      }
                       onUpdate={(p) => handleUpdateItem(selectedItemId, p)}
                       onRemove={() => {
                         onUpdate((prev) => {
@@ -192,5 +209,17 @@ export function DesignScriptPanel({
         </div>
       </Splitter.Panel>
     </Splitter>
+      {ttsItem ? (
+        <TtsEditModal
+          open
+          onClose={() => setTtsItemId(null)}
+          projectDir={projectDir}
+          contentItemId={ttsItem.id}
+          item={ttsItem}
+          characters={characters}
+          onPersistTts={handlePersistTts}
+        />
+      ) : null}
+    </>
   );
 }

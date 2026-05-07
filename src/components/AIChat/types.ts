@@ -44,6 +44,11 @@ export interface PromptItem {
   key: string;
   label: string;
   message: string;
+  /**
+   * 若设置，点击常用提示不直接发对话，而先插入对应对话内工具卡（如故事抽卡表单）。
+   * 与 `message` 并存时仍以工具卡流程为准（由 `handlePromptItemClick` 分支处理）。
+   */
+  launchTool?: 'prepare-gen-stories';
 }
 
 /** Agent 提示词模版（每个 agent 一个文件） */

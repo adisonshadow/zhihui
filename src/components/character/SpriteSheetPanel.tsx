@@ -1,7 +1,7 @@
 /**
  * 精灵动作图编辑面板：导入精灵图、ONNX RVM 抠图、预览动画
  * 注：原 spriteService（sharp 背景色+帧识别）已暂时停用，改为使用 onnxruntime-node RVM 模型抠图并重新排列
- * 支持 AI 抠图（火山引擎）：配置了 aiMattingConfigs 时在模型列表中显示，选择后走云端
+ * 支持具备 matting 的模型抠图（如 Qwen-Image-Edit）；内置 ONNX 等本地模型见 MattingSettingsPanel
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Drawer, Button, Space, Typography, App, Modal, Slider, Switch, Tag, Input, Popover, Radio, Dropdown } from 'antd';

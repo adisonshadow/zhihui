@@ -21,6 +21,7 @@ import { COMPONENT_BLOCK_PREFIX, STANDALONE_COMPONENTS_CHARACTER_ID, STANDALONE_
 import { parseStateKeyframes, getEffectiveKeyframe } from '@/utils/stateKeyframes';
 import type { GroupComponentItem } from '@/types/groupComponent';
 import type { SpriteSheetItem } from '@/components/character/SpriteSheetPanel';
+import { useConfigSubscribe } from '@/contexts/ConfigContext';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -86,7 +87,7 @@ interface CanvasContainerProps {
   playing?: boolean;
   onPlayPause?: () => void;
   onUpdate?: () => void;
-  /** 播放到场景末尾时调用（用于停止播放） */
+  /** 播放到分镜末尾时调用（用于停止播放） */
   onPlayEnd?: () => void;
   /** 乐观更新（含 blur/opacity 等），用于画布（Canvas 有效区域）立即反映设置面板的修改 */
   pendingBlockUpdates?: Record<string, Partial<Pick<BlockRow, 'pos_x' | 'pos_y' | 'scale_x' | 'scale_y' | 'rotation' | 'blur' | 'opacity'>>>;
@@ -122,6 +123,7 @@ export function CanvasContainer({
   onAssetUpdatedProcessed,
 }: CanvasContainerProps) {
   const { message } = App.useApp();
+  const appSettings = useConfigSubscribe();
   const { getKeyframes, updateKeyframe, createKeyframe } = useKeyframeCRUD(project.project_dir);
   const [layers, setLayers] = useState<LayerRow[]>([]);
   const [blocks, setBlocks] = useState<BlockRow[]>([]);
@@ -201,6 +203,10 @@ export function CanvasContainer({
   );
 
   const [fitToViewport, setFitToViewport] = useState(false);
+  useEffect(() => {
+    if (appSettings?.canvasAutoFitViewport === true) setFitToViewport(true);
+    else if (appSettings?.canvasAutoFitViewport === false) setFitToViewport(false);
+  }, [appSettings?.canvasAutoFitViewport]);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenZoom, setFullscreenZoom] = useState(0.5);
   const [sliderValue, setSliderValue] = useState(0);
@@ -1048,7 +1054,7 @@ export function CanvasContainer({
   if (!sceneId) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#2e2e2e' }}>
-        <Text type="secondary">请先在左侧选择场景</Text>
+        <Text type="secondary">请先在左侧选择分镜</Text>
       </div>
     );
   }

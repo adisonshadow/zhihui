@@ -14,6 +14,11 @@ function getFromLocalStorage(): AISettings | null {
     return {
       models: Array.isArray(parsed?.models) ? parsed.models : [],
       aiMattingConfigs: Array.isArray(parsed?.aiMattingConfigs) ? parsed.aiMattingConfigs : [],
+      defaultProjectRoot:
+        typeof parsed?.defaultProjectRoot === 'string' ? parsed.defaultProjectRoot : undefined,
+      canvasAutoFitViewport:
+        typeof parsed?.canvasAutoFitViewport === 'boolean' ? parsed.canvasAutoFitViewport : undefined,
+      modalMaskBlur: typeof parsed?.modalMaskBlur === 'boolean' ? parsed.modalMaskBlur : undefined,
     };
   } catch {
     return null;

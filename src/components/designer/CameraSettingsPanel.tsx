@@ -195,7 +195,7 @@ export function CameraSettingsPanel({
         scale_y: 1,
       });
       if (res?.ok) {
-        message.success('已清空本场景镜头数据');
+        message.success('已清空本分镜镜头数据');
         setClearConfirmOpen(false);
         form.setFieldsValue({ pos_x: 0.5, pos_y: 0.5, scale_x: 1 });
         loadBlock();
@@ -299,7 +299,7 @@ export function CameraSettingsPanel({
         cancelButtonProps={{ disabled: clearing }}
         destroyOnHidden
       >
-        <Typography.Text>确定要清空本场景的镜头数据吗？将重置位置、景深并删除所有关键帧，仅对当前场景生效。</Typography.Text>
+        <Typography.Text>确定要清空本分镜的镜头数据吗？将重置位置、景深并删除所有关键帧，仅对当前分镜生效。</Typography.Text>
       </Modal>
     </Form>
   );

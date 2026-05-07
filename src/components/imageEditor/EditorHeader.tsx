@@ -171,8 +171,8 @@ export const EditorHeader: React.FC<EditorHeaderProps> = ({
             aria-label="重做"
           />
         </Tooltip>
-        <Tooltip title="导出为 PNG">
-          <Button type="text" icon={<i className="iconfont">&#xe6e6;</i>} onClick={onExport} aria-label="导出" />
+        <Tooltip title="导出图片">
+          <Button type="text" icon={<i className="iconfont">&#xe6e6;</i>} onClick={onExport} aria-label="导出图片" />
         </Tooltip>
         <Tooltip
           title={

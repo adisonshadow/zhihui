@@ -1,14 +1,16 @@
 /**
- * 场景编辑：列表/时间线两种模式（见 docs/短漫剧剧本元素说明.md 15.0.1）
+ * 分镜编辑：列表/时间线两种模式（见 docs/短漫剧剧本元素说明.md 15.0.1）
  * 8 种内容类型：对白、动作、旁白、舞台说明、道具说明、前景说明、音乐说明、音效说明
  */
-import React, { useState, useCallback } from 'react';
-import { Radio, Splitter, Table, Input, Select, Button, App, Space, Typography } from 'antd';
+import { useState, useCallback, useMemo } from 'react';
+import { Radio, Splitter, Table, Button, Space, Typography } from 'antd';
 import { PlusOutlined, DeleteOutlined, MessageOutlined } from '@ant-design/icons';
 import type { ScriptScene, SceneContentItem, SceneContentType } from '@/types/script';
 import { SCENE_CONTENT_TYPE_LABELS, getSceneItems } from '@/types/script';
 import { ScriptItemEditor } from './ScriptItemEditor';
 import { ScriptTimeline } from './ScriptTimeline';
+import { TtsEditModal } from '@/components/tts/TtsEditModal';
+import type { SceneContentItemTtsState } from '@/types/script';
 
 const { Text } = Typography;
 
@@ -36,10 +38,12 @@ interface SceneEditorProps {
   scene: ScriptScene;
   sceneIndex: number;
   epIndex: number;
-  characters: { id: string; name: string }[];
+  characters: { id: string; name: string; tts_voice?: string | null; tts_speed?: number | null }[];
   onUpdate: (patch: Partial<ScriptScene> | ((prev: ScriptScene) => ScriptScene)) => void;
-  /** 将场景内容项添加到 AI 对话上下文 */
+  /** 将分镜内容项添加到 AI 对话上下文 */
   onAddItemToContext?: (item: SceneContentItem) => void;
+  /** 项目目录：传入后对白/旁白可打开 TTS */
+  projectDir?: string;
 }
 
 export function SceneEditor({
@@ -49,10 +53,11 @@ export function SceneEditor({
   characters,
   onUpdate,
   onAddItemToContext,
+  projectDir,
 }: SceneEditorProps) {
-  const { message } = App.useApp();
   const [mode, setMode] = useState<'list' | 'timeline'>('list');
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [ttsItemId, setTtsItemId] = useState<string | null>(null);
 
   const items = getSceneItems(scene, epIndex, sceneIndex);
 
@@ -106,6 +111,18 @@ export function SceneEditor({
   );
 
   const selectedItem = items.find((it) => it.id === selectedItemId);
+  const ttsItem = useMemo(() => (ttsItemId ? items.find((it) => it.id === ttsItemId) ?? null : null), [ttsItemId, items]);
+
+  const handlePersistTts = useCallback(
+    (itemId: string, tts: SceneContentItemTtsState) => {
+      onUpdate((prev) => {
+        const list = getSceneItems(prev, epIndex, sceneIndex);
+        const next = list.map((it) => (it.id === itemId ? { ...it, tts } : it));
+        return { ...prev, items: next };
+      });
+    },
+    [onUpdate, epIndex, sceneIndex]
+  );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -167,6 +184,12 @@ export function SceneEditor({
                   characters={characters}
                   onUpdate={(p) => handleUpdateItem(r.id, p)}
                   compact
+                  projectDir={projectDir}
+                  onRequestTts={
+                    projectDir && (r.type === 'dialogue' || r.type === 'narration')
+                      ? () => setTtsItemId(r.id)
+                      : undefined
+                  }
                 />
               ),
             },
@@ -228,6 +251,12 @@ export function SceneEditor({
                     characters={characters}
                     onUpdate={(p) => handleUpdateItem(selectedItem.id, p)}
                     onRemove={() => handleRemoveItem(selectedItem.id)}
+                    projectDir={projectDir}
+                    onRequestTts={
+                      projectDir && (selectedItem.type === 'dialogue' || selectedItem.type === 'narration')
+                        ? () => setTtsItemId(selectedItem.id)
+                        : undefined
+                    }
                   />
                 </>
               ) : (
@@ -238,6 +267,17 @@ export function SceneEditor({
         </Splitter>
       )}
 
+      {ttsItem && projectDir ? (
+        <TtsEditModal
+          open
+          onClose={() => setTtsItemId(null)}
+          projectDir={projectDir}
+          contentItemId={ttsItem.id}
+          item={ttsItem}
+          characters={characters}
+          onPersistTts={handlePersistTts}
+        />
+      ) : null}
     </div>
   );
 }

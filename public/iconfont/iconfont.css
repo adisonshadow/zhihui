@@ -1,8 +1,8 @@
 @font-face {
   font-family: "iconfont"; /* Project id 5155951 */
-  src: url('iconfont.woff2?t=1775713045898') format('woff2'),
-       url('iconfont.woff?t=1775713045898') format('woff'),
-       url('iconfont.ttf?t=1775713045898') format('truetype');
+  src: url('iconfont.woff2?t=1777265186989') format('woff2'),
+       url('iconfont.woff?t=1777265186989') format('woff'),
+       url('iconfont.ttf?t=1777265186989') format('truetype');
 }
 
 .iconfont {
@@ -11,6 +11,186 @@
   font-style: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-corel-painter:before {
+  content: "\e6b5";
+}
+
+.icon-writer:before {
+  content: "\e622";
+}
+
+.icon-ic_writer:before {
+  content: "\e62c";
+}
+
+.icon-writer1:before {
+  content: "\e686";
+}
+
+.icon-zhuangxiu_mian:before {
+  content: "\e6f6";
+}
+
+.icon-writer2:before {
+  content: "\e669";
+}
+
+.icon-wenben:before {
+  content: "\e854";
+}
+
+.icon-a-ImageProcessing:before {
+  content: "\e888";
+}
+
+.icon-format-painter:before {
+  content: "\e6a2";
+}
+
+.icon-lujing-13:before {
+  content: "\e649";
+}
+
+.icon-AIwriterBold:before {
+  content: "\e606";
+}
+
+.icon-AIwriter:before {
+  content: "\e636";
+}
+
+.icon-audio:before {
+  content: "\e76e";
+}
+
+.icon-video:before {
+  content: "\e7da";
+}
+
+.icon-text-outline:before {
+  content: "\e6ab";
+}
+
+.icon-chat-voice-line:before {
+  content: "\e7c9";
+}
+
+.icon-image2:before {
+  content: "\e6fc";
+}
+
+.icon-invoices:before {
+  content: "\e657";
+}
+
+.icon-Voice:before {
+  content: "\e6b9";
+}
+
+.icon-allout:before {
+  content: "\e72f";
+}
+
+.icon-common-functions:before {
+  content: "\e661";
+}
+
+.icon-voice:before {
+  content: "\e614";
+}
+
+.icon-ic_function_suction_superstrong:before {
+  content: "\e632";
+}
+
+.icon-voice-one:before {
+  content: "\ea70";
+}
+
+.icon-function_sanse:before {
+  content: "\e992";
+}
+
+.icon-voice1:before {
+  content: "\e623";
+}
+
+.icon-icon-voice-wave:before {
+  content: "\e693";
+}
+
+.icon-function-star:before {
+  content: "\e715";
+}
+
+.icon-exclude:before {
+  content: "\e635";
+}
+
+.icon-intersect1:before {
+  content: "\e64b";
+}
+
+.icon-subtract:before {
+  content: "\e68e";
+}
+
+.icon-unite:before {
+  content: "\e69a";
+}
+
+.icon-icon_addpictures:before {
+  content: "\e628";
+}
+
+.icon-add_picture:before {
+  content: "\e604";
+}
+
+.icon-mail-download-filled:before {
+  content: "\ea28";
+}
+
+.icon-new-picture-filled:before {
+  content: "\ea29";
+}
+
+.icon-picture-album-filled:before {
+  content: "\ea2a";
+}
+
+.icon-add-mode-filled:before {
+  content: "\ea34";
+}
+
+.icon-group-filled:before {
+  content: "\ea3a";
+}
+
+.icon-game-emoji-filled:before {
+  content: "\ea56";
+}
+
+.icon-triangle-round-rectangle-filled:before {
+  content: "\ea58";
+}
+
+.icon-anchor-round-filled:before {
+  content: "\eab3";
+}
+
+.icon-card-two-filled:before {
+  content: "\eac9";
+}
+
+.icon-upload-laptop-filled:before {
+  content: "\eb15";
+}
+
+.icon-icon-park_add-picture:before {
+  content: "\e609";
 }
 
 .icon-07shuipingfenbu:before {

@@ -1,7 +1,7 @@
 /**
  * 项目级 AI 配置页：剧本专家/绘画自定义要求（见功能文档 4.3、开发计划 2.7）
  */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Form, Input, Button, Card, App } from 'antd';
 import type { ProjectInfo } from '@/hooks/useProject';
 

@@ -4,6 +4,7 @@
  */
 import { AbstractChatProvider, XRequest } from '@ant-design/x-sdk';
 import type { AIModelConfig } from '@/types/settings';
+import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 import { resolveAspectRatio, type DrawerAspectRatio } from '../types/drawerOptions';
 import type { ImagesApiParams, ImagesApiResponse } from './imagesGenerationTypes';
 import { mergeImageUrlsFromStream, parseSseFramePayload } from './imagesGenerationSseMerge';
@@ -20,14 +21,17 @@ function buildImagesRequest(modelConfig: AIModelConfig | null) {
   return XRequest<ImagesApiParams, ImagesApiResponse, ImagesAssistantMessage>(baseURL, {
     manual: true,
     params: {
-      model: modelConfig?.model?.trim() || 'dall-e-2',
+      model: resolveRequestModelId(modelConfig ?? null) || 'dall-e-2',
       n: 1,
       size: '2K',
       output_format: 'png',
       stream: true,
       aspect_ratio: '1:1',
     },
-    headers: modelConfig?.apiKey ? { Authorization: `Bearer ${modelConfig.apiKey}` } : undefined,
+    headers:
+      !modelConfig?.isLocal && modelConfig?.apiKey?.trim()
+        ? { Authorization: `Bearer ${modelConfig.apiKey.trim()}` }
+        : undefined,
   });
 }
 

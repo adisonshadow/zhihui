@@ -1,7 +1,7 @@
 /**
  * Lama 擦除：在整图源图框上绘制半透明蓝色笔触，内部维护与源图同尺寸的 mask
  */
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
+import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { EditorImageObject } from './editorTypes';
 import { getFullImageDisplayFrameInDoc } from './imageCropHelpers';
 import { docPointToSourcePixel } from './lamaEraseDocGeometry';
@@ -54,6 +54,8 @@ export const LamaErasePaintOverlay = forwardRef<LamaErasePaintOverlayHandle, Lam
     const displayCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const drawingRef = useRef(false);
     const lastPixelRef = useRef<{ px: number; py: number } | null>(null);
+    /** 橡皮擦圆形光标：叠加层内局部坐标（与 adjust 面板 brushRadiusPx 同步） */
+    const [brushCursorLocal, setBrushCursorLocal] = useState<{ x: number; y: number } | null>(null);
 
     const F = getFullImageDisplayFrameInDoc({
       x: imageLayer.x,
@@ -69,6 +71,14 @@ export const LamaErasePaintOverlay = forwardRef<LamaErasePaintOverlayHandle, Lam
     const top = cy + F.y * zoom;
     const sw = Math.max(1, F.w * zoom);
     const sh = Math.max(1, F.h * zoom);
+
+    /** 源图像素半径 → 当前缩放下列宽上的 CSS 直径（与 mask 笔触视觉一致） */
+    const brushDiameterCss = (() => {
+      const rw = imagePixelW > 0 ? (sw / imagePixelW) * Math.max(1, brushRadiusPx) * 2 : Math.max(6, brushRadiusPx * 2);
+      const rh = imagePixelH > 0 ? (sh / imagePixelH) * Math.max(1, brushRadiusPx) * 2 : rw;
+      const d = (rw + rh) / 2;
+      return Math.max(4, Math.min(d, 2000));
+    })();
 
     /** 由 mask 生成单一透明度的蓝色预览（重叠笔触不会变实） */
     const refreshDisplayFromMask = useCallback(() => {
@@ -197,11 +207,15 @@ export const LamaErasePaintOverlay = forwardRef<LamaErasePaintOverlayHandle, Lam
       drawingRef.current = true;
       lastPixelRef.current = null;
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      setBrushCursorLocal({ x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY });
       const d = clientToDoc(e.clientX, e.clientY, rect, cx, cy, zoom);
       paintAtDoc(d.x, d.y);
     };
 
     const onPointerMove = (e: React.PointerEvent) => {
+      if (!paintingLocked && !resultPreviewUrl) {
+        setBrushCursorLocal({ x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY });
+      }
       if (!drawingRef.current) return;
       const wrap = (e.currentTarget as HTMLElement).closest('[data-yiman-canvas-wrap]') as HTMLElement | null;
       if (!wrap) return;
@@ -214,6 +228,11 @@ export const LamaErasePaintOverlay = forwardRef<LamaErasePaintOverlayHandle, Lam
       if (drawingRef.current) onMaskDirty?.();
       drawingRef.current = false;
       lastPixelRef.current = null;
+    };
+
+    const onPointerLeave = () => {
+      if (drawingRef.current) return;
+      setBrushCursorLocal(null);
     };
 
     return (
@@ -234,6 +253,7 @@ export const LamaErasePaintOverlay = forwardRef<LamaErasePaintOverlayHandle, Lam
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
+          onPointerLeave={onPointerLeave}
           style={{
             position: 'absolute',
             left,
@@ -241,9 +261,29 @@ export const LamaErasePaintOverlay = forwardRef<LamaErasePaintOverlayHandle, Lam
             width: sw,
             height: sh,
             pointerEvents: paintingLocked || resultPreviewUrl ? 'none' : 'auto',
-            cursor: 'crosshair',
+            cursor: paintingLocked || resultPreviewUrl ? 'default' : 'none',
           }}
         >
+          {brushCursorLocal && !paintingLocked && !resultPreviewUrl ? (
+            <div
+              aria-hidden
+              style={{
+                position: 'absolute',
+                left: brushCursorLocal.x,
+                top: brushCursorLocal.y,
+                width: brushDiameterCss,
+                height: brushDiameterCss,
+                marginLeft: -brushDiameterCss / 2,
+                marginTop: -brushDiameterCss / 2,
+                borderRadius: '50%',
+                boxSizing: 'border-box',
+                border: '1.5px solid rgba(255,255,255,0.92)',
+                boxShadow: '0 0 0 1px rgba(0,0,0,0.45)',
+                pointerEvents: 'none',
+                zIndex: 3,
+              }}
+            />
+          ) : null}
           {/* 浏览用 display；mask 不插入 DOM，仅 ref */}
           <canvas
             ref={displayCanvasRef}

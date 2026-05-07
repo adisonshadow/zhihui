@@ -182,7 +182,7 @@ const ProjectEditor: React.FC = () => {
             <Button type="text" icon={<PlayCircleOutlined />}>
               全集
             </Button>
-            <Tooltip title="剧集场景">
+            <Tooltip title="剧集分镜">
               <Button
                 type="text"
                 style={{ opacity: showNav ? 1 : 0.7 }}

@@ -17,6 +17,11 @@ export default defineConfig(({ command }) => {
   const sourcemap = !isBuild || !!process.env.VSCODE_DEBUG;
 
   return {
+    define: {
+      __VUE_OPTIONS_API__: false,
+      __VUE_PROD_DEVTOOLS__: false,
+      __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: false,
+    },
     server: {
       port: 5173,
       host: '127.0.0.1', // 显式绑定，避免 localhost 解析问题

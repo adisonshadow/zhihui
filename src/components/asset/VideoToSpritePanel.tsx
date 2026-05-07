@@ -233,7 +233,7 @@ export function VideoToSpritePanel({
               style={{ marginBottom: 8 }}
             >
               <Radio.Button value="uniform">均匀抽帧</Radio.Button>
-              <Radio.Button value="scene">场景检测</Radio.Button>
+              <Radio.Button value="scene">分镜检测</Radio.Button>
             </Radio.Group>
 
             {extractMode === 'uniform' ? (

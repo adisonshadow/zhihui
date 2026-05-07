@@ -8,3 +8,4 @@ dist-electron
 .env.*
 !.env.example
 electron/models
+release

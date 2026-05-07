@@ -34,6 +34,9 @@ import type { AlignKind, DistributeKind } from './editorAlignDistribute';
 import { AngleDegreeControl } from '@/components/antd-plus/AngleDegreeControl';
 import { resolveShapeGradientAngleDeg } from './shapeGradientEndpoints';
 import { DropShadowProjectionPanel } from './DropShadowProjectionPanel';
+import type { PathVectorEditUiState } from './PathVectorEditOverlay';
+import type { PathBooleanOp } from '@/utils/pathBooleanPaper';
+import { PathBooleanInspectorButtons } from './PathBooleanInspectorButtons';
 
 const { Text } = Typography;
 
@@ -85,6 +88,25 @@ export interface EditorInspectorProps {
   shapeMaskEligible?: boolean;
   onApplyShapeMask?: () => void;
   shapeMaskLoading?: boolean;
+  /** 矢量路径锚点编辑 */
+  pathVectorEditActive?: boolean;
+  pathVectorUi?: PathVectorEditUiState | null;
+  pathVectorPathEditable?: boolean;
+  pathVectorCanAddMidAnchor?: boolean;
+  onTogglePathVectorEdit?: () => void;
+  onPathVectorDeleteAnchor?: () => void;
+  onPathVectorSetCorner?: (corner: boolean) => void;
+  onPathVectorInsertMidAnchor?: () => void;
+  /** 删除当前激活的 path（非整图层）；矢量编辑内 Delete 键同逻辑，见 docs/14 */
+  onPathVectorDeleteActiveSubpaths?: () => void;
+  /** 恰好选中两个封闭 path 时的路径查找器运算 */
+  onPathVectorBoolean?: (op: PathBooleanOp) => void;
+  onPathVectorApplyFillToSelection?: (fill: string) => void;
+  onPathVectorApplyStrokeToSelection?: (stroke: string) => void;
+  onPathVectorApplyStrokeWidthToSelection?: (strokeWidth: number) => void;
+  /** 简化路径调整面板是否打开 */
+  pathSimplifyPanelOpen?: boolean;
+  onStartPathSimplify?: () => void;
 }
 
 const IMAGE_PRESETS: { value: ImageStylePreset; label: string }[] = [
@@ -168,6 +190,21 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
   shapeMaskEligible,
   onApplyShapeMask,
   shapeMaskLoading,
+  pathVectorEditActive = false,
+  pathVectorUi = null,
+  pathVectorCanAddMidAnchor = false,
+  pathVectorPathEditable = false,
+  onTogglePathVectorEdit,
+  onPathVectorDeleteAnchor,
+  onPathVectorSetCorner,
+  onPathVectorInsertMidAnchor,
+  onPathVectorDeleteActiveSubpaths,
+  onPathVectorBoolean,
+  onPathVectorApplyFillToSelection,
+  onPathVectorApplyStrokeToSelection,
+  onPathVectorApplyStrokeWidthToSelection,
+  pathSimplifyPanelOpen = false,
+  onStartPathSimplify,
 }) => {
   const [trimTransparentBusyId, setTrimTransparentBusyId] = useState<string | null>(null);
   const sliderSessionRef = useRef<string | null>(null);
@@ -515,6 +552,32 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
 
   if (selected.type === 'path') {
     const o = selected as EditorPathObject;
+    const pv = pathVectorUi;
+    const subpathStyleMode =
+      pathVectorEditActive &&
+      !!pv &&
+      !!onPathVectorApplyFillToSelection &&
+      (pv.selectedVertices.length > 0 || pv.activeSubpaths.length > 0);
+    const styleSubpathIndex =
+      pv?.selectedVertices[0]?.subpathIndex ?? pv?.activeSubpaths[0] ?? null;
+    const fillDisplay =
+      subpathStyleMode &&
+      styleSubpathIndex != null &&
+      o.pathSubpathStyles?.[styleSubpathIndex]?.fill
+        ? o.pathSubpathStyles[styleSubpathIndex]!.fill!
+        : o.fill;
+    const strokeDisplay =
+      subpathStyleMode &&
+      styleSubpathIndex != null &&
+      o.pathSubpathStyles?.[styleSubpathIndex]?.stroke
+        ? o.pathSubpathStyles[styleSubpathIndex]!.stroke!
+        : o.stroke;
+    const strokeWidthDisplay =
+      subpathStyleMode &&
+      styleSubpathIndex != null &&
+      o.pathSubpathStyles?.[styleSubpathIndex]?.strokeWidth != null
+        ? o.pathSubpathStyles[styleSubpathIndex]!.strokeWidth!
+        : o.strokeWidth;
     return (
       <aside className="yiman-image-editor-inspector">
         <div style={{ padding: 16 }}>
@@ -523,43 +586,132 @@ export const EditorInspector: React.FC<EditorInspectorProps> = ({
             矢量
           </Text>
           <Space orientation="vertical" style={{ width: '100%' }} size="middle">
-            <div>
-              <Text type="secondary">填充</Text>
-              <div style={{ marginTop: 8 }}>
-                <ColorPicker
-                  value={o.fill}
-                  onChangeComplete={(c) => {
-                    recordHistory?.();
-                    onUpdate(o.id, { fill: c.toCssString() });
-                  }}
-                  showText
-                  format="rgb"
-                />
+            <Button
+              type={pathVectorEditActive ? 'primary' : 'default'}
+              block
+              disabled={!pathVectorPathEditable}
+              onClick={() => onTogglePathVectorEdit?.()}
+            >
+              {pathVectorEditActive ? '完成矢量编辑模式' : '进入矢量编辑模式'}
+            </Button>
+            {pathVectorEditActive ? (
+              <div>
+                <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+                  {pv && pv.activeSubpaths.length > 0
+                    ? '锚点编辑：在图形面内拖拽可平移已选 path；Shift 点选 path 多选/取消；在画布空白处拖曳可框选 path；Shift+框选可累加'
+                    : '点击画布上的封闭区域以显示锚点；空白处拖曳框选 path'}
+                </Text>
+                {pv &&
+                pv.activeSubpaths.length === 2 &&
+                new Set(pv.activeSubpaths).size === 2 &&
+                onPathVectorBoolean ? (
+                  <PathBooleanInspectorButtons onOp={onPathVectorBoolean} />
+                ) : null}
+                {pv && pv.activeSubpaths.length > 0 ? (
+                  <Space wrap>
+                    <Button
+                      size="small"
+                      disabled={!onStartPathSimplify || pathSimplifyPanelOpen}
+                      onClick={() => onStartPathSimplify?.()}
+                    >
+                      简化路径
+                    </Button>
+                    <Button
+                      size="small"
+                      danger
+                      disabled={!pv.activeSubpaths.length}
+                      onClick={() => onPathVectorDeleteActiveSubpaths?.()}
+                    >
+                      删除选中的图形
+                    </Button>
+                    <Button
+                      size="small"
+                      danger
+                      disabled={!pv.selectedVertices.length}
+                      onClick={() => onPathVectorDeleteAnchor?.()}
+                    >
+                      删除锚点
+                    </Button>
+                    <Button
+                      size="small"
+                      disabled={!pv.selectedVertices.length}
+                      onClick={() => onPathVectorSetCorner?.(true)}
+                    >
+                      转换为尖角
+                    </Button>
+                    <Button
+                      size="small"
+                      disabled={!pv.selectedVertices.length}
+                      onClick={() => onPathVectorSetCorner?.(false)}
+                    >
+                      转换成平滑
+                    </Button>
+                    <Button
+                      size="small"
+                      type="primary"
+                      disabled={!pathVectorCanAddMidAnchor}
+                      onClick={() => onPathVectorInsertMidAnchor?.()}
+                    >
+                      添加锚点
+                    </Button>
+                  </Space>
+                ) : null}
               </div>
-            </div>
-            <div>
-              <Text type="secondary">描边</Text>
-              <div style={{ marginTop: 8 }}>
-                <ColorPicker
-                  value={o.stroke === 'transparent' ? '#000000' : o.stroke}
-                  onChangeComplete={(c) => {
-                    recordHistory?.();
-                    onUpdate(o.id, { stroke: c.toCssString() });
-                  }}
-                  showText
-                  format="rgb"
-                />
-              </div>
-            </div>
-            <Form.Item label="描边宽度" style={{ marginBottom: 0 }}>
-              <InputNumber
-                min={0}
-                max={32}
-                value={o.strokeWidth}
-                style={{ width: '100%' }}
-                {...bindNumberField(`path-${o.id}-sw`, (v) => onUpdate(o.id, { strokeWidth: Number(v) || 0 }))}
-              />
-            </Form.Item>
+            ) : null}
+            {pathVectorEditActive ? (
+              <>
+                <div>
+                  <Text type="secondary">
+                    填充{subpathStyleMode ? '（选中的锚点所属 path）' : ''}
+                  </Text>
+                  <div style={{ marginTop: 8 }}>
+                    <ColorPicker
+                      value={fillDisplay}
+                      onChangeComplete={(c) => {
+                        recordHistory?.();
+                        const css = c.toCssString();
+                        if (subpathStyleMode) onPathVectorApplyFillToSelection?.(css);
+                        else onUpdate(o.id, { fill: css });
+                      }}
+                      showText
+                      format="rgb"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Text type="secondary">
+                    描边{subpathStyleMode ? '（选中的锚点所属 path）' : ''}
+                  </Text>
+                  <div style={{ marginTop: 8 }}>
+                    <ColorPicker
+                      value={strokeDisplay === 'transparent' ? '#000000' : strokeDisplay}
+                      onChangeComplete={(c) => {
+                        recordHistory?.();
+                        const css = c.toCssString();
+                        if (subpathStyleMode) onPathVectorApplyStrokeToSelection?.(css);
+                        else onUpdate(o.id, { stroke: css });
+                      }}
+                      showText
+                      format="rgb"
+                    />
+                  </div>
+                </div>
+                <Form.Item label="描边宽度" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={0}
+                    max={32}
+                    value={strokeWidthDisplay}
+                    style={{ width: '100%' }}
+                    {...bindNumberField(
+                      `path-${o.id}-sw`,
+                      subpathStyleMode
+                        ? (v) => onPathVectorApplyStrokeWidthToSelection?.(Number(v) || 0)
+                        : (v) => onUpdate(o.id, { strokeWidth: Number(v) || 0 })
+                    )}
+                  />
+                </Form.Item>
+              </>
+            ) : null}
             <Text type="secondary">透明度</Text>
             <Slider
               min={0}

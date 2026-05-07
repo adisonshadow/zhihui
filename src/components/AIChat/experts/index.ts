@@ -5,6 +5,7 @@
 import type { AgentConfig, AgentPrompts } from '../types';
 import { CAPABILITY_TAGS } from '@/types/settings';
 import { scriptAgentPrompts } from '../agents/scriptAgent';
+import { novelAgentPrompts } from '../agents/novelAgent';
 import { drawerAgentPrompts, DRAWER_TYPE_OPTIONS } from '../agents/drawerAgent';
 
 /** 主 agent：调度入口，默认选项，计划实现 function call 调度能力 */
@@ -16,7 +17,7 @@ export const AGENT_CONFIGS: AgentConfig[] = [
     label: 'Agent',
     welcomeMessage: '有什么可以帮您？',
     requiredCapabilityKeys: [],
-    missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加已配置 API 的模型。',
+    missingCapabilityHint: '请先在设置中添加具备「{missing}」能力且已配置 API 的模型。',
   },
   {
     key: 'script',
@@ -24,6 +25,13 @@ export const AGENT_CONFIGS: AgentConfig[] = [
     welcomeMessage: '我是剧本专家，可帮您扩写、缩写、润色概要或剧本。',
     requiredCapabilityKeys: ['script', 'action_script'],
     missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加具备「{missing}」能力且已配置 API 的模型。',
+  },
+  {
+    key: 'novel',
+    label: '小说作家',
+    welcomeMessage: '我是小说作家，可协助故事大纲、续写、润色与人物塑造。',
+    requiredCapabilityKeys: ['novel'],
+    missingCapabilityHint: '缺失匹配能力的模型，请在设置中为模型勾选「小说创作」能力并配置 API。',
   },
   {
     key: 'drawer',
@@ -53,6 +61,7 @@ export const AGENT_PROMPTS_MAP: Record<string, AgentPrompts> = {
     ],
   },
   script: scriptAgentPrompts,
+  novel: novelAgentPrompts,
   drawer: drawerAgentPrompts,
 };
 

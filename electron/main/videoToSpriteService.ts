@@ -38,7 +38,7 @@ function buildInputArgs(videoPath: string): string[] {
 }
 
 /**
- * 场景检测模式：FFmpeg scene 滤镜提取关键帧为 PNG 序列。
+ * 分镜检测模式：FFmpeg scene 滤镜提取关键帧为 PNG 序列。
  * 适合多镜头/大变化视频。
  */
 export async function extractKeyFrames(
@@ -95,7 +95,7 @@ async function getVideoDuration(videoPath: string): Promise<number> {
 
 // /**
 //  * 均匀抽帧模式（每秒帧数）：按指定 fps 均匀提取帧为 PNG 序列。
-//  * 适合动作循环、局部运动等场景检测难以捕获的视频。
+//  * 适合动作循环、局部运动等分镜检测难以捕获的视频。
 //  */
 // export async function extractFramesUniformFps(
 //   videoPath: string,

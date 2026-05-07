@@ -414,7 +414,7 @@ export function updateScene(
     const now = new Date().toISOString();
     const db = getDb(projectDir);
     const row = db.prepare('SELECT * FROM scenes WHERE id = ?').get(id) as SceneRow | undefined;
-    if (!row) return { ok: false, error: '场景不存在' };
+    if (!row) return { ok: false, error: '分镜不存在' };
     const name = data.name !== undefined ? data.name : row.name;
     const sort_order = data.sort_order !== undefined ? data.sort_order : row.sort_order;
     const play_speed = data.play_speed !== undefined ? data.play_speed : (row.play_speed ?? 1);
@@ -443,7 +443,7 @@ export function createScene(
     const db = getDb(projectDir);
     db.prepare(
       `INSERT INTO scenes (id, episode_id, name, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(data.id, data.episode_id, data.name ?? '场景', data.sort_order ?? 0, now, now);
+    ).run(data.id, data.episode_id, data.name ?? '分镜', data.sort_order ?? 0, now, now);
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -492,7 +492,7 @@ export function getLayers(projectDir: string, sceneId: string): LayerRow[] {
   return db.prepare('SELECT * FROM layers WHERE scene_id = ? ORDER BY z_index ASC, created_at ASC').all(sceneId) as LayerRow[];
 }
 
-/** 获取场景的主分层 id（is_main=1）；见功能文档 6.7 */
+/** 获取分镜的主分层 id（is_main=1）；见功能文档 6.7 */
 export function getMainLayerId(projectDir: string, sceneId: string): string | null {
   ensureLayersIsMainColumn(projectDir);
   const db = getDb(projectDir);
@@ -575,7 +575,7 @@ const CAMERA_BLOCK_ASSET_ID = '__camera__';
 /** 字幕块 asset_id 常量，与 src/constants/project.ts 保持一致 */
 const SUBTITLE_BLOCK_ASSET_ID = '__subtitle__';
 
-/** 获取场景的镜头层（layer_type='camera'）；见功能文档 6.6 镜头层 */
+/** 获取分镜的镜头层（layer_type='camera'）；见功能文档 6.6 镜头层 */
 export function getCameraLayer(projectDir: string, sceneId: string): LayerRow | null {
   ensureLayersLayerTypeColumn(projectDir);
   const db = getDb(projectDir);
@@ -591,7 +591,7 @@ export function getCameraBlock(projectDir: string, sceneId: string): TimelineBlo
   return blocks.find((b) => b.asset_id === CAMERA_BLOCK_ASSET_ID) ?? null;
 }
 
-/** 获取场景内容时长（秒），排除镜头块；用于镜头条 end_time 同步 */
+/** 获取分镜内容时长（秒），排除镜头块；用于镜头条 end_time 同步 */
 export function getSceneContentDuration(projectDir: string, sceneId: string): number {
   const layers = getLayers(projectDir, sceneId);
   const cameraLayer = getCameraLayer(projectDir, sceneId);
@@ -606,7 +606,7 @@ export function getSceneContentDuration(projectDir: string, sceneId: string): nu
   return maxEnd;
 }
 
-/** 启用镜头时确保镜头层与镜头块存在；镜头条与场景时长一致；返回镜头块 id */
+/** 启用镜头时确保镜头层与镜头块存在；镜头条与分镜时长一致；返回镜头块 id */
 export function ensureCameraLayerAndBlock(projectDir: string, sceneId: string): { ok: boolean; cameraBlockId?: string; error?: string } {
   try {
     ensureLayersLayerTypeColumn(projectDir);
@@ -654,7 +654,7 @@ export function ensureCameraLayerAndBlock(projectDir: string, sceneId: string): 
   }
 }
 
-/** 获取场景的字幕层（layer_type='subtitle'） */
+/** 获取分镜的字幕层（layer_type='subtitle'） */
 export function getSubtitleLayer(projectDir: string, sceneId: string): LayerRow | null {
   ensureLayersLayerTypeColumn(projectDir);
   const db = getDb(projectDir);
@@ -670,7 +670,7 @@ export function getSubtitleBlock(projectDir: string, sceneId: string): TimelineB
   return blocks.find((b) => b.asset_id === SUBTITLE_BLOCK_ASSET_ID) ?? null;
 }
 
-/** 启用字幕时确保字幕层与字幕块存在；字幕条与场景时长一致；返回字幕块 id */
+/** 启用字幕时确保字幕层与字幕块存在；字幕条与分镜时长一致；返回字幕块 id */
 export function ensureSubtitleLayerAndBlock(projectDir: string, sceneId: string): { ok: boolean; subtitleBlockId?: string; error?: string } {
   try {
     ensureLayersLayerTypeColumn(projectDir);
@@ -1079,7 +1079,7 @@ export function insertBlockAtMainTrack(
     ensureKeyframesExtraColumns(projectDir);
     const db = getDb(projectDir);
     const mainLayerId = getMainLayerId(projectDir, sceneId);
-    if (!mainLayerId) return { ok: false, error: '无主轨道，请先创建场景' };
+    if (!mainLayerId) return { ok: false, error: '无主轨道，请先创建分镜' };
 
     const duration = Math.max(0.5, data.duration);
     const insertAt = Math.max(0, data.insertAt);
@@ -1176,7 +1176,7 @@ export function insertBlockAtAudioTrack(
     ensureTimelineBlocksAudioColumns(projectDir);
     const db = getDb(projectDir);
     const mainLayerId = getMainLayerId(projectDir, sceneId);
-    if (!mainLayerId) return { ok: false, error: '无主轨道，请先创建场景' };
+    if (!mainLayerId) return { ok: false, error: '无主轨道，请先创建分镜' };
 
     const duration = Math.max(0.5, data.duration);
     const startTime = Math.max(0, data.start_time);

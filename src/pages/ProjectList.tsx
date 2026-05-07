@@ -30,6 +30,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import ProjectCard from '@/components/ProjectCard';
 import type { ProjectItem } from '@/types/project';
+import { useConfigSubscribe } from '@/contexts/ConfigContext';
 
 const { Search } = Input;
 
@@ -78,6 +79,7 @@ function DirPicker({ value, onChange }: { value?: string; onChange?: (v: string)
 
 const ProjectList: React.FC = () => {
   const { message } = App.useApp();
+  const appSettings = useConfigSubscribe();
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [pathValids, setPathValids] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
@@ -251,7 +253,15 @@ const ProjectList: React.FC = () => {
               <Button
                 type="primary"
                 icon={<PlusOutlined />}
-                onClick={() => setCreateModalVisible(true)}
+                onClick={() => {
+                  const root = appSettings?.defaultProjectRoot?.trim();
+                  form.setFieldsValue({
+                    name: '',
+                    landscape: 1,
+                    project_dir: root ?? '',
+                  });
+                  setCreateModalVisible(true);
+                }}
               >
                 新建
               </Button>

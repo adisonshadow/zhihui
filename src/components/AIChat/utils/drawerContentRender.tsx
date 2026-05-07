@@ -1,38 +1,41 @@
 /**
  * 绘图师消息内容解析与渲染
  * 支持：JSON {"images": [...]}、Markdown ![](url)、base64 data URL
- * 当 reasoningContent 存在时，使用官方 Think 组件展示推理过程（<think> 标签注入 XMarkdown）
- * 见官方 demo：@ant-design/x Think + XMarkdown streaming 用法
+ * 推理过程使用 @ant-design/x 的 Think 包裹 XMarkdown 流式展示（见
+ * https://ant-design-x.antgroup.com/components/think-cn ）
  */
 import React, { memo, useEffect, useState } from 'react';
 import { Image, Spin } from 'antd';
-import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown';
+import XMarkdown from '@ant-design/x-markdown';
 import { Think } from '@ant-design/x';
 import { useVolcArkDisplayableImageSrc } from '../adapters/volcArkImageAdapter';
 
-/**
- * 推理内容折叠/展开组件，对应 XMarkdown <think> 标签
- * - 流式中：展开（显示推理过程）
- * - 完成后：自动折叠，用户可手动展开
- */
-const ThinkComponent = memo(({ children, streamStatus }: ComponentProps) => {
-  const isDone = streamStatus === 'done';
+/** 与官方 Think 文档一致：流式中展开，结束后默认收起，可再展开 */
+const ReasoningThinkBlock = memo(function ReasoningThinkBlock({
+  reasoningContent,
+  isStreaming,
+}: {
+  reasoningContent: string;
+  isStreaming: boolean;
+}) {
   const [expanded, setExpanded] = useState(true);
-
+  const done = !isStreaming;
   useEffect(() => {
-    if (isDone) {
-      setExpanded(false);
-    }
-  }, [isDone]);
+    if (done) setExpanded(false);
+  }, [done]);
 
   return (
     <Think
-      title={isDone ? '推理过程' : '推理中…'}
-      loading={!isDone}
+      title={done ? '思考过程' : '思考中…'}
+      loading={isStreaming}
       expanded={expanded}
       onExpand={setExpanded}
+      blink={isStreaming}
     >
-      {children}
+      <XMarkdown
+        content={reasoningContent}
+        streaming={{ hasNextChunk: isStreaming, enableAnimation: true }}
+      />
     </Think>
   );
 });
@@ -102,16 +105,6 @@ interface DrawerBubbleContentProps {
   status?: string;
 }
 
-/**
- * 将推理内容和正文拼接为带 <think> 标签的 Markdown 字符串，
- * 配合 XMarkdown 的 components.think = ThinkComponent 渲染官方折叠推理框。
- */
-function buildMarkdownText(content: string, reasoningContent?: string): string {
-  if (!reasoningContent) return content;
-  const closeTag = content ? '\n\n</think>\n\n' : '';
-  return `<think>\n\n${reasoningContent}${closeTag}${content}`;
-}
-
 /** 单张生成图：火山 TOS 链接经适配器拉成 blob URL 后再交给 antd Image，避免 attachment 触发下载 */
 const DrawerArtifactImage = memo(function DrawerArtifactImage({
   originalSrc,
@@ -161,7 +154,7 @@ const DrawerArtifactImage = memo(function DrawerArtifactImage({
   return <Image src={displaySrc} alt="" style={style} />;
 });
 
-/** 绘图师模式下：有图片则渲染图片网格 + 文本；否则渲染 Markdown。推理内容通过 Think 组件在正文上方展示。 */
+/** 绘图师模式下：有图片则渲染图片网格 + 文本；否则渲染 Markdown。推理内容用 Think 在正文上方展示。 */
 export function DrawerBubbleContent({
   content,
   isDrawerAgent,
@@ -169,40 +162,36 @@ export function DrawerBubbleContent({
   status,
 }: DrawerBubbleContentProps): React.ReactNode {
   const isStreaming = status === 'loading' || status === 'updating';
-  const markdownText = buildMarkdownText(content, reasoningContent);
+  const rc = reasoningContent?.trim() ? reasoningContent : undefined;
+
+  const mainMarkdown = (
+    <XMarkdown content={content} streaming={{ hasNextChunk: isStreaming, enableAnimation: true }} />
+  );
 
   if (!isDrawerAgent) {
+    if (!rc) return mainMarkdown;
     return (
-      <XMarkdown
-        content={markdownText}
-        components={{ think: ThinkComponent }}
-        streaming={{ hasNextChunk: isStreaming, enableAnimation: true }}
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <ReasoningThinkBlock reasoningContent={rc} isStreaming={isStreaming} />
+        {mainMarkdown}
+      </div>
     );
   }
 
   const { images, text } = parseDrawerContent(content);
   if (images.length === 0) {
+    if (!rc) return mainMarkdown;
     return (
-      <XMarkdown
-        content={markdownText}
-        components={{ think: ThinkComponent }}
-        streaming={{ hasNextChunk: isStreaming, enableAnimation: true }}
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <ReasoningThinkBlock reasoningContent={rc} isStreaming={isStreaming} />
+        {mainMarkdown}
+      </div>
     );
   }
 
-  const textMarkdown = buildMarkdownText(text ?? '', reasoningContent);
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {reasoningContent && (
-        <XMarkdown
-          content={`<think>\n\n${reasoningContent}\n\n</think>`}
-          components={{ think: ThinkComponent }}
-          streaming={{ hasNextChunk: isStreaming, enableAnimation: true }}
-        />
-      )}
+      {rc && <ReasoningThinkBlock reasoningContent={rc} isStreaming={isStreaming} />}
       <Image.PreviewGroup>
         <div
           style={{
@@ -227,13 +216,9 @@ export function DrawerBubbleContent({
           ))}
         </div>
       </Image.PreviewGroup>
-      {text && (
-        <XMarkdown
-          content={textMarkdown}
-          components={{ think: ThinkComponent }}
-          streaming={{ hasNextChunk: isStreaming, enableAnimation: true }}
-        />
-      )}
+      {text ? (
+        <XMarkdown content={text} streaming={{ hasNextChunk: isStreaming, enableAnimation: true }} />
+      ) : null}
     </div>
   );
 }

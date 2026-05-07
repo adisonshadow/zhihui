@@ -275,7 +275,7 @@ export const AssetBrowsePanel = forwardRef<AssetBrowsePanelHandle, AssetBrowsePa
   /** 元件缩略图：key 为 component:charId:groupId 或 standalone 的 groupId */
   const [componentThumbs, setComponentThumbs] = useState<Record<string, string>>({});
 
-  /** 当前场景时间线中已使用的 asset_id 集合，用于本地列表「已添加」角标（删除素材后角标消失） */
+  /** 当前分镜时间线中已使用的 asset_id 集合，用于本地列表「已添加」角标（删除素材后角标消失） */
   const [usedInSceneAssetIds, setUsedInSceneAssetIds] = useState<Set<string>>(new Set());
   useEffect(() => {
     if (!sceneId || !window.yiman?.project?.getLayers || !window.yiman?.project?.getTimelineBlocks) {
@@ -1953,7 +1953,7 @@ export const AssetBrowsePanel = forwardRef<AssetBrowsePanelHandle, AssetBrowsePa
   ];
 
   if (!sceneId) {
-    return <Text type="secondary">请先选择场景</Text>;
+    return <Text type="secondary">请先选择分镜</Text>;
   }
 
   return (

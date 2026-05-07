@@ -1,5 +1,5 @@
 /**
- * 当前场景（手风琴项）：启用镜头（见功能文档 6.6、开发计划 2.11）
+ * 当前分镜（手风琴项）：启用镜头（见功能文档 6.6、开发计划 2.11）
  * 镜头 XYZ、AI 自动生成镜头、自动居中说话角色 已移至镜头设置（选中镜头素材条时显示）
  */
 import React, { useState, useEffect } from 'react';
@@ -95,7 +95,7 @@ export function SceneSettingsAccordion({ project, sceneId, onCameraEnabledChange
   };
 
   if (!sceneId) {
-    return <Text type="secondary">请先选择场景</Text>;
+    return <Text type="secondary">请先选择分镜</Text>;
   }
 
   return (

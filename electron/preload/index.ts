@@ -2,7 +2,7 @@
  * 预加载脚本：仅通过 contextBridge 暴露约定 API（见技术文档 7、开发计划 2.1）
  * 禁止暴露 Node/Electron 全量。
  */
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 const api = {
   projects: {
@@ -13,6 +13,8 @@ const api = {
       landscape: number;
       project_dir: string;
       cover_path?: string | null;
+      /** 为 false 时不写入应用「漫剧项目」列表（仅初始化本地目录与 project.db） */
+      registerInAppList?: boolean;
     }) => ipcRenderer.invoke('app:projects:create', payload),
     delete: (id: string, deleteOnDisk: boolean) =>
       ipcRenderer.invoke('app:projects:delete', id, deleteOnDisk),
@@ -27,16 +29,31 @@ const api = {
   },
   fs: {
     pathExists: (p: string) => ipcRenderer.invoke('app:fs:pathExists', p),
+    pathDirname: (p: string) => ipcRenderer.invoke('app:fs:pathDirname', p) as Promise<string>,
+    pathJoin: (...parts: string[]) => ipcRenderer.invoke('app:fs:pathJoin', parts) as Promise<string>,
+    getUnusedSaveDefaultPath: (dir: string, fileName: string) =>
+      ipcRenderer.invoke('app:fs:getUnusedSaveDefaultPath', dir, fileName) as Promise<string | null>,
     getSafeFilePath: (fullCandidatePath: string) =>
       ipcRenderer.invoke('app:fs:getSafeFilePath', fullCandidatePath) as Promise<string>,
     writeBase64File: (fullPath: string, base64: string) =>
       ipcRenderer.invoke('app:fs:writeBase64File', fullPath, base64) as Promise<{ ok: boolean; error?: string }>,
     readFileAsDataUrl: (fullPath: string) =>
       ipcRenderer.invoke('app:fs:readFileAsDataUrl', fullPath) as Promise<string | null>,
+    readImageFileForEditor: (fullPath: string) =>
+      ipcRenderer.invoke('app:fs:readImageFileForEditor', fullPath) as Promise<
+        | { ok: true; kind: 'raster'; dataUrl: string }
+        | { ok: true; kind: 'svg'; svgText: string }
+        | { ok: false; error: string }
+      >,
+    /** 拖入本地文件时取绝对路径（Electron），供 PDF/EPS/ODG 栅格化或 SVG 读原文 */
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
   shell: {
     showItemInFolder: (fullPath: string) => ipcRenderer.invoke('app:shell:showItemInFolder', fullPath),
     openPath: (path: string) => ipcRenderer.invoke('app:shell:openPath', path),
+    /** 使用系统默认浏览器打开 URL（Electron） */
+    openExternal: (url: string) =>
+      ipcRenderer.invoke('app:shell:openExternal', url) as Promise<{ ok: boolean; error?: string }>,
   },
   /** 主进程代拉取（绕过 TOS 等对渲染进程无 CORS 的链接） */
   net: {

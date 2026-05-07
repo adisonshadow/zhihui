@@ -14,7 +14,11 @@ export interface AIModelConfig {
   apiUrl: string;
   apiKey: string;
   model?: string;
+  modelDisplayName?: string;
+  primaryVersion?: string;
   capabilityKeys: string[];
+  presetKey?: string;
+  isLocal?: boolean;
 }
 
 export type AIMattingProvider = 'volcengine';
@@ -32,6 +36,10 @@ export interface AIMattingConfig {
 export interface AISettings {
   models: AIModelConfig[];
   aiMattingConfigs?: AIMattingConfig[];
+  defaultProjectRoot?: string;
+  canvasAutoFitViewport?: boolean;
+  /** 弹窗遮罩模糊；默认 true */
+  modalMaskBlur?: boolean;
 }
 
 /** 旧版多模态配置，用于迁移 */
@@ -100,6 +108,8 @@ export function loadAISettings(): AISettings {
             ...m,
             id: m.id || randomUUID(),
             capabilityKeys: Array.isArray(m.capabilityKeys) ? m.capabilityKeys : [],
+            isLocal: m.isLocal === true,
+            presetKey: m.presetKey,
           })),
         };
         if (Array.isArray(parsed.aiMattingConfigs)) {
@@ -112,6 +122,15 @@ export function loadAISettings(): AISettings {
             region: c.region ?? 'cn-north-1',
             enabled: c.enabled !== false,
           }));
+        }
+        if (typeof parsed.defaultProjectRoot === 'string') {
+          result.defaultProjectRoot = parsed.defaultProjectRoot;
+        }
+        if (typeof parsed.canvasAutoFitViewport === 'boolean') {
+          result.canvasAutoFitViewport = parsed.canvasAutoFitViewport;
+        }
+        if (typeof parsed.modalMaskBlur === 'boolean') {
+          result.modalMaskBlur = parsed.modalMaskBlur;
         }
         return result;
       }
@@ -152,15 +171,22 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
   try {
     const p = getSettingsPath();
     const toSave: AISettings = {
-      models: data.models.map((m) => ({
-        id: m.id || randomUUID(),
-        name: m.name,
-        provider: m.provider,
-        apiUrl: m.apiUrl ?? '',
-        apiKey: m.apiKey ?? '',
-        model: m.model,
-        capabilityKeys: Array.isArray(m.capabilityKeys) ? m.capabilityKeys : [],
-      })),
+      models: data.models.map((m) => {
+        const row: AIModelConfig = {
+          id: m.id || randomUUID(),
+          name: m.name,
+          provider: m.provider,
+          apiUrl: m.apiUrl ?? '',
+          apiKey: m.apiKey ?? '',
+          model: m.model,
+          capabilityKeys: Array.isArray(m.capabilityKeys) ? m.capabilityKeys : [],
+        };
+        if (m.modelDisplayName) row.modelDisplayName = m.modelDisplayName;
+        if (m.primaryVersion) row.primaryVersion = m.primaryVersion;
+        if (m.presetKey) row.presetKey = m.presetKey;
+        if (m.isLocal === true) row.isLocal = true;
+        return row;
+      }),
       aiMattingConfigs: Array.isArray(data.aiMattingConfigs)
         ? data.aiMattingConfigs.map((c) => ({
             ...defaultMattingConfig(),
@@ -173,6 +199,15 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
           }))
         : [],
     };
+    if (data.defaultProjectRoot !== undefined) {
+      toSave.defaultProjectRoot = data.defaultProjectRoot;
+    }
+    if (data.canvasAutoFitViewport !== undefined) {
+      toSave.canvasAutoFitViewport = data.canvasAutoFitViewport;
+    }
+    if (data.modalMaskBlur !== undefined) {
+      toSave.modalMaskBlur = data.modalMaskBlur;
+    }
     fs.writeFileSync(p, JSON.stringify(toSave, null, 2), 'utf-8');
     return { ok: true };
   } catch (e: unknown) {

@@ -7,6 +7,7 @@ files:
   - filter:
       - dist
       - dist-electron
+      - electron/models/**
 mac:
   category: public.app-category.entertainment
   target:

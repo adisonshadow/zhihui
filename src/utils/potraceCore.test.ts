@@ -23,7 +23,7 @@ function makeImageData(
   return { width, height, data, colorSpace: 'srgb' } as ImageData;
 }
 
-/** 白底中心红实心圆（与编辑器 Potrace 场景一致：暗色=前景） */
+/** 白底中心红实心圆（与编辑器 Potrace 分镜一致：暗色=前景） */
 function redCircleOnWhite(size: number, cx: number, cy: number, r: number): ImageData {
   const r2 = r * r;
   return makeImageData(size, size, (x, y) => {
@@ -86,6 +86,33 @@ describe('potraceCore traceImageDataToSvgPathData', () => {
     const by = (minY + maxY) / 2;
     expect(Math.abs(bx - cx)).toBeLessThan(r * 0.4);
     expect(Math.abs(by - cy)).toBeLessThan(r * 0.4);
+  });
+
+  it('四周透明时轮廓应对准中间不透明内容，而非整幅画布边缘', () => {
+    const w = 80;
+    const h = 80;
+    const imageData = makeImageData(w, h, (x, y) => {
+      const border = x < 10 || x >= 70 || y < 10 || y >= 70;
+      if (border) return [0, 0, 0, 0];
+      if (x >= 35 && x <= 44 && y >= 35 && y <= 44) return [0, 0, 0, 255];
+      return [255, 255, 255, 255];
+    });
+    const pathData = traceImageDataToSvgPathData(imageData, {
+      threshold: 128,
+      turdSize: 0,
+      simplifyEpsilon: 0.8,
+      maxTraceSide: 256,
+      curveTension: 0.5,
+      adaptiveSimplify: false,
+      ignoreWhite: false,
+      traceMinAlpha: 16,
+    });
+    expect(pathData.trim().length).toBeGreaterThan(16);
+    const { minX, maxX, minY, maxY } = pathNumericBounds(pathData);
+    expect(maxX).toBeLessThan(56);
+    expect(minX).toBeGreaterThan(27);
+    expect(maxY).toBeLessThan(56);
+    expect(minY).toBeGreaterThan(27);
   });
 });
 

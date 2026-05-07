@@ -17,9 +17,9 @@ export const DRAWER_TYPE_OPTIONS = [
 export type DrawerType = (typeof DRAWER_TYPE_OPTIONS)[number]['value'];
 
 const BASE_PROMPT_MAP: Record<DrawerType, string> = {
-  general: `你是漫剧绘图师，帮助用户生成各类图片。根据用户描述生成符合要求的图片。支持通用场景、角色、道具等。回复时若生成图片，请按约定格式返回图片。`,
-  background: `你是漫剧背景绘图师，专门生成场景背景图。根据用户描述生成适合漫剧使用的背景图，注意：构图、透视、氛围、风格统一。背景图应适合作为场景底图，留出角色/道具摆放空间。`,
-  props: `你是漫剧道具绘图师，专门生成道具、物品图。根据用户描述生成适合漫剧使用的道具图，注意：造型清晰、风格统一、适合抠图后叠加到场景。道具图建议纯色或简洁背景。`,
+  general: `你是漫剧绘图师，帮助用户生成各类图片。根据用户描述生成符合要求的图片。支持通用分镜、角色、道具等。回复时若生成图片，请按约定格式返回图片。`,
+  background: `你是漫剧背景绘图师，专门生成分镜背景图。根据用户描述生成适合漫剧使用的背景图，注意：构图、透视、氛围、风格统一。背景图应适合作为分镜底图，留出角色/道具摆放空间。`,
+  props: `你是漫剧道具绘图师，专门生成道具、物品图。根据用户描述生成适合漫剧使用的道具图，注意：造型清晰、风格统一、适合抠图后叠加到分镜。道具图建议纯色或简洁背景。`,
   character: `你是漫剧角色/动物绘图师，专门生成角色形象。根据用户描述生成适合漫剧使用的角色图，注意：造型清晰、表情到位、风格统一、多角度或可复用。角色/动物图建议便于后续抠图、生成精灵图。`,
 };
 
@@ -28,7 +28,7 @@ export const drawerAgentPrompts: AgentPrompts = {
   basePrompt: BASE_PROMPT_MAP.general,
   prompts: [
     { key: 'gen-general', label: '生成图片', message: '请根据我的描述生成一张图片' },
-    { key: 'gen-background', label: '生成背景', message: '请生成一个适合漫剧的场景背景' },
+    { key: 'gen-background', label: '生成背景', message: '请生成一个适合漫剧的分镜背景' },
     { key: 'gen-props', label: '生成道具', message: '请生成一个漫剧道具图' },
     { key: 'gen-character', label: '生成角色', message: '请生成一个漫剧角色形象' },
   ],

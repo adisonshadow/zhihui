@@ -88,10 +88,12 @@ const customTheme = {
         "colorBgContainer": "rgba(255,255,255,0)"
       },
       "Menu": {
+        "colorBgContainer": "transparent",
         "itemSelectedBg": "rgba(255,255,255,0.12)",
         "itemSelectedColor": "rgb(177,209,255)",
         "itemHoverBg": "rgba(255,255,255,0.05)",
-        "subMenuItemSelectedColor": "rgb(177,209,255)"
+        "subMenuItemSelectedColor": "rgb(177,209,255)",
+        "itemHeight": 34
       },
       "Pagination": {
         "itemActiveColor": "rgba(255,255,255,0.99)",

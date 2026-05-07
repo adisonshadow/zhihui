@@ -825,7 +825,7 @@ export function SelectedBlockSettings({ project, blockId, currentTime, refreshKe
   const isComponentBlock = block.asset_id?.startsWith(COMPONENT_BLOCK_PREFIX);
   const assetName = isComponentBlock ? '元件' : (asset?.description || asset?.path?.split(/[/\\]/).pop() || block.asset_id || '—');
   const typeLabel = isComponentBlock ? '元件' : (asset?.type
-    ? (ASSET_CATEGORIES.find((c) => c.value === asset.type)?.label ?? { character: '角色', scene_bg: '场景背景', prop: '情景道具', sticker: '贴纸' }[asset.type] ?? asset.type)
+    ? (ASSET_CATEGORIES.find((c) => c.value === asset.type)?.label ?? { character: '角色', scene_bg: '分镜背景', prop: '情景道具', sticker: '贴纸' }[asset.type] ?? asset.type)
     : '—');
 
   const handlePlaybackFpsChange = async (v: number | null) => {

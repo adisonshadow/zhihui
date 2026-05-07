@@ -10,6 +10,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { initAppDb, getProjects, createProject, deleteProject, importProject } from './db';
+import { readImageFileForEditor } from './imageEditorImport';
 import { loadAISettings, saveAISettings, type AISettings } from './settings';
 import {
   initProjectDb,
@@ -251,7 +252,8 @@ app.on('window-all-closed', () => {
 // IPC：项目列表（见功能文档 2、技术文档 3.1）
 ipcMain.handle('app:projects:list', async () => getProjects());
 ipcMain.handle('app:projects:create', async (_, payload) => {
-  // 新建项目：创建目录 + 初始化项目库 + 写入应用级列表（见开发计划 2.4）
+  // 新建项目：创建目录 + 初始化项目库；默认可选写入应用级列表（见开发计划 2.4）
+  // registerInAppList === false：仅落盘，不写入 app.db（如「小说编剧」独立项目，不出现在漫剧列表）
   try {
     fs.mkdirSync(payload.project_dir, { recursive: true });
   } catch (e) {
@@ -263,6 +265,9 @@ ipcMain.handle('app:projects:create', async (_, payload) => {
     cover_path: payload.cover_path ?? null,
   });
   if (!initRes.ok) return initRes;
+  if (payload.registerInAppList === false) {
+    return { ok: true };
+  }
   return createProject(payload);
 });
 ipcMain.handle('app:projects:delete', async (_, id: string, deleteOnDisk: boolean) =>
@@ -290,13 +295,35 @@ ipcMain.handle('app:projects:import', async (_, projectDir: string) => {
 // 选择目录、路径是否存在（见功能文档 2.3 无效路径）
 ipcMain.handle('app:dialog:openDirectory', async () => {
   const win = BrowserWindow.getFocusedWindow() || mainWindow;
-  const r = await dialog.showOpenDialog(win!, { properties: ['openDirectory'] });
+  const r = await dialog.showOpenDialog(win!, {
+    properties: ['openDirectory', 'createDirectory'],
+  });
   return r.canceled ? null : r.filePaths[0] ?? null;
 });
 // 选择图片文件（见开发计划 2.6 本地上传）
 ipcMain.handle('app:dialog:openFile', async (_, options?: { filters?: { name: string; extensions: string[] }[] }) => {
   const win = BrowserWindow.getFocusedWindow() || mainWindow;
-  const filters = options?.filters ?? [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }];
+  const filters = options?.filters ?? [
+    {
+      name: '图片与文档',
+      extensions: [
+        'png',
+        'jpg',
+        'jpeg',
+        'gif',
+        'webp',
+        'bmp',
+        'tif',
+        'tiff',
+        'svg',
+        'svgz',
+        'pdf',
+        'eps',
+        'ps',
+        'odg',
+      ],
+    },
+  ];
   const r = await dialog.showOpenDialog(win!, { properties: ['openFile'], filters });
   return r.canceled ? null : r.filePaths[0] ?? null;
 });
@@ -309,6 +336,54 @@ ipcMain.handle('app:dialog:saveFile', async (_, options?: { defaultPath?: string
   return r.canceled ? null : r.filePath ?? null;
 });
 ipcMain.handle('app:fs:pathExists', (_, p: string) => fs.existsSync(p));
+
+ipcMain.handle('app:fs:pathDirname', (_, p: string) => {
+  try {
+    if (!p?.trim()) return '';
+    return path.dirname(path.normalize(p));
+  } catch {
+    return '';
+  }
+});
+
+ipcMain.handle('app:fs:pathJoin', (_, parts: string[]) => {
+  try {
+    const a = (parts ?? []).map((x) => String(x ?? '').trim()).filter(Boolean);
+    if (!a.length) return '';
+    return path.normalize(path.join(...a));
+  } catch {
+    return '';
+  }
+});
+
+/**
+ * 在指定目录内为 `fileName` 生成第一个不冲突的完整路径（用于打开「保存为」对话框前的默认路径）
+ */
+ipcMain.handle('app:fs:getUnusedSaveDefaultPath', async (_, dir: string, fileName: string) => {
+  const rawDir = dir?.trim();
+  const rawName = fileName?.trim();
+  if (!rawDir || !rawName) return null;
+  try {
+    const resolvedDir = path.normalize(rawDir);
+    const name = path.basename(path.normalize(rawName));
+    if (!name) return path.join(resolvedDir, rawName);
+    const ext = path.extname(name);
+    const base = path.basename(name, ext);
+    let n = 0;
+    for (;;) {
+      const piece = n === 0 ? name : `${base} (${n})${ext}`;
+      const candidatePath = path.normalize(path.join(resolvedDir, piece));
+      try {
+        await fs.promises.access(candidatePath, fs.constants.F_OK);
+        n += 1;
+      } catch {
+        return candidatePath;
+      }
+    }
+  } catch {
+    return null;
+  }
+});
 
 /**
  * 用户选定保存路径后，若同目录已存在同名项，则依次使用 `base (1).ext`、`base (2).ext`… 直至可用（与常见桌面软件一致）
@@ -364,14 +439,35 @@ ipcMain.handle('app:fs:readFileAsDataUrl', (_, fullPath: string) => {
           ? 'image/gif'
           : ext === '.webp'
             ? 'image/webp'
-            : 'image/jpeg';
+            : ext === '.svg' || ext === '.svgz'
+              ? 'image/svg+xml'
+              : ext === '.bmp'
+                ? 'image/bmp'
+                : ext === '.tif' || ext === '.tiff'
+                  ? 'image/tiff'
+                  : 'image/jpeg';
     return `data:${mime};base64,${buf.toString('base64')}`;
   } catch {
     return null;
   }
 });
+
+/** 图片编辑器：位图正确 MIME，SVG 保留矢量 data URL，PDF/EPS/ODG 等栅格化为 PNG */
+ipcMain.handle('app:fs:readImageFileForEditor', async (_, fullPath: string) => readImageFileForEditor(fullPath));
 ipcMain.handle('app:shell:showItemInFolder', (_, fullPath: string) => shell.showItemInFolder(fullPath));
 ipcMain.handle('app:shell:openPath', (_: unknown, path: string) => shell.openPath(path));
+ipcMain.handle('app:shell:openExternal', async (_: unknown, url: string) => {
+  const u = String(url).trim();
+  if (!/^https?:\/\//i.test(u)) {
+    return { ok: false, error: '仅支持 http(s) 链接' };
+  }
+  try {
+    await shell.openExternal(u);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+});
 
 // AI 供应商配置（见功能文档 3.1、开发计划 2.3）
 ipcMain.handle('app:settings:get', () => loadAISettings());

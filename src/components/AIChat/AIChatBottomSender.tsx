@@ -1,5 +1,5 @@
 /**
- * AI 对话 - 仅底部 Sender 条（无对话列表、无顶栏），用于嵌入画布底部等场景
+ * AI 对话 - 仅底部 Sender 条（无对话列表、无顶栏），用于嵌入画布底部等分镜
  */
 import type { ReactNode } from 'react';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
@@ -38,6 +38,7 @@ export function AIChatBottomSender({
     setDrawerOptions,
     DRAWER_ASPECT_OPTIONS,
     handleSubmit,
+    abort,
     handleSenderChange,
     onSenderPasteFile,
     Sender,
@@ -141,7 +142,9 @@ export function AIChatBottomSender({
               </Flex>
             );
           }}
-          onCancel={() => {}}
+          onCancel={() => {
+            abort();
+          }}
           suffix={false}
         />
       </Flex>

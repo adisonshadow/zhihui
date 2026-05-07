@@ -2,6 +2,7 @@
  * 按模型 / 端点选择 Images 类 Provider；新增厂商时在 providers 下加扩展类并在此注册。
  */
 import type { AIModelConfig } from '@/types/settings';
+import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 import OpenAIImagesProvider from './OpenAIImagesProvider';
 import VolcArkSeedreamImagesProvider from './VolcArkSeedreamImagesProvider';
 
@@ -10,7 +11,7 @@ export function looksLikeVolcArkSeedream(modelConfig: AIModelConfig | null): boo
   if (!modelConfig) return false;
   const u = (modelConfig.apiUrl ?? '').toLowerCase();
   if (u.includes('volces.com') || u.includes('volcengine')) return true;
-  const m = (modelConfig.model ?? '').toLowerCase();
+  const m = (resolveRequestModelId(modelConfig) ?? modelConfig.model ?? '').toLowerCase();
   return m.includes('seedream') || m.includes('doubao');
 }
 

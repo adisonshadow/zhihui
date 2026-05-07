@@ -1,6 +1,6 @@
 /**
  * 剧本 AI 对话上下文类型（见功能文档 4.1、docs/04-AI开发文档.md）
- * 用户可将集、场景、对白等内容添加到 AI 对话作为上下文
+ * 用户可将集、分镜、对白等内容添加到 AI 对话作为上下文
  */
 import type { ScriptEpisode, ScriptScene, SceneContentItem } from './script';
 import { SCENE_CONTENT_TYPE_LABELS } from './script';
@@ -61,7 +61,7 @@ export function formatScriptContextForAI(contexts: ScriptChatContext[]): string 
       if (ctx.episode.summary) parts.push(`概要：${ctx.episode.summary}`);
     } else if (ctx.type === 'scene') {
       parts.push(
-        `\n## 场景：${ctx.scene.title ?? `场景 ${ctx.sceneIndex + 1}`}`
+        `\n## 分镜：${ctx.scene.title ?? `分镜 ${ctx.sceneIndex + 1}`}`
       );
       if (ctx.scene.location) parts.push(`地点：${ctx.scene.location}`);
       if (ctx.scene.summary) parts.push(`概要：${ctx.scene.summary}`);

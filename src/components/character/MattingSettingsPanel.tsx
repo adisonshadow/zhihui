@@ -9,23 +9,9 @@ import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import { instantTransparencyFromDataUrl, getInstantTransparencyPreviewDataUrl } from '@/utils/instantTransparencyMatting';
 import { CHECKERBOARD_BACKGROUND } from '@/styles/checkerboardBackground';
 import { ImagePreviewButton } from '@/components/antd-plus/ImagePreviewButton';
+import { buildMergedMattingOptions } from '@/pages/settings/mattingOptions';
 
 const { Text } = Typography;
-
-/** 合并抠图方式与模型为一个下拉：即时抠图、用户配置的 AI（如火山引擎）、内置 BiRefNet、RMBG-2 */
-function buildMergedMattingOptions(aiMattingConfigs?: { id: string; name?: string; provider: string; enabled?: boolean }[]): { value: string; label: string }[] {
-  const options: { value: string; label: string }[] = [
-    { value: 'instant', label: '即时抠图' },
-  ];
-  const ai = (aiMattingConfigs ?? []).filter((c) => c.enabled !== false).map((c) => ({
-    value: c.id,
-    label: c.name || (c.provider === 'volcengine' ? '火山引擎抠图' : c.provider),
-  }));
-  options.push(...ai);
-  options.push({ value: 'birefnet', label: 'BiRefNet（内置）' });
-  options.push({ value: 'rmbg2', label: 'RMBG-2（内置）' });
-  return options;
-}
 
 /** 图片编辑器：仅用 dataUrl，不依赖项目素材路径 */
 export interface MattingSettingsPanelStandalone {
@@ -59,7 +45,7 @@ export interface MattingSettingsPanelProps {
   ) => Promise<{ ok: boolean; path?: string; error?: string }>;
   onPathChange?: (itemId: string, newPath: string) => void;
   replaceAssetId?: string;
-  /** 写入 assets_index 的 type（默认 character；图片编辑等场景可为 prop） */
+  /** 写入 assets_index 的 type（默认 character；图片编辑等分镜可为 prop） */
   saveAssetType?: string;
   standalone?: MattingSettingsPanelStandalone;
 }
@@ -100,7 +86,7 @@ export function MattingSettingsPanel({
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; initX: number; initY: number } | null>(null);
 
-  const mattingOptions = buildMergedMattingOptions(config?.aiMattingConfigs);
+  const mattingOptions = buildMergedMattingOptions(config?.models);
 
   const handleHeaderPointerDown = useCallback(
     (e: React.PointerEvent) => {

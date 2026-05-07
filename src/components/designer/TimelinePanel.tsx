@@ -162,12 +162,12 @@ interface TimelinePanelProps {
   refreshKey?: number;
   /** 导出视频按钮点击 */
   onExportClick?: () => void;
-  /** 剧本模式：当前集（含 script_structured）、场景索引、角色列表、保存回调 */
+  /** 剧本模式：当前集（含 script_structured）、分镜索引、角色列表、保存回调 */
   episodeId?: string | null;
   episode?: { script_structured?: string | null } | null;
   sceneIndex?: number;
   epIndex?: number;
-  characters?: { id: string; name: string }[];
+  characters?: { id: string; name: string; tts_voice?: string | null; tts_speed?: number | null }[];
   onEpisodeScriptChange?: (episodeId: string, scriptStructured: string) => Promise<void>;
   /** 拖拽同类组到轨道时先选子素材（返回 assetId，取消返回 null） */
   requestAssetBundlePick?: (bundleId: string) => Promise<string | null>;
@@ -441,7 +441,7 @@ export function TimelinePanel({
   const timeToX = (t: number) => t * timeZoom;
   const xToTime = (x: number) => Math.max(0, x / timeZoom);
 
-  /** 场景总时间：最后面一个素材的最后一帧时间（所有块 end_time 的最大值），精确到小数点后一位；播放与拖拽不可超过此时间 */
+  /** 分镜总时间：最后面一个素材的最后一帧时间（所有块 end_time 的最大值），精确到小数点后一位；播放与拖拽不可超过此时间 */
   const sceneTotalTimeRaw = React.useMemo(() => {
     let maxEnd = 0;
     for (const layerId of Object.keys(blocksByLayer)) {
@@ -754,7 +754,7 @@ export function TimelinePanel({
 
       if (fromLayerId === toLayerId) {
         if ((toLayer?.layer_type ?? 'video') === 'camera') {
-          message.warning('镜头块时长与场景一致，不可拖动');
+          message.warning('镜头块时长与分镜一致，不可拖动');
           return;
         }
         if (toLayerId === mainLayerId && window.yiman?.project?.moveBlockToMainTrack) {
@@ -1452,7 +1452,7 @@ export function TimelinePanel({
   if (!sceneId) {
     return (
       <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.02)' }}>
-        <Text type="secondary">请先选择场景</Text>
+        <Text type="secondary">请先选择分镜</Text>
       </div>
     );
   }

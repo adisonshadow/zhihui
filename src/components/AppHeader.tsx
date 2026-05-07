@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { SettingOutlined, VideoCameraOutlined, CommentOutlined, EditOutlined } from '@ant-design/icons';
+import { SettingOutlined, VideoCameraOutlined, CommentOutlined, EditOutlined, FileTextOutlined } from '@ant-design/icons';
 import { useConfigModal } from '@/contexts/ConfigContext';
 import './AppHeader.css';
 
@@ -17,7 +17,9 @@ const AppHeader: React.FC = () => {
   const { openConfigModal } = useConfigModal();
   const isProjectEditor = location.pathname.startsWith('/project/');
   const isImageEditor = location.pathname === '/image-editor';
-  if (isProjectEditor || isImageEditor) return null;
+  const isScreenwriterDraw = location.pathname === '/screenwriter/draw';
+  const isScreenwriterNovelWorkspace = /^\/screenwriter\/novel\/[^/]+$/.test(location.pathname);
+  if (isProjectEditor || isImageEditor || isScreenwriterDraw || isScreenwriterNovelWorkspace) return null;
 
   return (
     <div className="yiman-header">
@@ -33,6 +35,19 @@ const AppHeader: React.FC = () => {
           <span className="yiman-header-title">芝绘</span>
         </div>
         <nav className="yiman-header-menu">
+          <a
+            className={`yiman-header-link ${location.pathname.startsWith('/screenwriter') ? 'active' : ''}`}
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate('/screenwriter');
+            }}
+          >
+            <span className="yiman-header-icon">
+              <FileTextOutlined />
+            </span>
+            <span className="yiman-header-label">小说编剧</span>
+          </a>
           <a
             className={`yiman-header-link ${location.pathname === '/' ? 'active' : ''}`}
             href="#"

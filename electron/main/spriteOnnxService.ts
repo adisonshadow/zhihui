@@ -16,6 +16,7 @@ import {
 import { callMattingApi } from '../ai-model-service/client';
 import { loadAISettings } from './settings';
 import { volcengineMatting } from './volcengineMattingService';
+import { mattePngWithOpenAiCompatibleImageEdits } from './openAiImageMattingService';
 
 export interface SpriteFrameRect {
   x: number;
@@ -112,6 +113,26 @@ async function matteFrame(
     return rgba;
   }
 
+  const aiMattingModel = (settings.models ?? []).find(
+    (m) => m.id === model && (m.capabilityKeys ?? []).includes('matting')
+  );
+  if (aiMattingModel) {
+    const framePng = await image
+      .clone()
+      .extract({ left: frameX, top: frameY, width: frameW, height: frameH })
+      .png()
+      .toBuffer();
+    const out = await mattePngWithOpenAiCompatibleImageEdits(aiMattingModel, framePng);
+    if (!out.ok) throw new Error(out.error ?? 'AI 模型抠图失败');
+    if (!out.png) throw new Error('AI 模型抠图失败');
+    const { data: rgba } = await sharp(out.png)
+      .ensureAlpha()
+      .resize(frameW, frameH)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    return rgba;
+  }
+
   throw new Error(`未知抠图模型: ${model}`);
 }
 
@@ -135,13 +156,41 @@ export async function matteImageForContour(
     const h = meta.height ?? 0;
     if (w <= 0 || h <= 0) return { ok: false, error: '无法读取图片尺寸' };
 
+    const model: MattingModel | string = options?.mattingModel ?? 'rvm';
+    const downsampleRatio = options?.downsampleRatio ?? 0.5;
+    const settings = loadAISettings();
+
+    if (typeof model === 'string' && model.startsWith('mat_')) {
+      const cfg = (settings.aiMattingConfigs ?? []).find((c) => c.id === model && c.enabled !== false);
+      if (!cfg || cfg.provider !== 'volcengine') {
+        return { ok: false, error: '无效的 AI 抠图配置' };
+      }
+      if (!(cfg.accessKeyId ?? '').trim() || !(cfg.secretAccessKey ?? '').trim()) {
+        return { ok: false, error: '请在设置中补全火山引擎 Access Key' };
+      }
+      const pngBuffer = await image.png().toBuffer();
+      const v = await volcengineMatting(cfg, pngBuffer);
+      if (!v.ok || !v.imageBuffer) return { ok: false, error: v.error ?? 'AI 抠图失败' };
+      const base64 = v.imageBuffer.toString('base64');
+      return { ok: true, dataUrl: `data:image/png;base64,${base64}` };
+    }
+
+    const aiMattingModel = (settings.models ?? []).find(
+      (m) => m.id === model && (m.capabilityKeys ?? []).includes('matting')
+    );
+    if (aiMattingModel) {
+      const pngBuffer = await image.png().toBuffer();
+      const r = await mattePngWithOpenAiCompatibleImageEdits(aiMattingModel, pngBuffer);
+      if (!r.ok) return { ok: false, error: r.error ?? 'AI 模型抠图失败' };
+      if (!r.png) return { ok: false, error: 'AI 模型抠图失败' };
+      const base64 = r.png.toString('base64');
+      return { ok: true, dataUrl: `data:image/png;base64,${base64}` };
+    }
+
     const { data, info } = await image
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
-
-    const model: MattingModel | string = options?.mattingModel ?? 'rvm';
-    const downsampleRatio = options?.downsampleRatio ?? 0.5;
 
     const apiModels: MattingModel[] = ['rvm', 'birefnet', 'mvanet', 'u2netp', 'rmbg2'];
     const mattingOpts: Record<string, unknown> = {};
@@ -150,9 +199,12 @@ export async function matteImageForContour(
 
     const res = apiModels.includes(model as MattingModel)
       ? await callMattingApi(model as MattingModel, data, info.width, info.height, info.channels, mattingOpts)
-      : { ok: false as const, message: '请使用 RVM/BiRefNet 等本地模型' };
+      : { ok: false as const, message: '请使用 RVM/BiRefNet、火山 AI 抠图或具备抠图能力的模型' };
 
-    if (!res.ok || !res.rgba) return { ok: false, error: res.message ?? '抠图失败' };
+    if (!res.ok || !res.rgba) {
+      const msg = !res.ok && 'message' in res ? res.message : '抠图失败';
+      return { ok: false, error: msg };
+    }
 
     const pngBuffer = await sharp(res.rgba, {
       raw: { width: info.width, height: info.height, channels: 4, premultiplied: false },

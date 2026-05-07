@@ -4,6 +4,7 @@
  * Web 模式（无 Electron）时使用 localStorage 存储
  */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { ConfigProvider as AntdConfigProvider } from 'antd';
 import type { AISettings } from '@/types/settings';
 import Settings from '@/pages/Settings';
 import { getAISettings } from '@/utils/settingsStorage';
@@ -55,6 +56,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     // 不自动关闭 Modal，用户可继续编辑或点击关闭
   }, []);
 
+  /** 与路由树同一层包裹，否则「从标题栏打开的配置 Modal」在 App 内 AntdConfigProvider 之外，吃不到 modal.mask */
+  const modalMaskBlur = config?.modalMaskBlur !== false;
+
   return (
     <ConfigContext.Provider
       value={{
@@ -64,19 +68,21 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         onConfigSaved,
       }}
     >
-      {children}
-      {modalOpen && (
-        <Settings
-          modal
-          open={modalOpen}
-          onClose={async () => {
-            setModalOpen(false);
-            // 关闭时从磁盘重新加载，确保与设置页或外部修改同步（见功能文档 3.1）
-            await refreshConfig();
-          }}
-          onSaved={onConfigSaved}
-        />
-      )}
+      <AntdConfigProvider modal={{ mask: { enabled: true, blur: modalMaskBlur } }}>
+        {children}
+        {modalOpen && (
+          <Settings
+            modal
+            open={modalOpen}
+            onClose={async () => {
+              setModalOpen(false);
+              // 关闭时从磁盘重新加载，确保与设置页或外部修改同步（见功能文档 3.1）
+              await refreshConfig();
+            }}
+            onSaved={onConfigSaved}
+          />
+        )}
+      </AntdConfigProvider>
     </ConfigContext.Provider>
   );
 }
@@ -94,7 +100,7 @@ export function useConfigSubscribe(): AISettings | null {
   return ctx.config;
 }
 
-/** 仅读取当前配置（不强制订阅更新，可用于非订阅场景） */
+/** 仅读取当前配置（不强制订阅更新，可用于非订阅分镜） */
 export function useConfig() {
   return useConfigSubscribe();
 }

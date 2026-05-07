@@ -1,6 +1,6 @@
 /**
  * 剧本实体与实体关系（见 docs/短漫剧剧本元素说明.md 15）
- * 场景内容项统一为 SceneContentItem（8 种类型），支持列表/时间线两种编辑模式
+ * 分镜内容项统一为 SceneContentItem（8 种类型），支持列表/时间线两种编辑模式
  */
 
 /** 戏剧效果标签（冲突、反转、悬念等，Tag 化） */
@@ -21,7 +21,7 @@ export type DramaTag =
   | 'conflict.self'
   | 'conflict.fate';
 
-/** 场景内容类型（8 种） */
+/** 分镜内容类型（8 种） */
 export type SceneContentType =
   | 'dialogue'
   | 'action'
@@ -32,7 +32,20 @@ export type SceneContentType =
   | 'music'
   | 'sfx';
 
-/** 场景内容项：统一结构，含类型、编剧启止时间、类型相关字段（见功能文档 15.3.1） */
+/** 剧本项 TTS 缓存：引擎、参数与最近一次生成的项目内音频（见功能文档 4.2 默认 TTS 延伸） */
+export interface SceneContentItemTtsState {
+  /** 引擎：设置里具备「生成配音」能力的模型 id；旧数据可能为 `local_moss`，打开 TTS 时会回退到当前首个可用模型 */
+  engineId: string;
+  /** 各引擎适配器约定的参数字段 */
+  params: Record<string, unknown>;
+  /** assets_index 中的素材 id，便于替换同一素材 */
+  assetId?: string;
+  /** 项目内相对路径，如 assets/uuid.wav */
+  audioPath?: string;
+  updatedAt?: number;
+}
+
+/** 分镜内容项：统一结构，含类型、编剧启止时间、类型相关字段（见功能文档 15.3.1） */
 export interface SceneContentItem {
   id: string;
   path: string;
@@ -56,6 +69,8 @@ export interface SceneContentItem {
   emotion?: string;
   /** 对白：音量 */
   volume?: '正常' | '轻声' | '大喊' | string;
+  /** 对白/旁白：TTS 编辑缓存 */
+  tts?: SceneContentItemTtsState;
 }
 
 /** 对白（兼容旧格式，迁移后使用 SceneContentItem） */
@@ -90,7 +105,7 @@ export interface ScriptAction {
   order: number;
 }
 
-/** 场景：items 为主，兼容 dialogues/narrations/actions（加载时迁移） */
+/** 分镜：items 为主，兼容 dialogues/narrations/actions（加载时迁移） */
 export interface ScriptScene {
   id: string;
   path: string;
@@ -99,7 +114,7 @@ export interface ScriptScene {
   location?: string;
   timeOfDay?: string;
   atmosphere?: string;
-  /** 场景内容项（主格式） */
+  /** 分镜内容项（主格式） */
   items?: SceneContentItem[];
   /** 兼容旧格式 */
   dialogues?: ScriptDialogue[];
@@ -109,7 +124,7 @@ export interface ScriptScene {
   dramaTags: DramaTag[];
 }
 
-/** 集（戏剧效果标签仅绑定场景，不绑定剧集） */
+/** 集（戏剧效果标签仅绑定分镜，不绑定剧集） */
 export interface ScriptEpisode {
   id: string;
   path: string;
@@ -137,7 +152,7 @@ export interface Script {
   tags?: string[];
 }
 
-/** 场景内容类型中文名 */
+/** 分镜内容类型中文名 */
 export const SCENE_CONTENT_TYPE_LABELS: Record<SceneContentType, string> = {
   dialogue: '对白',
   action: '动作',
@@ -223,7 +238,7 @@ export function migrateSceneToItems(scene: ScriptScene, epIndex: number, sceneIn
   return items;
 }
 
-/** 获取场景的 items，若无则从旧格式迁移 */
+/** 获取分镜的 items，若无则从旧格式迁移 */
 export function getSceneItems(scene: ScriptScene, epIndex: number, sceneIndex: number): SceneContentItem[] {
   if (scene.items && scene.items.length > 0) return scene.items;
   return migrateSceneToItems(scene, epIndex, sceneIndex);

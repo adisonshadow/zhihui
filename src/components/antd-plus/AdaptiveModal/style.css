@@ -1,0 +1,12 @@
+/* 全屏：占满视口宽度，去掉 wrap 默认内边距 */
+.ant-modal-wrap.antd-plus-adaptive-modal-fullscreen {
+  padding: 0;
+}
+
+.ant-modal-wrap.antd-plus-adaptive-modal-fullscreen .ant-modal {
+  top: 0;
+  width: 100% !important;
+  max-width: 100vw;
+  padding-bottom: 0;
+  margin: 0;
+}

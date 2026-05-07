@@ -15,6 +15,6 @@ export const SCRIPT_PROMPTS: ScriptPromptItem[] = [
   { key: 'polish-summary', label: '润色概要', message: '请润色当前概要，提升文采和可读性' },
   { key: 'polish-script', label: '润色剧本', message: '请润色当前剧本文本，提升文采和可读性' },
   { key: 'add-conflict', label: '增加冲突', message: '请在剧情中增加戏剧冲突，让故事更有张力' },
-  { key: 'add-dialogue', label: '补充对白', message: '请为当前场景补充更丰富的角色对白' },
-  { key: 'suggest-scenes', label: '建议场景', message: '请根据当前剧情建议可增加的场景' },
+  { key: 'add-dialogue', label: '补充对白', message: '请为当前分镜补充更丰富的角色对白' },
+  { key: 'suggest-scenes', label: '建议分镜', message: '请根据当前剧情建议可增加的分镜' },
 ];

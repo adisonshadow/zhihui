@@ -189,6 +189,13 @@ export type EditorTextObject = BaseObject & {
   fontSizeTracksBox?: boolean;
 };
 
+/** 矢量图层单个子路径的填充/描边覆盖；缺省字段回落到图层顶层 fill/stroke/strokeWidth */
+export type PathSubpathStyleOverride = Partial<{
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+}>;
+
 /** Potrace 矢量化路径图层：pathData 为 natrualW×naturalH 局部坐标下的 SVG d */
 export type EditorPathObject = BaseObject & {
   type: 'path';
@@ -202,9 +209,25 @@ export type EditorPathObject = BaseObject & {
   fill: string;
   stroke: string;
   strokeWidth: number;
+  /** 与 pathData 解析出的子路径顺序一致；未设时整层共用顶层样式 */
+  pathSubpathStyles?: PathSubpathStyleOverride[];
   opacity: number;
   blurRadius: number;
 };
+
+/** 为子路径样式补丁准备与 model 等长的数组（从顶层样式初始化） */
+export function ensureEditorPathSubpathStyles(
+  o: EditorPathObject,
+  subpathCount: number
+): PathSubpathStyleOverride[] {
+  const cur = o.pathSubpathStyles;
+  if (cur && cur.length === subpathCount) return cur.map((e) => ({ ...(e ?? {}) }));
+  return Array.from({ length: subpathCount }, () => ({
+    fill: o.fill,
+    stroke: o.stroke,
+    strokeWidth: o.strokeWidth,
+  }));
+}
 
 export type EditorObject = EditorImageObject | EditorShapeObject | EditorTextObject | EditorPathObject;
 
@@ -301,7 +324,7 @@ export function defaultText(): EditorTextObject {
   };
 }
 
-/** 图片层与文档矩形完全重合（左上 0,0，宽高即画布）— 用于「打开本地图片」等画布尺寸与图一致的场景 */
+/** 图片层与文档矩形完全重合（左上 0,0，宽高即画布）— 用于「打开本地图片」等画布尺寸与图一致的分镜 */
 export function editorImageFillDocument(src: string, docW: number, docH: number): EditorImageObject {
   return {
     type: 'image',
@@ -451,11 +474,13 @@ export function defaultEditorPathFromTrace(params: {
   y: number;
   width: number;
   height: number;
-  /** 为 true 且提供 patternSrc 时，用位图纹理填充以保留颜色（与 path 坐标系对齐） */
-  preserveColor?: boolean;
+  /** 纯色填充；未使用 pattern 时生效 */
+  fill?: string;
+  /** solid=纯色；pattern=patternSrc 与 path 局部坐标对齐，保留原图多色（矢量化「原色填充」） */
+  fillKind?: 'solid' | 'pattern';
   patternSrc?: string;
 }): EditorPathObject {
-  const usePattern = !!params.preserveColor && !!params.patternSrc?.trim();
+  const usePattern = params.fillKind === 'pattern' && !!params.patternSrc?.trim();
   return {
     type: 'path',
     id: createId(),
@@ -469,12 +494,153 @@ export function defaultEditorPathFromTrace(params: {
     naturalH: params.naturalH,
     fillKind: usePattern ? 'pattern' : 'solid',
     patternSrc: usePattern ? params.patternSrc : undefined,
-    fill: 'rgba(0,0,0,0.88)',
+    fill: usePattern ? 'rgba(0,0,0,0.88)' : (params.fill ?? 'rgba(0,0,0,0.88)'),
     stroke: 'transparent',
     strokeWidth: 0,
     opacity: 1,
     blurRadius: 0,
   };
+}
+
+function editorPathWithSubpathStyles(
+  base: EditorPathObject,
+  pathSubpathStyles?: PathSubpathStyleOverride[]
+): EditorPathObject {
+  if (!pathSubpathStyles?.length) return base;
+  const top = pathSubpathStyles[0]!;
+  return {
+    ...base,
+    fill: top.fill ?? base.fill,
+    stroke: top.stroke ?? base.stroke,
+    strokeWidth: top.strokeWidth ?? base.strokeWidth,
+    pathSubpathStyles,
+  };
+}
+
+/** 与文档同尺寸的 path 图层（打开本地 SVG 等新会话） */
+export function editorPathFillDocument(
+  pathData: string,
+  naturalW: number,
+  naturalH: number,
+  pathSubpathStyles?: PathSubpathStyleOverride[]
+): EditorPathObject {
+  const w = Math.max(1, Math.round(naturalW));
+  const h = Math.max(1, Math.round(naturalH));
+  const o = defaultEditorPathFromTrace({
+    pathData,
+    naturalW,
+    naturalH,
+    x: 0,
+    y: 0,
+    width: w,
+    height: h,
+    fill: pathSubpathStyles?.[0]?.fill,
+  });
+  return editorPathWithSubpathStyles(o, pathSubpathStyles);
+}
+
+/** 以原始矢量尺寸插入，在文档内居中（规则同图片图层） */
+export function editorPathLayerNaturalCentered(
+  pathData: string,
+  naturalW: number,
+  naturalH: number,
+  docW: number,
+  docH: number,
+  pathSubpathStyles?: PathSubpathStyleOverride[]
+): EditorPathObject {
+  const w = Math.max(1, Math.round(naturalW));
+  const h = Math.max(1, Math.round(naturalH));
+  const o = defaultEditorPathFromTrace({
+    pathData,
+    naturalW,
+    naturalH,
+    x: Math.round((docW - w) / 2),
+    y: Math.round((docH - h) / 2),
+    width: w,
+    height: h,
+    fill: pathSubpathStyles?.[0]?.fill,
+  });
+  return editorPathWithSubpathStyles(o, pathSubpathStyles);
+}
+
+/** 以原始矢量尺寸插入，左上角落在 (docX, docY) */
+export function editorPathLayerNaturalAt(
+  pathData: string,
+  naturalW: number,
+  naturalH: number,
+  docX: number,
+  docY: number,
+  pathSubpathStyles?: PathSubpathStyleOverride[]
+): EditorPathObject {
+  const w = Math.max(1, Math.round(naturalW));
+  const h = Math.max(1, Math.round(naturalH));
+  const o = defaultEditorPathFromTrace({
+    pathData,
+    naturalW,
+    naturalH,
+    x: Math.round(docX),
+    y: Math.round(docY),
+    width: w,
+    height: h,
+    fill: pathSubpathStyles?.[0]?.fill,
+  });
+  return editorPathWithSubpathStyles(o, pathSubpathStyles);
+}
+
+/** 等比缩放使整个矢量外接框落在文档内（contain），居中 */
+export function editorPathLayerContainCentered(
+  pathData: string,
+  naturalW: number,
+  naturalH: number,
+  docW: number,
+  docH: number,
+  pathSubpathStyles?: PathSubpathStyleOverride[]
+): EditorPathObject {
+  const nw = Math.max(1, naturalW);
+  const nh = Math.max(1, naturalH);
+  const r = Math.min(docW / nw, docH / nh, 1);
+  const w = Math.max(1, Math.round(nw * r));
+  const h = Math.max(1, Math.round(nh * r));
+  const o = defaultEditorPathFromTrace({
+    pathData,
+    naturalW,
+    naturalH,
+    x: Math.round((docW - w) / 2),
+    y: Math.round((docH - h) / 2),
+    width: w,
+    height: h,
+    fill: pathSubpathStyles?.[0]?.fill,
+  });
+  return editorPathWithSubpathStyles(o, pathSubpathStyles);
+}
+
+/** 等比 contain，左上角在 (docX, docY) */
+export function editorPathLayerContainAt(
+  pathData: string,
+  naturalW: number,
+  naturalH: number,
+  docW: number,
+  docH: number,
+  docX: number,
+  docY: number,
+  pathSubpathStyles?: PathSubpathStyleOverride[]
+): EditorPathObject {
+  const nw = Math.max(1, naturalW);
+  const nh = Math.max(1, naturalH);
+  const r = Math.min(docW / nw, docH / nh, 1);
+  const w = Math.max(1, Math.round(nw * r));
+  const h = Math.max(1, Math.round(nh * r));
+  const o = defaultEditorPathFromTrace({
+    pathData,
+    naturalW,
+    naturalH,
+    x: Math.round(docX),
+    y: Math.round(docY),
+    width: w,
+    height: h,
+    fill: pathSubpathStyles?.[0]?.fill,
+  });
+  return editorPathWithSubpathStyles(o, pathSubpathStyles);
 }
 
 /** 是否实际应用毛玻璃（与侧栏 Checkbox 一致） */

@@ -87,7 +87,7 @@ electron/ai-model-service/
 
 ### 4.1 何时使用子进程
 
-- **建议使用子进程**：BiRefNet、MVANet 等大模型、易 OOM 的场景
+- **建议使用子进程**：BiRefNet、MVANet 等大模型、易 OOM 的分镜
 - **可在主进程**：U2NetP、RVM 等小模型
 
 ### 4.2 子进程通信

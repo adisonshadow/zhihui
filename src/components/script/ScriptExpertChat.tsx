@@ -9,9 +9,11 @@ import { Bubble, Sender, Attachments, Prompts } from '@ant-design/x';
 import XMarkdown from '@ant-design/x-markdown';
 import { useXChat, OpenAIChatProvider, XRequest } from '@ant-design/x-sdk';
 import type { AIModelConfig } from '@/types/settings';
+import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 import type { ScriptChatContext } from '@/types/scriptChat';
 import { formatScriptContextForAI } from '@/types/scriptChat';
 import { SCRIPT_PROMPTS } from './ScriptExpertPrompts';
+import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
 
 function buildScriptExpertProvider(modelConfig: AIModelConfig | null) {
@@ -21,9 +23,12 @@ function buildScriptExpertProvider(modelConfig: AIModelConfig | null) {
       manual: true,
       params: {
         stream: true,
-        model: modelConfig?.model?.trim() || 'gpt-3.5-turbo',
+        model: resolveRequestModelId(modelConfig ?? null) || 'gpt-3.5-turbo',
       },
-      headers: modelConfig?.apiKey ? { Authorization: `Bearer ${modelConfig.apiKey}` } : undefined,
+      headers:
+        !modelConfig?.isLocal && modelConfig?.apiKey?.trim()
+          ? { Authorization: `Bearer ${modelConfig.apiKey.trim()}` }
+          : undefined,
     }),
   });
 }

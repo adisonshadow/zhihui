@@ -8,6 +8,11 @@ import {
   IMAGE_EDITOR_PRESETS,
   IMAGE_EDITOR_DEFAULT_DOC_BACKGROUND,
   editorImageFillDocument,
+  editorPathFillDocument,
+  editorPathLayerContainAt,
+  editorPathLayerContainCentered,
+  editorPathLayerNaturalAt,
+  editorPathLayerNaturalCentered,
   imageFitsInsideDoc,
   imageLayerNaturalAt,
   imageLayerNaturalCentered,
@@ -18,11 +23,17 @@ import {
   defaultEditorPathFromTrace,
   type EditorObject,
   type EditorImageObject,
+  type EditorPathObject,
   type EditorShapeObject,
+  type PathSubpathStyleOverride,
+  ensureEditorPathSubpathStyles,
 } from './editorTypes';
 import { cloneDocSnapshot, type EditorDocSnapshot } from './editorHistory';
 import { renderShapeMaskedImagePng } from './editorShapeMask';
-import { traceDataUrlToSvgPathResult } from '@/utils/potraceCore';
+import { rasterizeEditorImageForPotrace } from './editorImageRasterForTrace';
+import { traceDataUrlToSvgPathResult, DEFAULT_POTRACE_OPTIONS } from '@/utils/potraceCore';
+import { imageSrcToKnockoutWhiteDataUrl } from '@/utils/knockoutImageWhite';
+import { dominantRgbCssFromImageAndPath } from '@/utils/dominantColorFromPath';
 import { EditorHeader } from './EditorHeader';
 import { EditorWorkspace } from './EditorWorkspace';
 import { EditorInspector } from './EditorInspector';
@@ -57,6 +68,7 @@ import {
   type PotracePresetId,
   PotracePreviewOverlay,
   RemoveWhiteAdjustToolbar,
+  PathSimplifyAdjustToolbar,
   ZoomBlurAdjustToolbar,
 } from './ImageEditorAdjustToolbars';
 import { ZoomBlurOriginOverlay } from './ZoomBlurOriginOverlay';
@@ -65,6 +77,53 @@ import { inpaintViaLamaCleaner } from './lamaInpaintApi';
 import { renderZoomBlurDataUrl, ZOOM_BLUR_SAMPLE_STEPS_DEFAULT } from './zoomBlurImage';
 import { createShapeFromPreset, type ShapePresetId } from './editorShapePresets';
 import { computeImageTrimTransparentPaddingPatch } from './imageTrimTransparentEdges';
+import { ImageEditorExportModal } from './ImageEditorExportModal';
+import type { PathVertexKey } from './PathVectorEditOverlay';
+import {
+  tryParsePathData,
+  pathDataFromModel,
+  setVertexCorner,
+  pathDataEditable,
+  deleteVerticesAt,
+  insertVertexMidEdgeOnSubpath,
+  subpathNextVertexIndex,
+  areVerticesAdjacentOnSubpath,
+  edgeStartForAdjacentPair,
+  removeSubpathsFromModel,
+  serializeSubpathToD,
+} from '@/utils/svgPathEditModel';
+import { mergeSubpathsToD, simplifySubpathsByPercent } from '@/utils/pathSubpathSimplify';
+import { pathBooleanPathData, type PathBooleanOp } from '@/utils/pathBooleanPaper';
+import { subpathIndicesIntersectingDocRect } from '@/utils/pathVectorSubpathDocBounds';
+import { EDITOR_IMAGE_DIALOG_FILTER } from '@/utils/editorImageImportPaths';
+import { loadImageSize } from '@/utils/loadImageSize';
+import { tryDecodeSvgTextFromSrc } from '@/utils/decodeSvgTextFromSrc';
+import { importSvgTextToEditorPathPayload, type EditorSvgImportPathPayload } from '@/utils/editorSvgImportPaper';
+
+/** 原色 pattern → 分路径纯色（按子路径轮廓在原 pattern 内取色） */
+async function subpathStylesFromPatternDominants(
+  obj: EditorPathObject,
+  patternSrc: string
+): Promise<PathSubpathStyleOverride[] | null> {
+  const model = tryParsePathData(obj.pathData);
+  if (!model) return null;
+  const styles = ensureEditorPathSubpathStyles(
+    { ...obj, fillKind: 'solid', patternSrc: undefined },
+    model.subpaths.length
+  );
+  const fills = await Promise.all(
+    model.subpaths.map(async (sp) => {
+      const d = serializeSubpathToD(sp)?.trim();
+      if (!d) return null;
+      return dominantRgbCssFromImageAndPath(patternSrc, d, obj.naturalW, obj.naturalH);
+    })
+  );
+  for (let i = 0; i < styles.length; i++) {
+    const c = fills[i];
+    if (c) styles[i] = { ...styles[i], fill: c };
+  }
+  return styles;
+}
 
 interface ProjectRow {
   id: string;
@@ -82,7 +141,6 @@ type RemoveWhiteAdjustSession = {
 
 type PotraceSession = {
   objectId: string;
-  originalSrc: string;
   threshold: number;
   useOtsu: boolean;
   turdSize: number;
@@ -91,10 +149,14 @@ type PotraceSession = {
   /** °，邻边转角 ≥ 此值则打断平滑；0 为整圈旧版 Catmull-Rom */
   cornerAngleThreshold: number;
   adaptiveSimplify: boolean;
-  /** 保留原图颜色填充矢量（pattern） */
+  /** 原色填充：pattern 对齐位图保留多色 */
   preserveColor: boolean;
   /** 矢量化时强制高亮像素为背景 */
   ignoreWhite: boolean;
+  /** 二值前景腐蚀次数，削弱锯齿白边 */
+  edgeErosionPasses: number;
+  /** min(R,G,B) ≥ 此值的前景改背景，0 关；彩色抗锯齿可试 180–220 */
+  fringeSuppressMinRgb: number;
   previewPathData: string | null;
   traceW: number;
   traceH: number;
@@ -140,6 +202,36 @@ type FitContentAdjustSession = {
   snapshot: { docWidth: number; docHeight: number; objects: EditorObject[] };
 };
 
+type PathVectorEditSession = {
+  objectId: string;
+  activeSubpaths: number[];
+  selectedVertices: PathVertexKey[];
+};
+
+/** 撤销/重做恢复 pathData 后，将矢量编辑会话里的子路径/锚点下标钳到当前模型，避免无效引用 */
+function clampPathVectorEditSessionToPathData(
+  session: PathVectorEditSession,
+  pathData: string
+): PathVectorEditSession | null {
+  const model = tryParsePathData(pathData);
+  if (!model) return null;
+  const n = model.subpaths.length;
+  const activeSubpaths = [...new Set(session.activeSubpaths)]
+    .filter((i) => i >= 0 && i < n)
+    .sort((a, b) => a - b);
+  const selectedVertices = session.selectedVertices.filter((k) => {
+    if (k.subpathIndex < 0 || k.subpathIndex >= n) return false;
+    const sp = model.subpaths[k.subpathIndex];
+    if (!sp) return false;
+    return k.vertexIndex >= 0 && k.vertexIndex < sp.verts.length;
+  });
+  return {
+    objectId: session.objectId,
+    activeSubpaths,
+    selectedVertices,
+  };
+}
+
 type LargeImageInsertChoice =
   | { kind: 'original'; autoEnlargeCanvas: boolean }
   | { kind: 'fit' };
@@ -151,6 +243,39 @@ type InsertLoadedImageResult = {
   /** 大图且选「原始尺寸」插入后，将视口设为适合画布（与打开本地图一致） */
   zoomFitViewport?: boolean;
 };
+
+type InsertLoadedPathResult = {
+  layer: EditorPathObject;
+  docW: number;
+  docH: number;
+  zoomFitViewport?: boolean;
+};
+
+/** SVG 合并子路径后，子路径数与 pathSubpathStyles 不一致时退回顶层样式，避免侧栏/编辑错位 */
+function finalizeSvgImportedPathLayer(layer: EditorPathObject): EditorPathObject {
+  const model = tryParsePathData(layer.pathData);
+  const st = layer.pathSubpathStyles;
+  if (model && st && st.length !== model.subpaths.length) {
+    const top = st[0];
+    return {
+      ...layer,
+      pathSubpathStyles: undefined,
+      fill: top?.fill ?? layer.fill,
+      stroke: top?.stroke ?? layer.stroke,
+      strokeWidth: top?.strokeWidth ?? layer.strokeWidth,
+    };
+  }
+  return layer;
+}
+
+function readBrowserFileAsUtf8(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(r.error);
+    r.readAsText(file);
+  });
+}
 
 function stripDataUrlToBase64(s: string): string {
   const i = s.indexOf('base64,');
@@ -177,15 +302,6 @@ function stripImageExtension(name: string): string {
 function filePathOrNameToExportStem(pathOrName: string): string {
   const base = pathOrName.split(/[/\\]/).pop() ?? pathOrName;
   return sanitizeExportBasename(stripImageExtension(base));
-}
-
-async function loadImageSize(src: string): Promise<{ w: number; h: number }> {
-  return new Promise((resolve, reject) => {
-    const i = new Image();
-    i.onload = () => resolve({ w: i.naturalWidth, h: i.naturalHeight });
-    i.onerror = () => reject(new Error('load fail'));
-    i.src = src;
-  });
 }
 
 export const ImageEditorPage: React.FC = () => {
@@ -231,6 +347,21 @@ export const ImageEditorPage: React.FC = () => {
   const [assetPickOpen, setAssetPickOpen] = useState(false);
   /** 导出对话框默认文件名（不含 .png） */
   const [exportDefaultStem, setExportDefaultStem] = useState(() => formatExportUnnamedStem());
+  /** 有本地源路径时用于在打开「保存为」前在同目录预计算不冲突的默认文件名；无则仅传文件名给对话框 */
+  const [exportDefaultDir, setExportDefaultDir] = useState<string | null>(null);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [pathVectorEditSession, setPathVectorEditSession] = useState<PathVectorEditSession | null>(null);
+  const pathVectorEditSessionRef = useRef<PathVectorEditSession | null>(null);
+  pathVectorEditSessionRef.current = pathVectorEditSession;
+
+  type PathSimplifySession = {
+    objectId: string;
+    subpathIndices: number[];
+    baselinePathData: string;
+    curvePrecisionPercent: number;
+  };
+  const [pathSimplifySession, setPathSimplifySession] = useState<PathSimplifySession | null>(null);
+  const onPathVectorDeleteActiveSubpathsRef = useRef<() => void>(() => {});
   const [aiOpen, setAiOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [imageProcessing, setImageProcessing] = useState(false);
@@ -278,6 +409,17 @@ export const ImageEditorPage: React.FC = () => {
   const potraceSessionRef = useRef<PotraceSession | null>(null);
   potraceSessionRef.current = potraceSession;
   const potraceReqIdRef = useRef(0);
+  /** 保留颜色 + 忽略白色时：knock-out 后的 PNG，供预览纹理与主色近似采样 */
+  const [potraceKnockoutPatternUrl, setPotraceKnockoutPatternUrl] = useState<string | null>(null);
+  const [potraceDominantPreviewCss, setPotraceDominantPreviewCss] = useState<string | null>(null);
+  /** 矢量化输入：当前图层 src + sourceCrop（遮罩裁切后仍用整图 src 时需据此栅格） */
+  const potraceTraceSourceKey = useMemo(() => {
+    const oid = potraceSession?.objectId;
+    if (!oid) return null;
+    const o = objects.find((x): x is EditorImageObject => x.id === oid && x.type === 'image');
+    if (!o) return null;
+    return `${o.src}\0${JSON.stringify(o.sourceCrop ?? null)}`;
+  }, [potraceSession?.objectId, objects]);
   const [fitImageSession, setFitImageSession] = useState<FitImageToCanvasAdjustSession | null>(null);
   const [fitContentSession, setFitContentSession] = useState<FitContentAdjustSession | null>(null);
   const [shapeMaskLoading, setShapeMaskLoading] = useState(false);
@@ -376,6 +518,7 @@ export const ImageEditorPage: React.FC = () => {
   const undo = useCallback(() => {
     const past = historyPastRef.current;
     if (past.length === 0) return;
+    const pvBefore = pathVectorEditSessionRef.current;
     const prevSnap = past[past.length - 1]!;
     historyPastRef.current = past.slice(0, -1);
     const cur = docStateRef.current;
@@ -389,13 +532,32 @@ export const ImageEditorPage: React.FC = () => {
       ...historyFutureRef.current,
     ].slice(0, 50);
     applySnapshot(prevSnap);
-    setSelectedIds([]);
+
+    if (pvBefore) {
+      const still = prevSnap.objects.find((o) => o.id === pvBefore.objectId && o.type === 'path');
+      if (still && still.type === 'path') {
+        const nextSession = clampPathVectorEditSessionToPathData(pvBefore, still.pathData);
+        if (nextSession) {
+          setPathVectorEditSession(nextSession);
+          setSelectedIds([pvBefore.objectId]);
+        } else {
+          setPathVectorEditSession(null);
+          setSelectedIds([]);
+        }
+      } else {
+        setPathVectorEditSession(null);
+        setSelectedIds([]);
+      }
+    } else {
+      setSelectedIds([]);
+    }
     setHistoryTick((t) => t + 1);
   }, [applySnapshot]);
 
   const redo = useCallback(() => {
     const fut = historyFutureRef.current;
     if (fut.length === 0) return;
+    const pvBefore = pathVectorEditSessionRef.current;
     const nextSnap = fut[0]!;
     historyFutureRef.current = fut.slice(1);
     const cur = docStateRef.current;
@@ -409,7 +571,25 @@ export const ImageEditorPage: React.FC = () => {
       }),
     ];
     applySnapshot(nextSnap);
-    setSelectedIds([]);
+
+    if (pvBefore) {
+      const still = nextSnap.objects.find((o) => o.id === pvBefore.objectId && o.type === 'path');
+      if (still && still.type === 'path') {
+        const nextSession = clampPathVectorEditSessionToPathData(pvBefore, still.pathData);
+        if (nextSession) {
+          setPathVectorEditSession(nextSession);
+          setSelectedIds([pvBefore.objectId]);
+        } else {
+          setPathVectorEditSession(null);
+          setSelectedIds([]);
+        }
+      } else {
+        setPathVectorEditSession(null);
+        setSelectedIds([]);
+      }
+    } else {
+      setSelectedIds([]);
+    }
     setHistoryTick((t) => t + 1);
   }, [applySnapshot]);
 
@@ -421,6 +601,18 @@ export const ImageEditorPage: React.FC = () => {
     if (selectedIds.length !== 1) return null;
     return objects.find((o) => o.id === selectedIds[0]) ?? null;
   }, [objects, selectedIds]);
+
+  const pathVectorSimplifyPreview = useMemo(() => {
+    if (!pathSimplifySession) return null;
+    const next = simplifySubpathsByPercent(
+      pathSimplifySession.baselinePathData,
+      pathSimplifySession.subpathIndices,
+      pathSimplifySession.curvePrecisionPercent
+    );
+    const orig = mergeSubpathsToD(pathSimplifySession.baselinePathData, pathSimplifySession.subpathIndices);
+    if (!next || !orig) return null;
+    return { previewPathData: next, originalSelectedD: orig };
+  }, [pathSimplifySession]);
 
   const onAlignMulti = useCallback(
     (kind: AlignKind) => {
@@ -649,7 +841,8 @@ export const ImageEditorPage: React.FC = () => {
     !!fitContentSession ||
     !!potraceSession ||
     !!zoomBlurSession ||
-    !!lamaEraseSession;
+    !!lamaEraseSession ||
+    !!pathVectorEditSession;
 
   const enterLamaEraseSession = useCallback(
     async (id: string, baseUrl: string) => {
@@ -906,7 +1099,6 @@ export const ImageEditorPage: React.FC = () => {
     setFitContentSession(null);
     setPotraceSession({
       objectId: id,
-      originalSrc: o.src,
       threshold: 128,
       useOtsu: true,
       turdSize: 16,
@@ -916,6 +1108,8 @@ export const ImageEditorPage: React.FC = () => {
       adaptiveSimplify: false,
       preserveColor: true,
       ignoreWhite: true,
+      edgeErosionPasses: 1,
+      fringeSuppressMinRgb: 0,
       previewPathData: null,
       traceW: 1,
       traceH: 1,
@@ -1003,10 +1197,16 @@ export const ImageEditorPage: React.FC = () => {
     if (!potraceSession) return;
     recordHistory();
     const s = potraceSession;
+    const imgObj = objects.find((x): x is EditorImageObject => x.id === s.objectId && x.type === 'image');
+    if (!imgObj) {
+      message.error('找不到要矢量化的图片图层');
+      return;
+    }
     potraceReqIdRef.current += 1;
     setImageProcessing(true);
     try {
-      const r = await traceDataUrlToSvgPathResult(s.originalSrc, {
+      const raster = await rasterizeEditorImageForPotrace(imgObj);
+      const r = await traceDataUrlToSvgPathResult(raster.dataUrl, {
         threshold: s.useOtsu ? -1 : s.threshold,
         turdSize: s.turdSize,
         simplifyEpsilon: s.simplifyEpsilon,
@@ -1014,11 +1214,36 @@ export const ImageEditorPage: React.FC = () => {
         cornerAngleThreshold: s.cornerAngleThreshold,
         adaptiveSimplify: s.adaptiveSimplify,
         ignoreWhite: s.ignoreWhite,
+        edgeErosionPasses: s.edgeErosionPasses,
+        fringeSuppressMinRgb: s.fringeSuppressMinRgb,
         maxTraceSide: 2048,
       });
       if (!r.pathData.trim()) {
         message.warning('未得到有效路径，可尝试调整阈值或去噪');
         return;
+      }
+      let fill: string | undefined;
+      let fillKind: 'solid' | 'pattern' | undefined;
+      let patternSrc: string | undefined;
+      let pathSubpathStyles: PathSubpathStyleOverride[] | undefined;
+      if (s.preserveColor) {
+        const sampleSrc = s.ignoreWhite
+          ? await imageSrcToKnockoutWhiteDataUrl(raster.dataUrl, DEFAULT_POTRACE_OPTIONS.ignoreWhiteMinLuma)
+          : raster.dataUrl;
+        fillKind = 'solid';
+        const tempObj = defaultEditorPathFromTrace({
+          pathData: r.pathData,
+          naturalW: r.width,
+          naturalH: r.height,
+          x: s.docRect.x,
+          y: s.docRect.y,
+          width: s.docRect.width,
+          height: s.docRect.height,
+          fill: 'rgba(128,128,128,1)',
+          fillKind: 'solid',
+        });
+        const styles = await subpathStylesFromPatternDominants(tempObj, sampleSrc);
+        pathSubpathStyles = styles ?? undefined;
       }
       const pathObj = defaultEditorPathFromTrace({
         pathData: r.pathData,
@@ -1028,10 +1253,14 @@ export const ImageEditorPage: React.FC = () => {
         y: s.docRect.y,
         width: s.docRect.width,
         height: s.docRect.height,
-        preserveColor: s.preserveColor,
-        patternSrc: s.preserveColor ? s.originalSrc : undefined,
+        fill,
+        fillKind,
+        patternSrc,
       });
-      setObjects((prev) => [...prev, pathObj]);
+      const finalPathObj = pathSubpathStyles
+        ? { ...pathObj, pathSubpathStyles, fillKind: 'solid' as const, patternSrc: undefined }
+        : pathObj;
+      setObjects((prev) => [...prev, finalPathObj]);
       setPotraceSession(null);
       message.success('已添加矢量图层');
     } catch (e) {
@@ -1039,10 +1268,10 @@ export const ImageEditorPage: React.FC = () => {
     } finally {
       setImageProcessing(false);
     }
-  }, [potraceSession, message, recordHistory]);
+  }, [potraceSession, objects, message, recordHistory]);
 
   useEffect(() => {
-    if (!potraceSession) return;
+    if (!potraceSession || potraceTraceSourceKey == null) return;
     const reqId = ++potraceReqIdRef.current;
     let cancelled = false;
     (async () => {
@@ -1050,7 +1279,11 @@ export const ImageEditorPage: React.FC = () => {
         setImageProcessing(true);
         const cur = potraceSessionRef.current;
         if (!cur) return;
-        const r = await traceDataUrlToSvgPathResult(cur.originalSrc, {
+        const o = objects.find((x): x is EditorImageObject => x.id === cur.objectId && x.type === 'image');
+        if (!o) return;
+        const raster = await rasterizeEditorImageForPotrace(o);
+        if (cancelled || reqId !== potraceReqIdRef.current) return;
+        const r = await traceDataUrlToSvgPathResult(raster.dataUrl, {
           threshold: cur.useOtsu ? -1 : cur.threshold,
           turdSize: cur.turdSize,
           simplifyEpsilon: cur.simplifyEpsilon,
@@ -1058,6 +1291,8 @@ export const ImageEditorPage: React.FC = () => {
           cornerAngleThreshold: cur.cornerAngleThreshold,
           adaptiveSimplify: cur.adaptiveSimplify,
           ignoreWhite: cur.ignoreWhite,
+          edgeErosionPasses: cur.edgeErosionPasses,
+          fringeSuppressMinRgb: cur.fringeSuppressMinRgb,
         });
         if (cancelled || reqId !== potraceReqIdRef.current) return;
         setPotraceSession((prev) =>
@@ -1076,12 +1311,119 @@ export const ImageEditorPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
+    // 勿依赖整个 potraceSession：更新 previewPathData 会改引用并导致本 effect 死循环 + loading 闪烁
   }, [
     potraceSession?.objectId,
-    potraceSession?.originalSrc,
+    potraceSession?.threshold,
+    potraceSession?.useOtsu,
+    potraceSession?.turdSize,
+    potraceSession?.simplifyEpsilon,
+    potraceSession?.curveTension,
+    potraceSession?.cornerAngleThreshold,
+    potraceSession?.adaptiveSimplify,
     potraceSession?.ignoreWhite,
+    potraceSession?.edgeErosionPasses,
+    potraceSession?.fringeSuppressMinRgb,
+    potraceTraceSourceKey,
     potracePreviewTick,
     message,
+  ]);
+
+  useEffect(() => {
+    if (!potraceSession) {
+      setPotraceKnockoutPatternUrl(null);
+      return;
+    }
+    if (!potraceSession.preserveColor || !potraceSession.ignoreWhite) {
+      setPotraceKnockoutPatternUrl(null);
+      return;
+    }
+    if (potraceTraceSourceKey == null) {
+      setPotraceKnockoutPatternUrl(null);
+      return;
+    }
+    const objectId = potraceSession.objectId;
+    let cancelled = false;
+    setPotraceKnockoutPatternUrl(null);
+    void (async () => {
+      try {
+        const o = objects.find((x): x is EditorImageObject => x.id === objectId && x.type === 'image');
+        if (!o) return;
+        const raster = await rasterizeEditorImageForPotrace(o);
+        if (cancelled) return;
+        const url = await imageSrcToKnockoutWhiteDataUrl(
+          raster.dataUrl,
+          DEFAULT_POTRACE_OPTIONS.ignoreWhiteMinLuma
+        );
+        if (!cancelled) setPotraceKnockoutPatternUrl(url);
+      } catch {
+        if (!cancelled) setPotraceKnockoutPatternUrl(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    potraceSession?.objectId,
+    potraceTraceSourceKey,
+    potraceSession?.preserveColor,
+    potraceSession?.ignoreWhite,
+  ]);
+
+  useEffect(() => {
+    if (!potraceSession?.preserveColor || !potraceSession.previewPathData?.trim()) {
+      setPotraceDominantPreviewCss(null);
+      return;
+    }
+    const s = potraceSession;
+    const pathD = s.previewPathData;
+    const tw = s.traceW;
+    const th = s.traceH;
+    if (tw < 1 || th < 1) {
+      setPotraceDominantPreviewCss(null);
+      return;
+    }
+    if (s.ignoreWhite && !potraceKnockoutPatternUrl) {
+      setPotraceDominantPreviewCss(null);
+      return;
+    }
+    if (!s.ignoreWhite && potraceTraceSourceKey == null) {
+      setPotraceDominantPreviewCss(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        let sampleSrc: string;
+        if (s.ignoreWhite) {
+          sampleSrc = potraceKnockoutPatternUrl as string;
+        } else {
+          const o = objects.find((x): x is EditorImageObject => x.id === s.objectId && x.type === 'image');
+          if (!o) return;
+          const raster = await rasterizeEditorImageForPotrace(o);
+          if (cancelled) return;
+          sampleSrc = raster.dataUrl;
+        }
+        const css = await dominantRgbCssFromImageAndPath(sampleSrc, pathD as string, tw, th);
+        if (!cancelled) setPotraceDominantPreviewCss(css);
+      } catch {
+        if (!cancelled) setPotraceDominantPreviewCss(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    potraceSession?.objectId,
+    potraceSession?.preserveColor,
+    potraceSession?.previewPathData,
+    potraceSession?.traceW,
+    potraceSession?.traceH,
+    potraceTraceSourceKey,
+    potraceSession?.ignoreWhite,
+    potraceKnockoutPatternUrl,
+    potracePreviewTick,
+    objects,
   ]);
 
   /** 缩放模糊：实时预览（限长边以控制耗时） */
@@ -1360,6 +1702,32 @@ export const ImageEditorPage: React.FC = () => {
         return;
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        const pv = pathVectorEditSessionRef.current;
+        if (pv?.selectedVertices.length) {
+          const { objectId, selectedVertices } = pv;
+          const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+          if (!obj || obj.type !== 'path') return;
+          const model = tryParsePathData(obj.pathData);
+          if (!model) return;
+          const next = deleteVerticesAt(model, selectedVertices);
+          if (!next) return;
+          e.preventDefault();
+          recordHistory();
+          setObjects((prev) =>
+            prev.map((o) => (o.id === objectId ? { ...o, pathData: pathDataFromModel(next) } : o))
+          );
+          setPathVectorEditSession((s) => (s ? { ...s, selectedVertices: [] } : null));
+          return;
+        }
+        if (pv?.activeSubpaths.length) {
+          e.preventDefault();
+          onPathVectorDeleteActiveSubpathsRef.current();
+          return;
+        }
+        if (pv) {
+          e.preventDefault();
+          return;
+        }
         if (selectedIds.length === 0) return;
         e.preventDefault();
         recordHistory();
@@ -1369,7 +1737,24 @@ export const ImageEditorPage: React.FC = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo, selectedIds, recordHistory]);
+  }, [undo, redo, selectedIds, recordHistory, pathVectorEditSession, objects]);
+
+  useEffect(() => {
+    if (!pathVectorEditSession) return;
+    if (selectedIds.length !== 1 || selectedIds[0] !== pathVectorEditSession.objectId) {
+      setPathVectorEditSession(null);
+    }
+  }, [selectedIds, pathVectorEditSession]);
+
+  useEffect(() => {
+    if (!pathVectorEditSession) return;
+    const o = objects.find((x) => x.id === pathVectorEditSession.objectId);
+    if (!o || o.type !== 'path') setPathVectorEditSession(null);
+  }, [objects, pathVectorEditSession]);
+
+  useEffect(() => {
+    if (!pathVectorEditSession) setPathSimplifySession(null);
+  }, [pathVectorEditSession]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -1385,6 +1770,469 @@ export const ImageEditorPage: React.FC = () => {
   const onUpdateObject = useCallback((id: string, patch: Partial<EditorObject>) => {
     setObjects((prev) => prev.map((o) => (o.id === id ? ({ ...o, ...patch } as EditorObject) : o)));
   }, []);
+
+  const pathVectorEditIdRef = useRef<string | null>(null);
+  pathVectorEditIdRef.current = pathVectorEditSession?.objectId ?? null;
+
+  const togglePathVectorEdit = useCallback(() => {
+    if (selected?.type !== 'path') return;
+    const po = selected as EditorPathObject;
+    if (!pathDataEditable(po.pathData)) {
+      message.warning('当前路径含不支持的指令，无法进入矢量编辑');
+      return;
+    }
+    setPathVectorEditSession((s) =>
+      s?.objectId === po.id ? null : { objectId: po.id, activeSubpaths: [], selectedVertices: [] }
+    );
+  }, [selected, message]);
+
+  const startPathSimplify = useCallback(() => {
+    const pv = pathVectorEditSessionRef.current;
+    if (!pv?.activeSubpaths.length) return;
+    const obj = objects.find((o) => o.id === pv.objectId && o.type === 'path');
+    if (!obj || obj.type !== 'path') return;
+    setPathSimplifySession({
+      objectId: pv.objectId,
+      subpathIndices: [...new Set(pv.activeSubpaths)].sort((a, b) => a - b),
+      baselinePathData: obj.pathData,
+      curvePrecisionPercent: 18,
+    });
+  }, [objects]);
+
+  const cancelPathSimplify = useCallback(() => setPathSimplifySession(null), []);
+
+  const applyPathSimplify = useCallback(() => {
+    if (!pathSimplifySession) return;
+    const nextData = simplifySubpathsByPercent(
+      pathSimplifySession.baselinePathData,
+      pathSimplifySession.subpathIndices,
+      pathSimplifySession.curvePrecisionPercent
+    );
+    if (!nextData) {
+      message.warning('无法生成简化路径');
+      return;
+    }
+    recordHistory();
+    const oid = pathSimplifySession.objectId;
+    setObjects((prev) =>
+      prev.map((o) => (o.id === oid && o.type === 'path' ? { ...o, pathData: nextData } : o))
+    );
+    setPathSimplifySession(null);
+  }, [pathSimplifySession, recordHistory, message]);
+
+  const onPathVectorCommitPathData = useCallback((pathData: string) => {
+    const id = pathVectorEditIdRef.current;
+    if (!id) return;
+    setObjects((prev) =>
+      prev.map((o) => (o.id === id && o.type === 'path' ? { ...o, pathData } : o))
+    );
+  }, []);
+
+  const onPathVectorDeleteActiveSubpaths = useCallback(() => {
+    if (!pathVectorEditSession?.activeSubpaths.length) return;
+    const { objectId, activeSubpaths } = pathVectorEditSession;
+    const toRemoveSorted = [...new Set(activeSubpaths)].sort((a, b) => a - b);
+    const toRemoveSet = new Set(toRemoveSorted);
+    const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+    if (!obj || obj.type !== 'path') return;
+    const model = tryParsePathData(obj.pathData);
+    if (!model) return;
+
+    const mapSi = (osi: number): number | null => {
+      if (toRemoveSet.has(osi)) return null;
+      let dec = 0;
+      for (const r of toRemoveSorted) {
+        if (r < osi) dec++;
+      }
+      return osi - dec;
+    };
+
+    const nextModel = removeSubpathsFromModel(model, toRemoveSorted);
+
+    if (nextModel.subpaths.length === 0) {
+      recordHistory();
+      setObjects((prev) => prev.filter((o) => o.id !== objectId));
+      setPathVectorEditSession(null);
+      setSelectedIds((prev) => prev.filter((id) => id !== objectId));
+      return;
+    }
+
+    let newStyles = obj.pathSubpathStyles;
+    if (obj.pathSubpathStyles && obj.pathSubpathStyles.length === model.subpaths.length) {
+      newStyles = obj.pathSubpathStyles.filter((_, i) => !toRemoveSet.has(i));
+      if (newStyles.length !== nextModel.subpaths.length) newStyles = undefined;
+    }
+
+    recordHistory();
+    setObjects((prev) =>
+      prev.map((o) =>
+        o.id === objectId && o.type === 'path'
+          ? {
+              ...o,
+              pathData: pathDataFromModel(nextModel),
+              ...(newStyles && newStyles.length === nextModel.subpaths.length
+                ? { pathSubpathStyles: newStyles }
+                : { pathSubpathStyles: undefined }),
+            }
+          : o
+      )
+    );
+
+    setPathVectorEditSession((s) => {
+      if (!s) return null;
+      const nextActive = s.activeSubpaths.map(mapSi).filter((x): x is number => x != null);
+      const nextVerts = s.selectedVertices
+        .map((k) => {
+          const nsi = mapSi(k.subpathIndex);
+          if (nsi == null) return null;
+          return { subpathIndex: nsi, vertexIndex: k.vertexIndex };
+        })
+        .filter(Boolean) as PathVertexKey[];
+      return { ...s, activeSubpaths: nextActive, selectedVertices: nextVerts };
+    });
+  }, [pathVectorEditSession, objects, recordHistory]);
+
+  const onPathVectorMarqueeSelectSubpaths = useCallback(
+    (
+      docRect: { minX: number; minY: number; maxX: number; maxY: number },
+      shiftKey: boolean
+    ) => {
+      const oid = pathVectorEditSessionRef.current?.objectId;
+      if (!oid) return;
+      const obj = objects.find((o) => o.id === oid && o.type === 'path') as EditorPathObject | undefined;
+      if (!obj) return;
+      const model = tryParsePathData(obj.pathData);
+      if (!model) return;
+      const hit = subpathIndicesIntersectingDocRect(obj, model, docRect);
+      setPathVectorEditSession((s) => {
+        if (!s || s.objectId !== oid) return s;
+        const nextActive = shiftKey
+          ? [...new Set([...s.activeSubpaths, ...hit])].sort((a, b) => a - b)
+          : hit;
+        return { ...s, activeSubpaths: nextActive, selectedVertices: [] };
+      });
+    },
+    [objects]
+  );
+
+  const onPathVectorBoolean = useCallback(
+    (op: PathBooleanOp) => {
+      if (!pathVectorEditSession) return;
+      const { objectId, activeSubpaths } = pathVectorEditSession;
+      if (activeSubpaths.length !== 2 || new Set(activeSubpaths).size !== 2) return;
+      const [i0, i1] = activeSubpaths;
+      const lo = Math.min(i0, i1);
+      const hi = Math.max(i0, i1);
+      const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+      if (!obj || obj.type !== 'path') return;
+      const model = tryParsePathData(obj.pathData);
+      if (!model) return;
+
+      const spLo = model.subpaths[lo];
+      const spHi = model.subpaths[hi];
+      if (!spLo || !spHi) return;
+      if (!spLo.closed || !spHi.closed) {
+        message.warning('布尔运算仅支持封闭 path');
+        return;
+      }
+      /** 见 docs/14 §7.1：pathData 序号小=下层先绘，大=上层后绘；打孔为 下层 − 上层（trace 布尔见 pathBooleanPaper） */
+      const dLo = serializeSubpathToD(spLo);
+      const dHi = serializeSubpathToD(spHi);
+      const resultD = pathBooleanPathData(dLo, dHi, op);
+      if (!resultD) {
+        message.warning('运算结果为空');
+        return;
+      }
+      const parsedResult = tryParsePathData(resultD);
+      if (!parsedResult || parsedResult.subpaths.length === 0) {
+        message.warning('无法解析运算结果，请尝试简化路径');
+        return;
+      }
+      /** 只去掉选中的 lo、hi 两段，保留 (lo,hi) 之间的子路径；此前误用 slice(0,lo)+slice(hi+1) 会删掉中间全部轮廓 */
+      const subpathsBetween = model.subpaths.slice(lo + 1, hi);
+      const newSubpaths = [
+        ...model.subpaths.slice(0, lo),
+        ...parsedResult.subpaths,
+        ...subpathsBetween,
+        ...model.subpaths.slice(hi + 1),
+      ];
+
+      /** 复合轮廓（外环+内孔）必须在同一 `<path d>` / 单 Konva Path 内用 evenodd 填充；per-subpath 分拆渲染会把孔洞涂实 */
+      const compoundBoolean = parsedResult.subpaths.length > 1;
+
+      let newStyles: EditorPathObject['pathSubpathStyles'] = undefined;
+      if (!compoundBoolean) {
+        const oldLen = model.subpaths.length;
+        if (obj.pathSubpathStyles && obj.pathSubpathStyles.length === oldLen) {
+          const before = obj.pathSubpathStyles.slice(0, lo);
+          const stylesBetween = obj.pathSubpathStyles.slice(lo + 1, hi);
+          const after = obj.pathSubpathStyles.slice(hi + 1);
+          const tpl = { ...obj.pathSubpathStyles[lo]! };
+          const resultStyles = parsedResult.subpaths.map(() => ({ ...tpl }));
+          const merged = [...before, ...resultStyles, ...stylesBetween, ...after];
+          if (merged.length === newSubpaths.length) newStyles = merged;
+        }
+      }
+
+      const nextObj: EditorPathObject = {
+        ...obj,
+        pathData: pathDataFromModel({ subpaths: newSubpaths }),
+        ...(newStyles && newStyles.length === newSubpaths.length
+          ? { pathSubpathStyles: newStyles }
+          : { pathSubpathStyles: undefined }),
+      };
+
+      recordHistory();
+      setObjects((prev) => prev.map((o) => (o.id === objectId ? nextObj : o)));
+
+      const newCount = parsedResult.subpaths.length;
+      setPathVectorEditSession({
+        objectId,
+        activeSubpaths: Array.from({ length: newCount }, (_, k) => lo + k),
+        selectedVertices: [],
+      });
+    },
+    [pathVectorEditSession, objects, recordHistory, message]
+  );
+
+  onPathVectorDeleteActiveSubpathsRef.current = onPathVectorDeleteActiveSubpaths;
+
+  const onPathVectorDeleteAnchor = useCallback(() => {
+    if (!pathVectorEditSession?.selectedVertices.length) return;
+    const { objectId, selectedVertices } = pathVectorEditSession;
+    const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+    if (!obj || obj.type !== 'path') return;
+    const model = tryParsePathData(obj.pathData);
+    if (!model) return;
+    const next = deleteVerticesAt(model, selectedVertices);
+    if (!next) return;
+    recordHistory();
+    setObjects((prev) =>
+      prev.map((o) => (o.id === objectId ? { ...o, pathData: pathDataFromModel(next) } : o))
+    );
+    setPathVectorEditSession((s) => (s ? { ...s, selectedVertices: [] } : null));
+  }, [pathVectorEditSession, objects, recordHistory]);
+
+  const onPathVectorSetCorner = useCallback(
+    (corner: boolean) => {
+      if (!pathVectorEditSession?.selectedVertices.length) return;
+      const { objectId, selectedVertices } = pathVectorEditSession;
+      const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+      if (!obj || obj.type !== 'path') return;
+      const model = tryParsePathData(obj.pathData);
+      if (!model) return;
+      recordHistory();
+      let next = model;
+      for (const k of selectedVertices) {
+        next = setVertexCorner(next, k.subpathIndex, k.vertexIndex, corner);
+      }
+      setObjects((prev) =>
+        prev.map((o) => (o.id === objectId ? { ...o, pathData: pathDataFromModel(next) } : o))
+      );
+    },
+    [pathVectorEditSession, objects, recordHistory]
+  );
+
+  const pathVectorCanAddMidAnchor = useMemo(() => {
+    if (!pathVectorEditSession || pathVectorEditSession.selectedVertices.length !== 2) return false;
+    const obj = objects.find((o) => o.id === pathVectorEditSession.objectId && o.type === 'path');
+    if (!obj || obj.type !== 'path') return false;
+    const m = tryParsePathData(obj.pathData);
+    if (!m) return false;
+    const [a, b] = pathVectorEditSession.selectedVertices;
+    if (a.subpathIndex !== b.subpathIndex) return false;
+    const sp = m.subpaths[a.subpathIndex];
+    if (!sp) return false;
+    return areVerticesAdjacentOnSubpath(sp, a.vertexIndex, b.vertexIndex);
+  }, [pathVectorEditSession, objects]);
+
+  const onPathVectorInsertMidAnchor = useCallback(() => {
+    if (!pathVectorEditSession || pathVectorEditSession.selectedVertices.length !== 2) return;
+    const { objectId, selectedVertices } = pathVectorEditSession;
+    const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+    if (!obj || obj.type !== 'path') return;
+    const m = tryParsePathData(obj.pathData);
+    if (!m) return;
+    const [a, b] = selectedVertices;
+    if (a.subpathIndex !== b.subpathIndex) return;
+    const si = a.subpathIndex;
+    const spBefore = m.subpaths[si];
+    if (!spBefore) return;
+    if (!areVerticesAdjacentOnSubpath(spBefore, a.vertexIndex, b.vertexIndex)) return;
+    const es = edgeStartForAdjacentPair(spBefore, a.vertexIndex, b.vertexIndex);
+    if (es == null) return;
+    const nextIdx = subpathNextVertexIndex(spBefore, es);
+    if (nextIdx == null) return;
+    const next = insertVertexMidEdgeOnSubpath(m, si, es);
+    if (!next) return;
+    const spAfter = next.subpaths[si]!;
+    const wrapEdge =
+      spBefore.closed && es === spBefore.verts.length - 1 && subpathNextVertexIndex(spBefore, es) === 0;
+    const newVi = wrapEdge ? spAfter.verts.length - 1 : nextIdx;
+    recordHistory();
+    setObjects((prev) =>
+      prev.map((o) => (o.id === objectId && o.type === 'path' ? { ...o, pathData: pathDataFromModel(next) } : o))
+    );
+    setPathVectorEditSession((s) =>
+      s ? { ...s, selectedVertices: [{ subpathIndex: si, vertexIndex: newVi }] } : null
+    );
+  }, [pathVectorEditSession, objects, recordHistory]);
+
+  const onPathVectorApplyFillToSelection = useCallback(
+    (fill: string) => {
+      const pv = pathVectorEditSession;
+      if (!pv) return;
+      const fromVerts = [...new Set(pv.selectedVertices.map((k) => k.subpathIndex))];
+      const sis = [...new Set(fromVerts.length > 0 ? fromVerts : pv.activeSubpaths)]
+        .filter((i) => i >= 0)
+        .sort((a, b) => a - b);
+      if (sis.length === 0) return;
+      const { objectId } = pv;
+      const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+      if (!obj || obj.type !== 'path') return;
+      const model = tryParsePathData(obj.pathData);
+      if (!model) return;
+
+      recordHistory();
+      void (async () => {
+        try {
+          const tm = tryParsePathData(obj.pathData);
+          if (!tm) return;
+          let styles: PathSubpathStyleOverride[];
+          let clearPattern = false;
+          if (obj.fillKind === 'pattern' && obj.patternSrc?.trim()) {
+            const built = await subpathStylesFromPatternDominants(obj, obj.patternSrc);
+            if (!built) return;
+            styles = built;
+            clearPattern = true;
+          } else {
+            styles = ensureEditorPathSubpathStyles(obj, tm.subpaths.length);
+          }
+          for (const i of sis) {
+            if (i >= 0 && i < styles.length) styles[i] = { ...styles[i]!, fill };
+          }
+          setObjects((prev) =>
+            prev.map((o) =>
+              o.id === objectId && o.type === 'path'
+                ? {
+                    ...o,
+                    ...(clearPattern ? { fillKind: 'solid' as const, patternSrc: undefined } : {}),
+                    pathSubpathStyles: styles,
+                  }
+                : o
+            )
+          );
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : '更新填充失败');
+        }
+      })();
+    },
+    [pathVectorEditSession, objects, recordHistory, message]
+  );
+
+  const onPathVectorApplyStrokeToSelection = useCallback(
+    (stroke: string) => {
+      const pv = pathVectorEditSession;
+      if (!pv) return;
+      const fromVerts = [...new Set(pv.selectedVertices.map((k) => k.subpathIndex))];
+      const sis = [...new Set(fromVerts.length > 0 ? fromVerts : pv.activeSubpaths)]
+        .filter((i) => i >= 0)
+        .sort((a, b) => a - b);
+      if (sis.length === 0) return;
+      const { objectId } = pv;
+      const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+      if (!obj || obj.type !== 'path') return;
+      const model = tryParsePathData(obj.pathData);
+      if (!model) return;
+
+      recordHistory();
+      void (async () => {
+        try {
+          const tm = tryParsePathData(obj.pathData);
+          if (!tm) return;
+          let styles: PathSubpathStyleOverride[];
+          let clearPattern = false;
+          if (obj.fillKind === 'pattern' && obj.patternSrc?.trim()) {
+            const built = await subpathStylesFromPatternDominants(obj, obj.patternSrc);
+            if (!built) return;
+            styles = built;
+            clearPattern = true;
+          } else {
+            styles = ensureEditorPathSubpathStyles(obj, tm.subpaths.length);
+          }
+          for (const i of sis) {
+            if (i >= 0 && i < styles.length) styles[i] = { ...styles[i]!, stroke };
+          }
+          setObjects((prev) =>
+            prev.map((o) =>
+              o.id === objectId && o.type === 'path'
+                ? {
+                    ...o,
+                    ...(clearPattern ? { fillKind: 'solid' as const, patternSrc: undefined } : {}),
+                    pathSubpathStyles: styles,
+                  }
+                : o
+            )
+          );
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : '更新描边失败');
+        }
+      })();
+    },
+    [pathVectorEditSession, objects, recordHistory, message]
+  );
+
+  const onPathVectorApplyStrokeWidthToSelection = useCallback(
+    (strokeWidth: number) => {
+      const pv = pathVectorEditSession;
+      if (!pv) return;
+      const fromVerts = [...new Set(pv.selectedVertices.map((k) => k.subpathIndex))];
+      const sis = [...new Set(fromVerts.length > 0 ? fromVerts : pv.activeSubpaths)]
+        .filter((i) => i >= 0)
+        .sort((a, b) => a - b);
+      if (sis.length === 0) return;
+      const { objectId } = pv;
+      const obj = objects.find((o) => o.id === objectId && o.type === 'path');
+      if (!obj || obj.type !== 'path') return;
+      const model = tryParsePathData(obj.pathData);
+      if (!model) return;
+
+      recordHistory();
+      void (async () => {
+        try {
+          const tm = tryParsePathData(obj.pathData);
+          if (!tm) return;
+          let styles: PathSubpathStyleOverride[];
+          let clearPattern = false;
+          if (obj.fillKind === 'pattern' && obj.patternSrc?.trim()) {
+            const built = await subpathStylesFromPatternDominants(obj, obj.patternSrc);
+            if (!built) return;
+            styles = built;
+            clearPattern = true;
+          } else {
+            styles = ensureEditorPathSubpathStyles(obj, tm.subpaths.length);
+          }
+          for (const i of sis) {
+            if (i >= 0 && i < styles.length) styles[i] = { ...styles[i]!, strokeWidth };
+          }
+          setObjects((prev) =>
+            prev.map((o) =>
+              o.id === objectId && o.type === 'path'
+                ? {
+                    ...o,
+                    ...(clearPattern ? { fillKind: 'solid' as const, patternSrc: undefined } : {}),
+                    pathSubpathStyles: styles,
+                  }
+                : o
+            )
+          );
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : '更新描边宽度失败');
+        }
+      })();
+    },
+    [pathVectorEditSession, objects, recordHistory, message]
+  );
 
   const addObject = useCallback(
     (o: EditorObject) => {
@@ -1505,10 +2353,80 @@ export const ImageEditorPage: React.FC = () => {
     [promptLargeImageInsert]
   );
 
+  const insertLoadedPathObject = useCallback(
+    async (
+      payload: EditorSvgImportPathPayload,
+      docW: number,
+      docH: number,
+      placeAt: { x: number; y: number } | null
+    ): Promise<InsertLoadedPathResult | null> => {
+      const { pathData, naturalW, naturalH, pathSubpathStyles } = payload;
+      const nw = Math.max(1, naturalW);
+      const nh = Math.max(1, naturalH);
+      if (imageFitsInsideDoc(nw, nh, docW, docH)) {
+        const layer = placeAt
+          ? editorPathLayerNaturalAt(pathData, nw, nh, placeAt.x, placeAt.y, pathSubpathStyles)
+          : editorPathLayerNaturalCentered(pathData, nw, nh, docW, docH, pathSubpathStyles);
+        return { layer: finalizeSvgImportedPathLayer(layer), docW, docH };
+      }
+      const choice = await promptLargeImageInsert(nw, nh, docW, docH);
+      if (!choice) return null;
+      if (choice.kind === 'fit') {
+        const layer = placeAt
+          ? editorPathLayerContainAt(pathData, nw, nh, docW, docH, placeAt.x, placeAt.y, pathSubpathStyles)
+          : editorPathLayerContainCentered(pathData, nw, nh, docW, docH, pathSubpathStyles);
+        return { layer: finalizeSvgImportedPathLayer(layer), docW, docH };
+      }
+      if (choice.autoEnlargeCanvas) {
+        const newW = Math.max(docW, nw);
+        const newH = Math.max(docH, nh);
+        const layer = editorPathLayerNaturalCentered(pathData, nw, nh, newW, newH, pathSubpathStyles);
+        return {
+          layer: finalizeSvgImportedPathLayer(layer),
+          docW: newW,
+          docH: newH,
+          zoomFitViewport: true,
+        };
+      }
+      const layer = placeAt
+        ? editorPathLayerNaturalAt(pathData, nw, nh, placeAt.x, placeAt.y, pathSubpathStyles)
+        : editorPathLayerNaturalCentered(pathData, nw, nh, docW, docH, pathSubpathStyles);
+      return { layer: finalizeSvgImportedPathLayer(layer), docW, docH, zoomFitViewport: true };
+    },
+    [promptLargeImageInsert]
+  );
+
   const handleInsertImageFromSrc = useCallback(
-    async (src: string, suggestedExportStem?: string): Promise<boolean> => {
+    async (
+      src: string,
+      options?: { stem?: string; exportDir?: string | null }
+    ): Promise<boolean> => {
       try {
-        if (suggestedExportStem) setExportDefaultStem(sanitizeExportBasename(suggestedExportStem));
+        if (options?.stem != null && options.stem !== '') {
+          setExportDefaultStem(sanitizeExportBasename(options.stem));
+        }
+        if (options && 'exportDir' in options) {
+          setExportDefaultDir(options.exportDir ?? null);
+        }
+        const svgText = tryDecodeSvgTextFromSrc(src);
+        if (svgText) {
+          const payload = importSvgTextToEditorPathPayload(svgText);
+          if (payload) {
+            const r = await insertLoadedPathObject(payload, docWidth, docHeight, null);
+            if (!r) return false;
+            if (r.docW !== docWidth || r.docH !== docHeight) {
+              recordHistory();
+              setDocWidth(r.docW);
+              setDocHeight(r.docH);
+              setObjects((prev) => [...prev, r.layer]);
+              setSelectedIds([r.layer.id]);
+            } else {
+              addObject(r.layer);
+            }
+            if (r.zoomFitViewport) zoomToFitCanvas();
+            return true;
+          }
+        }
         const { w, h } = await loadImageSize(src);
         const r = await insertLoadedImage(src, w, h, docWidth, docHeight, null);
         if (!r) return false;
@@ -1523,35 +2441,147 @@ export const ImageEditorPage: React.FC = () => {
         }
         if (r.zoomFitViewport) zoomToFitCanvas();
         return true;
-      } catch {
-        message.error('无法加载图片');
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        console.error('[ImageEditor] handleInsertImageFromSrc', e);
+        message.error(`无法加载图片：${detail}`);
         return false;
       }
     },
-    [addObject, docWidth, docHeight, message, recordHistory, insertLoadedImage, zoomToFitCanvas]
+    [
+      addObject,
+      docWidth,
+      docHeight,
+      message,
+      recordHistory,
+      insertLoadedImage,
+      insertLoadedPathObject,
+      zoomToFitCanvas,
+    ]
+  );
+
+  const loadEditorImportFromDisk = useCallback(
+    async (filePath: string): Promise<{ kind: 'raster'; dataUrl: string } | { kind: 'svg'; svgText: string } | null> => {
+      const yf = window.yiman?.fs;
+      if (yf?.readImageFileForEditor) {
+        const r = await yf.readImageFileForEditor(filePath);
+        if (!r.ok) {
+          message.error(r.error);
+          return null;
+        }
+        if (r.kind === 'svg') return { kind: 'svg', svgText: r.svgText };
+        return { kind: 'raster', dataUrl: r.dataUrl };
+      }
+      const legacy = await yf?.readFileAsDataUrl?.(filePath);
+      if (!legacy) {
+        message.error('读取文件失败');
+        return null;
+      }
+      if (filePath.toLowerCase().endsWith('.svg')) {
+        const svg = tryDecodeSvgTextFromSrc(legacy);
+        if (svg) return { kind: 'svg', svgText: svg };
+      }
+      return { kind: 'raster', dataUrl: legacy };
+    },
+    [message]
   );
 
   const onDropImageFiles = useCallback(
     async (files: File[], docPoint: { x: number; y: number }) => {
       const imageFiles = files.filter(
-        (f) => f.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f.name)
+        (f) =>
+          f.type.startsWith('image/') ||
+          /\.(png|jpe?g|gif|webp|bmp|tiff?|svgz?|pdf|eps|ps|odg)$/i.test(f.name)
       );
       if (!imageFiles.length) return;
       let curDocW = docWidth;
       let curDocH = docHeight;
       let x = docPoint.x;
       let y = docPoint.y;
-      const newLayers: EditorImageObject[] = [];
+      const newObjects: EditorObject[] = [];
       let zoomFitAfterDrop = false;
       for (let fi = 0; fi < imageFiles.length; fi++) {
         const f = imageFiles[fi]!;
         try {
-          const dataUrl: string = await new Promise((resolve, reject) => {
-            const r = new FileReader();
-            r.onload = () => resolve(String(r.result));
-            r.onerror = () => reject(r.error);
-            r.readAsDataURL(f);
-          });
+          const ext = (f.name.split('.').pop() || '').toLowerCase();
+          const absPath = window.yiman?.fs?.getPathForFile?.(f);
+          const isSvg = ext === 'svg' || f.type === 'image/svg+xml';
+
+          if (isSvg) {
+            let svgText: string | null = null;
+            if (absPath && window.yiman?.fs?.readImageFileForEditor) {
+              const r = await window.yiman.fs.readImageFileForEditor(absPath);
+              if (r.ok && r.kind === 'svg') svgText = r.svgText;
+              else if (!r.ok) message.error(`${f.name}：${r.error}`);
+            } else if (ext === 'svgz' && !absPath) {
+              message.warning(`${f.name}：SVGZ 需在桌面端拖入本地文件（需绝对路径解压）`);
+              x += 20;
+              y += 20;
+              continue;
+            } else {
+              svgText = await readBrowserFileAsUtf8(f);
+            }
+            if (!svgText?.trim()) {
+              x += 20;
+              y += 20;
+              continue;
+            }
+            const payload = importSvgTextToEditorPathPayload(svgText);
+            if (!payload) {
+              message.warning(`「${f.name}」中未解析到可编辑矢量路径（可能仅有位图或文本）`);
+              x += 20;
+              y += 20;
+              continue;
+            }
+            const r = await insertLoadedPathObject(payload, curDocW, curDocH, { x, y });
+            if (!r) {
+              x += 20;
+              y += 20;
+              continue;
+            }
+            newObjects.push(r.layer);
+            if (r.zoomFitViewport) zoomFitAfterDrop = true;
+            curDocW = r.docW;
+            curDocH = r.docH;
+            if (fi === 0) {
+              setExportDefaultStem(filePathOrNameToExportStem(f.name));
+              if (absPath && window.yiman?.fs?.pathDirname) {
+                const d = await window.yiman.fs.pathDirname(absPath);
+                setExportDefaultDir(d?.trim() ? d : null);
+              } else {
+                setExportDefaultDir(null);
+              }
+            }
+            x += 20;
+            y += 20;
+            continue;
+          }
+
+          let dataUrl: string | null = null;
+          if (absPath && window.yiman?.fs?.readImageFileForEditor) {
+            const r = await window.yiman.fs.readImageFileForEditor(absPath);
+            if (r.ok && r.kind === 'raster') dataUrl = r.dataUrl;
+            else if (!r.ok) message.error(`${f.name}：${r.error}`);
+          } else if (['pdf', 'eps', 'ps', 'odg', 'svgz'].includes(ext)) {
+            message.warning(
+              `${f.name}：PDF/EPS/ODG/SVGZ 需从访达/资源管理器拖入，或使用菜单「打开本地图片」`
+            );
+            x += 20;
+            y += 20;
+            continue;
+          } else {
+            dataUrl = await new Promise<string>((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = () => resolve(String(r.result));
+              r.onerror = () => reject(r.error);
+              r.readAsDataURL(f);
+            });
+          }
+          if (!dataUrl) {
+            x += 20;
+            y += 20;
+            continue;
+          }
           const { w, h } = await loadImageSize(dataUrl);
           const r = await insertLoadedImage(dataUrl, w, h, curDocW, curDocH, { x, y });
           if (!r) {
@@ -1559,99 +2589,158 @@ export const ImageEditorPage: React.FC = () => {
             y += 20;
             continue;
           }
-          newLayers.push(r.layer);
+          newObjects.push(r.layer);
           if (r.zoomFitViewport) zoomFitAfterDrop = true;
           curDocW = r.docW;
           curDocH = r.docH;
-          if (fi === 0) setExportDefaultStem(filePathOrNameToExportStem(f.name));
+          if (fi === 0) {
+            setExportDefaultStem(filePathOrNameToExportStem(f.name));
+            if (absPath && window.yiman?.fs?.pathDirname) {
+              const d = await window.yiman.fs.pathDirname(absPath);
+              setExportDefaultDir(d?.trim() ? d : null);
+            } else {
+              setExportDefaultDir(null);
+            }
+          }
           x += 20;
           y += 20;
-        } catch {
-          message.error(`无法加载：${f.name}`);
+        } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e);
+          console.error('[ImageEditor] onDropImageFiles', f.name, e);
+          message.error(`无法加载「${f.name}」：${detail}`);
         }
       }
-      if (!newLayers.length) return;
+      if (!newObjects.length) return;
       recordHistory();
       if (curDocW !== docWidth || curDocH !== docHeight) {
         setDocWidth(curDocW);
         setDocHeight(curDocH);
       }
-      setObjects((prev) => [...prev, ...newLayers]);
-      setSelectedIds([newLayers[newLayers.length - 1]!.id]);
+      setObjects((prev) => [...prev, ...newObjects]);
+      setSelectedIds([newObjects[newObjects.length - 1]!.id]);
       if (zoomFitAfterDrop) zoomToFitCanvas();
     },
-    [docWidth, docHeight, message, recordHistory, insertLoadedImage, zoomToFitCanvas]
+    [
+      docWidth,
+      docHeight,
+      message,
+      recordHistory,
+      insertLoadedImage,
+      insertLoadedPathObject,
+      zoomToFitCanvas,
+    ]
   );
 
   const onInsertImageClick = useCallback(async () => {
     const path = await window.yiman?.dialog.openFile({
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+      filters: [{ name: EDITOR_IMAGE_DIALOG_FILTER.name, extensions: [...EDITOR_IMAGE_DIALOG_FILTER.extensions] }],
     });
     if (!path) return;
-    const dataUrl = await window.yiman?.fs.readFileAsDataUrl(path);
-    if (!dataUrl) {
-      message.error('读取文件失败');
+    const imp = await loadEditorImportFromDisk(path);
+    if (!imp) return;
+    if (imp.kind === 'svg') {
+      const payload = importSvgTextToEditorPathPayload(imp.svgText);
+      if (!payload) {
+        message.error('未能从 SVG 解析出可编辑路径（可能仅有位图、文本或未支持元素）');
+        return;
+      }
+      setExportDefaultStem(filePathOrNameToExportStem(path));
+      {
+        const d = (await window.yiman?.fs?.pathDirname?.(path)) ?? '';
+        setExportDefaultDir(d.trim() ? d : null);
+      }
+      const r = await insertLoadedPathObject(payload, docWidth, docHeight, null);
+      if (!r) return;
+      if (r.docW !== docWidth || r.docH !== docHeight) {
+        recordHistory();
+        setDocWidth(r.docW);
+        setDocHeight(r.docH);
+        setObjects((prev) => [...prev, r.layer]);
+        setSelectedIds([r.layer.id]);
+      } else {
+        addObject(r.layer);
+      }
+      if (r.zoomFitViewport) zoomToFitCanvas();
       return;
     }
-    await handleInsertImageFromSrc(dataUrl, filePathOrNameToExportStem(path));
-  }, [handleInsertImageFromSrc, message]);
+    {
+      const d = (await window.yiman?.fs?.pathDirname?.(path)) ?? '';
+      await handleInsertImageFromSrc(imp.dataUrl, {
+        stem: filePathOrNameToExportStem(path),
+        exportDir: d.trim() ? d : null,
+      });
+    }
+  }, [
+    addObject,
+    docWidth,
+    docHeight,
+    handleInsertImageFromSrc,
+    insertLoadedPathObject,
+    loadEditorImportFromDisk,
+    message,
+    recordHistory,
+    zoomToFitCanvas,
+  ]);
 
   const onOpenLocalImage = useCallback(async () => {
     const path = await window.yiman?.dialog.openFile({
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }],
+      filters: [{ name: EDITOR_IMAGE_DIALOG_FILTER.name, extensions: [...EDITOR_IMAGE_DIALOG_FILTER.extensions] }],
     });
     if (!path) return;
-    const dataUrl = await window.yiman?.fs.readFileAsDataUrl(path);
-    if (!dataUrl) {
-      message.error('读取文件失败');
+    const imp = await loadEditorImportFromDisk(path);
+    if (!imp) return;
+    if (imp.kind === 'svg') {
+      const payload = importSvgTextToEditorPathPayload(imp.svgText);
+      if (!payload) {
+        message.error('未能从 SVG 解析出可编辑路径（可能仅有位图、文本或未支持元素）');
+        return;
+      }
+      try {
+        clearHistoryStacks();
+        setExportDefaultStem(filePathOrNameToExportStem(path));
+        {
+          const d = (await window.yiman?.fs?.pathDirname?.(path)) ?? '';
+          setExportDefaultDir(d.trim() ? d : null);
+        }
+        const layer = finalizeSvgImportedPathLayer(
+          editorPathFillDocument(payload.pathData, payload.naturalW, payload.naturalH, payload.pathSubpathStyles)
+        );
+        setDocWidth(payload.naturalW);
+        setDocHeight(payload.naturalH);
+        setObjects([layer]);
+        setSelectedIds([layer.id]);
+        zoomToFitCanvas();
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        console.error('[ImageEditor] onOpenLocalImage svg', e);
+        message.error(`打开 SVG 失败：${detail}`);
+      }
       return;
     }
     try {
-      const { w, h } = await loadImageSize(dataUrl);
+      const { w, h } = await loadImageSize(imp.dataUrl);
       clearHistoryStacks();
       setExportDefaultStem(filePathOrNameToExportStem(path));
-      const layer = editorImageFillDocument(dataUrl, w, h);
+      {
+        const d = (await window.yiman?.fs?.pathDirname?.(path)) ?? '';
+        setExportDefaultDir(d.trim() ? d : null);
+      }
+      const layer = editorImageFillDocument(imp.dataUrl, w, h);
       setDocWidth(w);
       setDocHeight(h);
       setObjects([layer]);
       setSelectedIds([layer.id]);
       zoomToFitCanvas();
-    } catch {
-      message.error('打开图片失败');
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      console.error('[ImageEditor] onOpenLocalImage', e);
+      message.error(`打开图片失败：${detail}`);
     }
-  }, [clearHistoryStacks, message, zoomToFitCanvas]);
+  }, [clearHistoryStacks, loadEditorImportFromDisk, message, zoomToFitCanvas]);
 
-  const onExport = useCallback(async () => {
-    const dataUrl = canvasRef.current?.exportDocPngDataUrl(2);
-    if (!dataUrl) {
-      message.error('导出失败');
-      return;
-    }
-    const raw = stripDataUrlToBase64(dataUrl);
-    const chosenPath = await window.yiman?.dialog.saveFile({
-      defaultPath: `${exportDefaultStem}.png`,
-      filters: [{ name: 'PNG', extensions: ['png'] }],
-    });
-    if (!chosenPath) return;
-    const fsApi = window.yiman?.fs;
-    if (!fsApi?.getSafeFilePath || !fsApi?.writeBase64File) {
-      message.error('当前环境不支持文件写入');
-      return;
-    }
-    const savePath = await fsApi.getSafeFilePath(chosenPath);
-    if (!savePath) {
-      message.error('路径无效');
-      return;
-    }
-    const res = await fsApi.writeBase64File(savePath, raw);
-    if (!res?.ok) message.error(res?.error ?? '写入失败');
-    else {
-      const basename = savePath.split(/[/\\]/).pop() ?? savePath;
-      message.success(
-        savePath === chosenPath ? '已导出' : `已导出为「${basename}」（同名已存在，已自动编号）`
-      );
-    }
-  }, [message, exportDefaultStem]);
+  const onExport = useCallback(() => {
+    setExportModalOpen(true);
+  }, []);
 
   const openSaveToAsset = useCallback(() => {
     const first = projects[0]?.project_dir;
@@ -1711,6 +2800,7 @@ export const ImageEditorPage: React.FC = () => {
         setObjects([]);
         setSelectedIds([]);
         setExportDefaultStem(formatExportUnnamedStem());
+        setExportDefaultDir(null);
         setNewCanvasOpen(false);
         zoomToFitCanvas();
         message.success('已新建画布');
@@ -1800,6 +2890,25 @@ export const ImageEditorPage: React.FC = () => {
           onImageNaturalSize={onImageNaturalSize}
           onBeforeObjectGesture={recordHistory}
           onDropImageFiles={onDropImageFiles}
+          pathSimplifyDimPathId={pathSimplifySession?.objectId ?? null}
+          pathVectorEdit={
+            pathVectorEditSession
+              ? {
+                  objectId: pathVectorEditSession.objectId,
+                  ui: {
+                    activeSubpaths: pathVectorEditSession.activeSubpaths,
+                    selectedVertices: pathVectorEditSession.selectedVertices,
+                  },
+                  onUiChange: (patch) =>
+                    setPathVectorEditSession((prev) => (prev ? { ...prev, ...patch } : null)),
+                  onCommitPathData: onPathVectorCommitPathData,
+                  onGestureStart: recordHistory,
+                  onMarqueeSelectSubpaths: onPathVectorMarqueeSelectSubpaths,
+                  simplifyPreview: pathSimplifySession ? pathVectorSimplifyPreview : null,
+                  suspendVectorInteraction: !!pathSimplifySession,
+                }
+              : null
+          }
           cropOverlay={
             <>
               {imageCropSession && cropTargetImage && cropEditFrame ? (
@@ -1835,7 +2944,7 @@ export const ImageEditorPage: React.FC = () => {
                   traceW={potraceSession.traceW}
                   traceH={potraceSession.traceH}
                   preserveColor={potraceSession.preserveColor}
-                  patternSrc={potraceSession.preserveColor ? potraceSession.originalSrc : null}
+                  dominantFillCss={potraceDominantPreviewCss}
                 />
               ) : null}
               {zoomBlurSession && zoomBlurTargetImage ? (
@@ -1869,6 +2978,19 @@ export const ImageEditorPage: React.FC = () => {
                   onCancel={cancelRemoveWhiteAdjust}
                   onApply={() => void applyRemoveWhiteAdjust()}
                   loading={imageProcessing}
+                />
+              ) : null}
+              {pathSimplifySession ? (
+                <PathSimplifyAdjustToolbar
+                  curvePrecisionPercent={pathSimplifySession.curvePrecisionPercent}
+                  onCurvePrecisionChange={(curvePrecisionPercent) =>
+                    setPathSimplifySession((s) => (s ? { ...s, curvePrecisionPercent } : s))
+                  }
+                  onCurvePrecisionChangeComplete={(curvePrecisionPercent) =>
+                    setPathSimplifySession((s) => (s ? { ...s, curvePrecisionPercent } : s))
+                  }
+                  onCancel={cancelPathSimplify}
+                  onApply={applyPathSimplify}
                 />
               ) : null}
               {fitImageSession ? (
@@ -1908,6 +3030,8 @@ export const ImageEditorPage: React.FC = () => {
                   adaptiveSimplify={potraceSession.adaptiveSimplify}
                   preserveColor={potraceSession.preserveColor}
                   ignoreWhite={potraceSession.ignoreWhite}
+                  edgeErosionPasses={potraceSession.edgeErosionPasses}
+                  fringeSuppressMinRgb={potraceSession.fringeSuppressMinRgb}
                   onThresholdChange={(threshold) =>
                     setPotraceSession((s) => (s ? { ...s, threshold } : s))
                   }
@@ -1938,6 +3062,12 @@ export const ImageEditorPage: React.FC = () => {
                     setPotraceSession((s) => (s ? { ...s, ignoreWhite } : s));
                     setPotracePreviewTick((t) => t + 1);
                   }}
+                  onEdgeErosionPassesChange={(edgeErosionPasses) =>
+                    setPotraceSession((s) => (s ? { ...s, edgeErosionPasses } : s))
+                  }
+                  onFringeSuppressMinRgbChange={(fringeSuppressMinRgb) =>
+                    setPotraceSession((s) => (s ? { ...s, fringeSuppressMinRgb } : s))
+                  }
                   onPresetChange={(presetId: PotracePresetId) => {
                     const preset = POTRACE_PRESETS[presetId];
                     if (preset) {
@@ -2034,7 +3164,9 @@ export const ImageEditorPage: React.FC = () => {
             !!zoomBlurSession ||
             !!fitImageSession ||
             !!fitContentSession ||
-            !!lamaEraseSession
+            !!lamaEraseSession ||
+            !!pathVectorEditSession ||
+            !!pathSimplifySession
           }
           fitContentDisabled={
             objects.length === 0 ||
@@ -2053,6 +3185,28 @@ export const ImageEditorPage: React.FC = () => {
           setCanvasEditSession={setCanvasEditSession}
           onApplyCanvasEdit={applyCanvasEdit}
           onCancelCanvasEdit={cancelCanvasEdit}
+          pathVectorEditActive={!!pathVectorEditSession && pathVectorEditSession.objectId === selected?.id}
+          pathVectorUi={
+            pathVectorEditSession
+              ? {
+                  activeSubpaths: pathVectorEditSession.activeSubpaths,
+                  selectedVertices: pathVectorEditSession.selectedVertices,
+                }
+              : null
+          }
+          pathVectorPathEditable={selected?.type === 'path' ? pathDataEditable(selected.pathData) : false}
+          pathVectorCanAddMidAnchor={pathVectorCanAddMidAnchor}
+          onTogglePathVectorEdit={togglePathVectorEdit}
+          onPathVectorDeleteAnchor={onPathVectorDeleteAnchor}
+          onPathVectorSetCorner={onPathVectorSetCorner}
+          onPathVectorInsertMidAnchor={onPathVectorInsertMidAnchor}
+          onPathVectorDeleteActiveSubpaths={onPathVectorDeleteActiveSubpaths}
+          onPathVectorBoolean={onPathVectorBoolean}
+          onPathVectorApplyFillToSelection={onPathVectorApplyFillToSelection}
+          onPathVectorApplyStrokeToSelection={onPathVectorApplyStrokeToSelection}
+          onPathVectorApplyStrokeWidthToSelection={onPathVectorApplyStrokeWidthToSelection}
+          pathSimplifyPanelOpen={!!pathSimplifySession}
+          onStartPathSimplify={startPathSimplify}
         />
       </div>
 
@@ -2079,6 +3233,21 @@ export const ImageEditorPage: React.FC = () => {
           </button>
         </div>
       )}
+
+      <ImageEditorExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        canvasRef={canvasRef}
+        objects={objects}
+        docWidth={docWidth}
+        docHeight={docHeight}
+        docBackgroundColor={docBackgroundColor}
+        exportDefaultStem={exportDefaultStem}
+        exportDefaultDir={exportDefaultDir}
+        stripDataUrlToBase64Fn={stripDataUrlToBase64}
+        onSuccess={() => message.success('已导出')}
+        onError={(msg) => message.error(msg)}
+      />
 
       <Modal
         title="安装 IOPaint（智能擦除）"
@@ -2211,7 +3380,18 @@ export const ImageEditorPage: React.FC = () => {
         onPick={async (projectDir, dataUrl, assetPath) => {
           setAssetPickOpen(false);
           setAssetProjectDir(projectDir);
-          if (await handleInsertImageFromSrc(dataUrl, filePathOrNameToExportStem(assetPath))) zoomToFitCanvas();
+          const fs = window.yiman?.fs;
+          let exportDir: string | null = null;
+          if (fs?.pathJoin && fs.pathDirname) {
+            const full = await fs.pathJoin(projectDir, assetPath);
+            const d = await fs.pathDirname(full);
+            exportDir = d?.trim() ? d : projectDir.trim() ? projectDir : null;
+          } else {
+            exportDir = projectDir.trim() ? projectDir : null;
+          }
+          if (await handleInsertImageFromSrc(dataUrl, { stem: filePathOrNameToExportStem(assetPath), exportDir })) {
+            zoomToFitCanvas();
+          }
         }}
       />
 
@@ -2242,7 +3422,10 @@ export const ImageEditorPage: React.FC = () => {
               message.error(res.error);
               return;
             }
-            await handleInsertImageFromSrc(res.url, formatExportUnnamedStem());
+            await handleInsertImageFromSrc(res.url, {
+              stem: formatExportUnnamedStem(),
+              exportDir: null,
+            });
             setAiOpen(false);
             formAi.resetFields();
             message.success('已插入画布');
@@ -2294,7 +3477,7 @@ function AssetPickModal({
   onCancel: () => void;
   projects: ProjectRow[];
   initialProjectDir: string | null;
-  onPick: (projectDir: string, dataUrl: string, assetPath: string) => void;
+  onPick: (projectDir: string, dataUrl: string, assetPath: string) => void | Promise<void>;
 }) {
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [assets, setAssets] = useState<{ id: string; path: string }[]>([]);
@@ -2353,7 +3536,7 @@ function AssetPickModal({
                     message.error('读取素材失败');
                     return;
                   }
-                  onPick(projectDir, url, a.path);
+                  await onPick(projectDir, url, a.path);
                 }}
               >
                 <AssetThumb projectDir={projectDir!} path={a.path} />

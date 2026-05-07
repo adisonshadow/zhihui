@@ -13,6 +13,7 @@
  */
 import { AbstractChatProvider, XRequest } from '@ant-design/x-sdk';
 import type { AIModelConfig } from '@/types/settings';
+import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 
 /**
  * XRequest SSE 流式单元格式：
@@ -27,12 +28,63 @@ interface ChatInput {
   [key: string]: unknown;
 }
 
-/** 包含推理内容的对话消息类型 */
+/** OpenAI SSE delta 中单条 tool_call 增量 */
+export type ToolCallDelta = {
+  index?: number;
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: string };
+};
+
+/** 流式完成后单条工具调用（arguments 已为完整 JSON 字符串） */
+export type ResolvedToolCall = {
+  id: string;
+  name: string;
+  arguments: string;
+};
+
+/** Provider 流式阶段按 index 合并 tool_calls */
+export type ReasoningToolCallAcc = Record<string, { id: string; name: string; arguments: string }>;
+
+function applyToolCallDeltas(
+  prevAcc: ReasoningToolCallAcc | undefined,
+  deltas: ToolCallDelta[] | undefined
+): ReasoningToolCallAcc | undefined {
+  if (!deltas?.length) return prevAcc;
+  const acc: ReasoningToolCallAcc = prevAcc ? { ...prevAcc } : {};
+  for (const d of deltas) {
+    const idx = String(d.index ?? 0);
+    const cur = acc[idx] ?? { id: '', name: '', arguments: '' };
+    if (d.id) cur.id = d.id;
+    if (d.function?.name) cur.name = d.function.name;
+    if (d.function?.arguments) cur.arguments += d.function.arguments;
+    acc[idx] = cur;
+  }
+  return acc;
+}
+
+function accToResolvedList(acc: ReasoningToolCallAcc | undefined): ResolvedToolCall[] | undefined {
+  if (!acc || !Object.keys(acc).length) return undefined;
+  return Object.keys(acc)
+    .map((k) => Number(k))
+    .sort((a, b) => a - b)
+    .map((i) => {
+      const v = acc[String(i)];
+      return { id: v.id || `call_${i}`, name: v.name, arguments: v.arguments };
+    })
+    .filter((x) => x.name);
+}
+
+/** 包含推理内容、可选 tool_calls 的对话消息类型 */
 export interface ReasoningMessage {
   role: 'user' | 'assistant';
   content: string;
   /** 推理/思考过程（流式累积，仅 assistant 消息存在） */
   reasoningContent?: string;
+  /** 流式合并中的 tool_calls（chunk 间传递） */
+  _toolCallAcc?: ReasoningToolCallAcc;
+  /** 已解析出的完整工具调用快照 */
+  toolCalls?: ResolvedToolCall[];
 }
 
 /**
@@ -56,7 +108,7 @@ export class ReasoningChatProvider extends AbstractChatProvider<
 
     const params: Record<string, unknown> = {
       stream: true,
-      model: modelConfig?.model?.trim() || 'gpt-3.5-turbo',
+      model: resolveRequestModelId(modelConfig ?? null) || 'gpt-3.5-turbo',
     };
 
     // 火山引擎 doubao-seed 等支持 thinking 参数的模型：
@@ -69,9 +121,10 @@ export class ReasoningChatProvider extends AbstractChatProvider<
       request: XRequest<ChatInput, SseChunk>(baseURL, {
         manual: true,
         params,
-        headers: modelConfig?.apiKey
-          ? { Authorization: `Bearer ${modelConfig.apiKey}` }
-          : undefined,
+        headers:
+          !modelConfig?.isLocal && modelConfig?.apiKey?.trim()
+            ? { Authorization: `Bearer ${modelConfig.apiKey.trim()}` }
+            : undefined,
       }),
     });
   }
@@ -111,30 +164,43 @@ export class ReasoningChatProvider extends AbstractChatProvider<
     const prevContent = originMessage?.content ?? '';
     const prevReasoning = originMessage?.reasoningContent ?? '';
 
+    const packWithTools = (msg: ReasoningMessage): ReasoningMessage => {
+      const toolCalls = accToResolvedList(msg._toolCallAcc);
+      const next: ReasoningMessage = { ...msg };
+      if (toolCalls?.length) next.toolCalls = toolCalls;
+      if (msg._toolCallAcc && Object.keys(msg._toolCallAcc).length) {
+        next._toolCallAcc = msg._toolCallAcc;
+      }
+      return next;
+    };
+
     // 无新 chunk → 返回当前已累积状态（onSuccess 最终调用时）
     if (!chunk) {
-      return {
+      return packWithTools({
         role: 'assistant',
         content: prevContent,
         ...(prevReasoning ? { reasoningContent: prevReasoning } : {}),
-      };
+        ...(originMessage?._toolCallAcc ? { _toolCallAcc: originMessage._toolCallAcc } : {}),
+      });
     }
 
     const dataStr = (chunk as SseChunk)?.data?.trim();
     if (!dataStr || dataStr === '[DONE]') {
-      return {
+      return packWithTools({
         role: 'assistant',
         content: prevContent,
         ...(prevReasoning ? { reasoningContent: prevReasoning } : {}),
-      };
+        ...(originMessage?._toolCallAcc ? { _toolCallAcc: originMessage._toolCallAcc } : {}),
+      });
     }
 
     let parsed: {
       choices?: Array<{
         delta?: {
-          content?: string;
+          content?: string | null;
           reasoning_content?: string;
           role?: string;
+          tool_calls?: ToolCallDelta[];
         };
       }>;
       error?: { message?: string };
@@ -143,11 +209,12 @@ export class ReasoningChatProvider extends AbstractChatProvider<
     try {
       parsed = JSON.parse(dataStr);
     } catch {
-      return {
+      return packWithTools({
         role: 'assistant',
         content: prevContent,
         ...(prevReasoning ? { reasoningContent: prevReasoning } : {}),
-      };
+        ...(originMessage?._toolCallAcc ? { _toolCallAcc: originMessage._toolCallAcc } : {}),
+      });
     }
 
     // API 层错误（如认证失败），以 error 字段返回
@@ -157,20 +224,23 @@ export class ReasoningChatProvider extends AbstractChatProvider<
 
     const delta = parsed?.choices?.[0]?.delta;
     if (!delta) {
-      return {
+      return packWithTools({
         role: 'assistant',
         content: prevContent,
         ...(prevReasoning ? { reasoningContent: prevReasoning } : {}),
-      };
+        ...(originMessage?._toolCallAcc ? { _toolCallAcc: originMessage._toolCallAcc } : {}),
+      });
     }
 
     const newContent = prevContent + (delta.content ?? '');
     const newReasoning = prevReasoning + (delta.reasoning_content ?? '');
+    const nextAcc = applyToolCallDeltas(originMessage?._toolCallAcc, delta.tool_calls);
 
-    return {
+    return packWithTools({
       role: 'assistant',
       content: newContent,
       ...(newReasoning ? { reasoningContent: newReasoning } : {}),
-    };
+      ...(nextAcc && Object.keys(nextAcc).length ? { _toolCallAcc: nextAcc } : {}),
+    });
   }
 }

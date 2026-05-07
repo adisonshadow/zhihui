@@ -12,6 +12,9 @@ import ProjectEditor from './pages/ProjectEditor';
 import Settings from './pages/Settings';
 import AIChatPreview from './pages/AIChatPreview';
 import { ImageEditorPage } from './components/imageEditor/ImageEditorPage';
+import ScreenwriterListPage from './novelDesign/pages/ScreenwriterListPage';
+import ScreenwriterNovelDetailPage from './novelDesign/pages/ScreenwriterNovelDetailPage';
+import ScreenwriterAIDrawPage from './novelDesign/pages/ScreenwriterAIDrawPage';
 
 const { Content } = Layout;
 
@@ -22,6 +25,30 @@ function App() {
         <Layout style={{ minHeight: '100vh' }}>
           <AppHeader />
           <Routes>
+            <Route
+              path="/screenwriter/draw"
+              element={
+                <Content style={{ padding: 0 }}>
+                  <ScreenwriterAIDrawPage />
+                </Content>
+              }
+            />
+            <Route
+              path="/screenwriter/novel/:id"
+              element={
+                <Content style={{ padding: 0 }}>
+                  <ScreenwriterNovelDetailPage />
+                </Content>
+              }
+            />
+            <Route
+              path="/screenwriter"
+              element={
+                <Content style={{ padding: '24px' }}>
+                  <ScreenwriterListPage />
+                </Content>
+              }
+            />
             <Route path="/" element={<Content style={{ padding: '24px' }}><ProjectList /></Content>} />
             <Route path="/project/:id" element={<Content style={{ padding: '0px' }}><ProjectEditor /></Content>} />
             <Route path="/settings" element={<Content style={{ padding: '24px' }}><Settings /></Content>} />

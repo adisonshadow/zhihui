@@ -3,10 +3,10 @@
  * 支持多种展示模式：SidePanel、FloatingBottom、Popover、BottomSender
  * 见功能文档 06 § 3
  */
-import React, { forwardRef } from 'react';
+import React, { forwardRef, type ComponentType } from 'react';
 import type { TooltipPlacement } from 'antd/es/tooltip';
 import type { AIChatMode } from './types';
-import { AIChatSidePanel } from './AIChatSidePanel';
+import { AIChatSidePanel, type SidePanelAssistantContentRenderArgs } from './AIChatSidePanel';
 import { AIChatFloatingBottom } from './AIChatFloatingBottom';
 import { AIChatPopover } from './AIChatPopover';
 import { AIChatBottomSender } from './AIChatBottomSender';
@@ -52,6 +52,15 @@ export interface AIChatProps extends Omit<AIChatCoreProps, 'agentKey'> {
   // ---- 共享 ----
   /** 初始是否展开（FloatingBottom / Popover，默认 false） */
   defaultOpen?: boolean;
+
+  /** SidePanel 专属（仅 mode=SidePanel 使用） */
+  prepareGenStoriesCardComponent?: ComponentType<{ onStart: (userPrompt: string) => void }>;
+  sidePanelEmptyExtras?: React.ReactNode;
+  sidePanelExternalConversationControl?: boolean;
+  /** 顶栏显示关闭按钮，点击回调（抽卡页等全屏模式） */
+  sidePanelOnClose?: () => void;
+  /** 自定义 SidePanel assistant 消息渲染 */
+  sidePanelAssistantContentRender?: (args: SidePanelAssistantContentRenderArgs) => React.ReactNode;
 }
 
 export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AIChat(
@@ -71,6 +80,11 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
     popoverPlacement,
     bottomSenderAbove,
     defaultOpen,
+    prepareGenStoriesCardComponent,
+    sidePanelEmptyExtras,
+    sidePanelExternalConversationControl,
+    sidePanelOnClose,
+    sidePanelAssistantContentRender,
     ...coreProps
   },
   ref
@@ -82,6 +96,11 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
           ref={ref}
           agentKey={agentKey}
           onAgentChange={onAgentChange}
+          prepareGenStoriesCardComponent={prepareGenStoriesCardComponent}
+          sidePanelEmptyExtras={sidePanelEmptyExtras}
+          sidePanelExternalConversationControl={sidePanelExternalConversationControl}
+          sidePanelOnClose={sidePanelOnClose}
+          sidePanelAssistantContentRender={sidePanelAssistantContentRender}
           {...coreProps}
         />
       );
@@ -130,6 +149,11 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
           ref={ref}
           agentKey={agentKey}
           onAgentChange={onAgentChange}
+          prepareGenStoriesCardComponent={prepareGenStoriesCardComponent}
+          sidePanelEmptyExtras={sidePanelEmptyExtras}
+          sidePanelExternalConversationControl={sidePanelExternalConversationControl}
+          sidePanelOnClose={sidePanelOnClose}
+          sidePanelAssistantContentRender={sidePanelAssistantContentRender}
           {...coreProps}
         />
       );

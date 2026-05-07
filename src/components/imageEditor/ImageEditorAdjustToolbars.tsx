@@ -163,6 +163,55 @@ export const FitContentToolbar: React.FC<{
   );
 };
 
+/** 矢量编辑：简化选中子路径（画布底部条） */
+export const PathSimplifyAdjustToolbar: React.FC<{
+  curvePrecisionPercent: number;
+  onCurvePrecisionChange: (v: number) => void;
+  /** 打开面板时与拖动滑块结束后触发预览重算 */
+  onCurvePrecisionChangeComplete?: (v: number) => void;
+  onApply: () => void;
+  onCancel: () => void;
+}> = ({
+  curvePrecisionPercent,
+  onCurvePrecisionChange,
+  onCurvePrecisionChangeComplete,
+  onApply,
+  onCancel,
+}) => {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div className="yiman-image-editor-adjust-toolbar" style={toolbarShellStyle}>
+      <Space orientation="vertical" style={{ width: '100%' }} size="middle">
+        <div style={{ padding: '0 8px' }}>
+          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginBottom: 6 }}>
+            曲线精度（% ，越高锚点越少）
+          </div>
+          <Slider
+            min={0}
+            max={100}
+            value={curvePrecisionPercent}
+            onChange={onCurvePrecisionChange}
+            {...(onCurvePrecisionChangeComplete ? { onChangeComplete: onCurvePrecisionChangeComplete } : {})}
+          />
+        </div>
+        <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
+          <Button onClick={onCancel}>取消</Button>
+          <Button type="primary" icon={<CheckOutlined />} onClick={onApply}>
+            应用
+          </Button>
+        </Space>
+      </Space>
+    </div>
+  );
+};
+
 const potraceToolbarStyle: React.CSSProperties = {
   ...toolbarShellStyle,
   minWidth: 480,
@@ -188,6 +237,8 @@ export const POTRACE_PRESETS: Record<PotracePresetId, { label: string; config: {
   simplifyEpsilon: number;
   curveTension: number;
   cornerAngleThreshold: number;
+  edgeErosionPasses: number;
+  fringeSuppressMinRgb: number;
   adaptiveSimplify: boolean;
   ignoreWhite?: boolean;
 } } | null> = {
@@ -200,6 +251,8 @@ export const POTRACE_PRESETS: Record<PotracePresetId, { label: string; config: {
       simplifyEpsilon: 0.55,
       curveTension: 0.35,
       cornerAngleThreshold: 32,
+      edgeErosionPasses: 2,
+      fringeSuppressMinRgb: 200,
       adaptiveSimplify: false,
       ignoreWhite: true,
     },
@@ -212,6 +265,8 @@ export const POTRACE_PRESETS: Record<PotracePresetId, { label: string; config: {
       simplifyEpsilon: 0.8,
       curveTension: 0.3,
       cornerAngleThreshold: 40,
+      edgeErosionPasses: 1,
+      fringeSuppressMinRgb: 0,
       adaptiveSimplify: false,
       ignoreWhite: true,
     },
@@ -224,6 +279,8 @@ export const POTRACE_PRESETS: Record<PotracePresetId, { label: string; config: {
       simplifyEpsilon: 1.2,
       curveTension: 0.4,
       cornerAngleThreshold: 45,
+      edgeErosionPasses: 1,
+      fringeSuppressMinRgb: 0,
       adaptiveSimplify: false,
       ignoreWhite: true,
     },
@@ -238,10 +295,14 @@ export const PotraceAdjustToolbar: React.FC<{
   curveTension: number;
   cornerAngleThreshold: number;
   adaptiveSimplify: boolean;
-  /** 保留矢量填充颜色（位图 pattern 对齐 path） */
+  /** 原色填充：应用后为 pattern 对齐位图；预览叠层仍用轮廓内近似均色 */
   preserveColor: boolean;
   /** 二值化后强制高亮像素为背景，不描白底 */
   ignoreWhite: boolean;
+  /** 前景十字腐蚀次数，减轻锯齿白边 */
+  edgeErosionPasses: number;
+  /** min(R,G,B) 阈值剔除浅色前景，0 关 */
+  fringeSuppressMinRgb: number;
   onThresholdChange: (v: number) => void;
   onUseOtsuChange: (v: boolean) => void;
   onTurdSizeChange: (v: number) => void;
@@ -251,6 +312,8 @@ export const PotraceAdjustToolbar: React.FC<{
   onAdaptiveSimplifyChange: (v: boolean) => void;
   onPreserveColorChange: (v: boolean) => void;
   onIgnoreWhiteChange: (v: boolean) => void;
+  onEdgeErosionPassesChange: (v: number) => void;
+  onFringeSuppressMinRgbChange: (v: number) => void;
   onPresetChange: (presetId: PotracePresetId) => void;
   onParamCommit: () => void;
   onApply: () => void;
@@ -266,6 +329,8 @@ export const PotraceAdjustToolbar: React.FC<{
   adaptiveSimplify,
   preserveColor,
   ignoreWhite,
+  edgeErosionPasses,
+  fringeSuppressMinRgb,
   onThresholdChange,
   onUseOtsuChange,
   onTurdSizeChange,
@@ -275,6 +340,8 @@ export const PotraceAdjustToolbar: React.FC<{
   onAdaptiveSimplifyChange,
   onPreserveColorChange,
   onIgnoreWhiteChange,
+  onEdgeErosionPassesChange,
+  onFringeSuppressMinRgbChange,
   onPresetChange,
   onParamCommit,
   onApply,
@@ -394,6 +461,34 @@ export const PotraceAdjustToolbar: React.FC<{
             onChangeComplete={() => onParamCommit()}
           />
         </div>
+        <div style={potraceRowStyle}>
+          <div style={potraceHalfStyle}>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginBottom: 6 }}>
+              边缘内收（削弱锯齿白边）
+            </div>
+            <Slider
+              min={0}
+              max={4}
+              step={1}
+              value={edgeErosionPasses}
+              onChange={onEdgeErosionPassesChange}
+              onChangeComplete={() => onParamCommit()}
+            />
+          </div>
+          <div style={potraceHalfStyle}>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginBottom: 6 }}>
+              浅色边缘剔除（min RGB，0 关）
+            </div>
+            <Slider
+              min={0}
+              max={255}
+              step={1}
+              value={fringeSuppressMinRgb}
+              onChange={onFringeSuppressMinRgbChange}
+              onChangeComplete={() => onParamCommit()}
+            />
+          </div>
+        </div>
         <Flex
           wrap="wrap"
           align="center"
@@ -408,12 +503,20 @@ export const PotraceAdjustToolbar: React.FC<{
           </Flex>
           <Flex align="center" gap={8}>
             <Switch size="small" checked={preserveColor} onChange={onPreserveColorChange} />
-            <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>保留颜色</span>
+            <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>原色填充</span>
           </Flex>
-          <Flex align="center" gap={8}>
-            <Switch size="small" checked={ignoreWhite} onChange={onIgnoreWhiteChange} />
-            <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>忽略白色</span>
-          </Flex>
+          <Tooltip
+            title={
+              <>
+                二值化时高亮作背景；开启「原色填充」时用与轮廓对齐的位图图案填充矢量，保留红/蓝等多色；关闭则为单一填充色。
+              </>
+            }
+          >
+            <Flex align="center" gap={8}>
+              <Switch size="small" checked={ignoreWhite} onChange={onIgnoreWhiteChange} />
+              <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>忽略白色</span>
+            </Flex>
+          </Tooltip>
         </Flex>
         {/* <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.38)', padding: '0 8px' }}>
           灰度 → 二值 → 轮廓 → 简化 → 贝塞尔；多子路径按奇偶填充成孔。字内小洞：预制「文字/细孔」或去噪调低（可置 0）、简化调小。
@@ -572,6 +675,13 @@ export const ZoomBlurAdjustToolbar: React.FC<{
   );
 };
 
+function potracePreviewFillFromDominant(css: string | null | undefined): string {
+  if (!css?.trim()) return 'rgba(23, 119, 255, 0.14)';
+  const m = /^rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*$/i.exec(css.trim());
+  if (m) return `rgba(${m[1]},${m[2]},${m[3]},0.38)`;
+  return 'rgba(23, 119, 255, 0.14)';
+}
+
 export const PotracePreviewOverlay = React.memo<{
   show: boolean;
   cx: number;
@@ -582,19 +692,16 @@ export const PotracePreviewOverlay = React.memo<{
   traceW: number;
   traceH: number;
   preserveColor?: boolean;
-  patternSrc?: string | null;
-}>(({ show, cx, cy, zoom, docRect, pathD, traceW, traceH, preserveColor, patternSrc }) => {
-  const patIdRaw = React.useId();
-  const patId = `yimanPotPat_${patIdRaw.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-
+  /** 开启原色填充时：轮廓内近似均色（rgb），仅用于半透明预览叠层 */
+  dominantFillCss?: string | null;
+}>(({ show, cx, cy, zoom, docRect, pathD, traceW, traceH, preserveColor, dominantFillCss }) => {
   if (!show || !pathD || traceW < 1 || traceH < 1) return null;
   const left = cx + docRect.x * zoom;
   const top = cy + docRect.y * zoom;
   const w = Math.max(1, docRect.width * zoom);
   const h = Math.max(1, docRect.height * zoom);
   const sw = Math.max(0.6, Math.min(traceW, traceH) / 400);
-  const usePattern = !!preserveColor && !!patternSrc?.trim();
-  const fillPaint = usePattern ? `url(#${patId})` : 'rgba(23, 119, 255, 0.14)';
+  const fillPaint = preserveColor ? potracePreviewFillFromDominant(dominantFillCss) : 'rgba(23, 119, 255, 0.14)';
   return (
     <div
       style={{
@@ -614,28 +721,6 @@ export const PotracePreviewOverlay = React.memo<{
         preserveAspectRatio="none"
         style={{ overflow: 'visible' }}
       >
-        {usePattern ? (
-          <defs>
-            <pattern
-              id={patId}
-              patternUnits="userSpaceOnUse"
-              patternContentUnits="userSpaceOnUse"
-              x={0}
-              y={0}
-              width={traceW}
-              height={traceH}
-            >
-              <image
-                href={patternSrc!}
-                x={0}
-                y={0}
-                width={traceW}
-                height={traceH}
-                preserveAspectRatio="none"
-              />
-            </pattern>
-          </defs>
-        ) : null}
         <path
           d={pathD}
           fill={fillPaint}

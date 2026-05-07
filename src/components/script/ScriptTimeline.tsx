@@ -1,5 +1,5 @@
 /**
- * 剧本场景时间线：按类型分层，内容条类似素材条，支持拖拽与自动分层（见 docs/短漫剧剧本元素说明.md 15.0.1）
+ * 剧本分镜时间线：按类型分层，内容条类似素材条，支持拖拽与自动分层（见 docs/短漫剧剧本元素说明.md 15.0.1）
  */
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {

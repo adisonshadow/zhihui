@@ -3,7 +3,7 @@
  */
 export const ASSET_TYPES = [
   { value: 'character', label: '角色' },
-  { value: 'scene_bg', label: '场景背景' },
+  { value: 'scene_bg', label: '分镜背景' },
   { value: 'prop', label: '情景道具' },
   { value: 'sfx', label: '声效' },
   { value: 'transparent_video', label: '透明视频特效' },

@@ -15,6 +15,7 @@ import { YimanGenLoaderOverlay } from '@/components/AIChat/YimanGenLoaderOverlay
 import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import { formatScriptContextForAI } from '@/types/scriptChat';
 import type { ScriptChatContext } from '@/types/scriptChat';
+import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
 
 const { Title, Text } = Typography;
@@ -48,7 +49,7 @@ const MOCK_SCRIPT_CONTEXTS: ScriptChatContext[] = [
   {
     id: 'ctx_2',
     type: 'scene',
-    description: '场景1：客厅',
+    description: '分镜1：客厅',
     scene: {
       title: '客厅',
       summary: '两人对话',
@@ -70,7 +71,7 @@ const MODE_OPTIONS: Array<{ label: string; value: AIChatMode }> = [
 ];
 
 const MODE_DESC: Record<AIChatMode, string> = {
-  SidePanel: '侧边栏布局，占据当前容器全部高度，适合设计器侧栏、详情页等场景。',
+  SidePanel: '侧边栏布局，占据当前容器全部高度，适合设计器侧栏、详情页等分镜。',
   FloatingBottom: '固定悬浮在视口右下角，点击气泡按钮展开/收起面板，适合全局入口。',
   Popover: '以任意触发元素打开 Popover 对话框，适合嵌入工具栏或按钮旁。',
   BottomSender: '仅底部输入条（Sender），无对话列表；适合画布底部嵌入。本页附带占位图与测试 Function Call 槽位演示。',
@@ -235,7 +236,7 @@ function AIChatPreviewContent() {
     projectPrompt: '预览模式：无项目级自定义提示词',
     contextBlocks: [
       { label: '当前概要', content: '主角收到神秘信件，决定追查真相。' },
-      { label: '当前剧本', content: '场景1 客厅\n小明：这是什么？\n小红：我也不知道，打开看看。' },
+      { label: '当前剧本', content: '分镜1 客厅\n小明：这是什么？\n小红：我也不知道，打开看看。' },
     ],
     contextTags,
     onRemoveContextTag: handleRemoveContext,
