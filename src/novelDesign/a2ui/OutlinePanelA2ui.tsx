@@ -19,6 +19,8 @@ export interface OutlinePanelA2uiProps {
   fullAssistantContent: string;
   /** 当前已收藏大纲的 outlineUuid（小写）集合，用于星标 */
   favoritedOutlineUuidSet?: Set<string>;
+  /** 创作偏好文本块（显示在卡片中） */
+  preferenceBlock?: string;
   onRegenerate: () => void;
   onFavorite: () => void;
   onCreateProject: () => void;
@@ -29,6 +31,7 @@ export function OutlinePanelA2ui({
   outlineProse,
   fullAssistantContent,
   favoritedOutlineUuidSet,
+  preferenceBlock,
   onRegenerate,
   onFavorite,
   onCreateProject,
@@ -47,8 +50,9 @@ export function OutlinePanelA2ui({
         outlineProse,
         fullAssistantContent,
         outlineFavorited,
+        preferenceBlock,
       }),
-    [fullAssistantContent, outlineFavorited, outlineProse, panel]
+    [fullAssistantContent, outlineFavorited, outlineProse, panel, preferenceBlock]
   );
 
   const onAction = useCallback(

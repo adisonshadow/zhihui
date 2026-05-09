@@ -5,6 +5,7 @@
  */
 import {
   AUDIENCE_OPTIONS,
+  CONTENT_TYPE_OPTIONS,
   CP_MODE_OPTIONS,
   GENRE_OPTIONS,
   INNOVATION_LEVEL_OPTIONS,
@@ -12,7 +13,9 @@ import {
   PACE_OPTIONS,
   STORY_PLOT_OPTIONS,
   TONE_OPTIONS,
+  getContentTypeEpisodeGuide,
   type AudienceType,
+  type ContentType,
   type CPMode,
   type InnovationLevel,
   type NarrativeRhythm,
@@ -24,6 +27,9 @@ import {
 
 export type ScreenwriterDrawForm = {
   innovation: InnovationLevel;
+  contentType: ContentType;
+  /** 自定义作品类型名（当 contentType 不在预设列表中时填写） */
+  customContentType?: string;
   genre: StoryGenre;
   audience: AudienceType;
   cpMode: CPMode;
@@ -32,6 +38,8 @@ export type ScreenwriterDrawForm = {
   storyPlots: StoryPlotPreference[];
   pace: NarrativeRhythm;
   length: StoryLength;
+  /** 自定义篇幅描述（当用户需要自由填写时） */
+  customLength?: string;
   keywords: string;
   /** 一次性生成多少个小说雏形（1～20） */
   generationCount: number;
@@ -39,6 +47,7 @@ export type ScreenwriterDrawForm = {
 
 export const DEFAULT_SCREENWRITER_DRAW_FORM: ScreenwriterDrawForm = {
   innovation: INNOVATION_LEVEL_OPTIONS[2],
+  contentType: CONTENT_TYPE_OPTIONS[0],
   genre: GENRE_OPTIONS[0],
   audience: AUDIENCE_OPTIONS[0],
   cpMode: CP_MODE_OPTIONS[0],
@@ -70,8 +79,12 @@ export function buildScreenwriterDrawUserBrief(f: ScreenwriterDrawForm): string 
   const kwLine = kw ? kw : '无特定要求';
   const n = Math.min(20, Math.max(1, Math.round(Number(f.generationCount) || 10)));
   const storyPlotsLine = lineStoryPlots(f.storyPlots);
+  const contentTypeLabel = f.customContentType?.trim() || f.contentType;
+  const episodeGuide = getContentTypeEpisodeGuide(f.contentType, f.customContentType);
+  const lengthLabel = f.customLength?.trim() || f.length;
 
   const preferenceLines = [
+    `- 作品类型：${contentTypeLabel}`,
     `- 创新度倾向：${f.innovation}`,
     ...(f.genre !== '任意' ? [lineOptional('题材', f.genre)] : []),
     ...(f.audience !== '任意' ? [lineOptional('受众', f.audience)] : []),
@@ -79,7 +92,8 @@ export function buildScreenwriterDrawUserBrief(f: ScreenwriterDrawForm): string 
     ...(f.tone !== '任意' ? [lineOptional('故事基调', f.tone)] : []),
     ...(f.pace !== '任意' ? [lineOptional('叙事节奏', f.pace)] : []),
     ...(storyPlotsLine ? [storyPlotsLine] : []),
-    `- 预期篇幅：${f.length}`,
+    `- 预期篇幅：${lengthLabel}`,
+    `- 每集时长指引：${episodeGuide}`,
     ...(kwLine ? [`- 灵感关键词：${kwLine}`] : []),
   ];
 

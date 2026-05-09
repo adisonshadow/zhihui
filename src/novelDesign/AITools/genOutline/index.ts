@@ -72,6 +72,35 @@ export const LENGTH_OPTIONS = [
   '120集',
 ] as const;
 
+/** 作品类型：影响每集时长指引和输出格式 */
+export const CONTENT_TYPE_OPTIONS = [
+  '漫剧',
+  '短剧',
+  '电影剧本',
+  '有声小说',
+  '传统小说',
+] as const;
+
+export type ContentType = (typeof CONTENT_TYPE_OPTIONS)[number];
+
+/** 根据作品类型返回每集/每部的时长指引文案 */
+export function getContentTypeEpisodeGuide(contentType: ContentType, customType?: string): string {
+  switch (contentType) {
+    case '漫剧':
+      return '漫剧每集建议时长 1～3 分钟，各集时长尽量均匀';
+    case '短剧':
+      return '短剧每集建议时长 1～3 分钟，各集时长尽量均匀';
+    case '电影剧本':
+      return '电影剧本为单部完整作品，无分集概念，整体时长约 90～120 分钟';
+    case '有声小说':
+      return '有声小说每集建议时长 10～20 分钟，各集时长尽量均匀';
+    case '传统小说':
+      return '传统小说每集建议 3000～8000 字，各集篇幅尽量均匀';
+    default:
+      return customType ? `${customType}按该类型的行业标准确定每集时长` : '按行业标准确定每集时长';
+  }
+}
+
 /** 故事情节 */
 export const STORY_PLOT_OPTIONS = [
   '任意',
@@ -85,7 +114,6 @@ export const STORY_PLOT_OPTIONS = [
   '打脸',
   '高武',
   '空间',
-  '种田文',
   '打怪升级',
 
   '脑洞',

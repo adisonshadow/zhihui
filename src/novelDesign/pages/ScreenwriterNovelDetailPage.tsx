@@ -31,20 +31,17 @@ import { formatNovelEpisodeNavLabel } from '@/novelDesign/utils/novelEpisodeDisp
 import {
   NOVEL_OUTLINE_EPISODE_ID,
   ensureNovelWorkspace,
-  findBodyEpisodeByEpisodeNumber,
   renameWorkspaceTitle,
   setActiveEpisode,
   updateEpisodeMarkdown,
   upsertEpisode,
-  type NovelWorkspaceSnapshot,
 } from '@/novelDesign/storage/novelWorkspaceStorage';
 import { loadNovelList, upsertNovel } from '@/novelDesign/storage/novelListStorage';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
-import {
-  hasNovelBodyWriteIntent,
-  inferNovelBodyWriteMode,
-  resolveNovelStreamWriteTarget,
-} from '@/novelDesign/utils/novelWriteIntent';
+import { extractNovelWritePayload, truncateUnicodeChars } from '@/novelDesign/parsers/novelBodyJsonParser';
+import { hasNovelBodyWriteIntent } from '@/novelDesign/utils/novelWriteIntent';
+import { useNovelAiStream } from '@/novelDesign/hooks/useNovelAiStream';
+import { useWorkspaceSync } from '@/novelDesign/hooks/useWorkspaceSync';
 import '@ant-design/x-markdown/themes/dark.css';
 import './ScreenwriterNovelDetailPage.css';
 
@@ -56,163 +53,11 @@ const SELECTION_SENDER_DISPLAY_CHARS = 6;
 const STORY_OUTLINE_CONTEXT_CHARS = 20000;
 const CURRENT_EPISODE_CONTEXT_CHARS = 12000;
 const NOVEL_BODY_WRITE_TOOL_NAMES = new Set(['novel_write_body_episode', 'novel_write_episode']);
-const NOVEL_CREATE_EPISODE_TOOL_NAME = 'novel_create_episode_and_open';
-// 临时关闭自动 JSON 重试：该机制曾放大目标集漂移问题，后续重做前先禁用。
-const AUTO_JSON_RETRY_ENABLED = false;
 const TOOL_EDIT_NAMES = new Set([
-  'novel_write_body_episode',
-  'novel_write_episode',
   'novel_replace_content',
   'novel_delete_segment',
   'novel_update_outline',
 ]);
-
-interface AiWritePending {
-  targetEpisodeId: string | null;
-  mode: 'append' | 'replace';
-  baselineMarkdown: string;
-  userPrompt: string;
-  isAutoJsonRetry?: boolean;
-}
-
-interface NovelWriteJsonPayload {
-  n?: number;
-  mode?: 'replace' | 'append';
-  title?: string;
-  content_markdown?: string;
-}
-
-const NOVEL_BODY_JSON_FENCE_RE = /```(?:novel-body-json|json)\s*([\s\S]*?)```/gi;
-
-function extractNovelWritePayload(raw: string): {
-  payload: NovelWriteJsonPayload | null;
-  displayText: string;
-  preMarkerContent: string;
-  postMarkerContent: string;
-  hasMarker: boolean;
-  streamContentMarkdown: string;
-  streamTargetN: number | null;
-} {
-  const markerIdx = raw.indexOf('"novel_write_payload"');
-  const hasMarker = markerIdx >= 0;
-
-  let payload: NovelWriteJsonPayload | null = null;
-  let fenceStart = -1;
-  let fenceEnd = -1;
-  const replaced = raw.replace(NOVEL_BODY_JSON_FENCE_RE, (_all, jsonText: string, offset: number) => {
-    if (/"novel_write_payload"\s*:/.test(jsonText)) {
-      try {
-        const parsed = JSON.parse(jsonText) as unknown;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          const obj = parsed as Record<string, unknown>;
-          const candidate = obj.novel_write_payload;
-          if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
-            payload = candidate as NovelWriteJsonPayload;
-            fenceStart = offset;
-            fenceEnd = offset + _all.length;
-            return '';
-          }
-        }
-      } catch {
-        return _all;
-      }
-    }
-    return _all;
-  });
-
-  const extractStreamTargetN = (): number | null => {
-    if (markerIdx < 0) return null;
-    const m = raw.slice(markerIdx).match(/"n"\s*:\s*(\d{1,3})/);
-    if (!m) return null;
-    const n = Number(m[1]);
-    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : null;
-  };
-
-  const extractStreamContentMarkdown = (): string => {
-    if (markerIdx < 0) return '';
-    const cIdx = raw.indexOf('"content_markdown"', markerIdx);
-    if (cIdx < 0) return '';
-    const colonIdx = raw.indexOf(':', cIdx);
-    if (colonIdx < 0) return '';
-    const quoteIdx = raw.indexOf('"', colonIdx);
-    if (quoteIdx < 0) return '';
-
-    let i = quoteIdx + 1;
-    let escaped = false;
-    let closed = false;
-    let buf = '';
-    for (; i < raw.length; i++) {
-      const ch = raw[i]!;
-      if (escaped) {
-        buf += `\\${ch}`;
-        escaped = false;
-        continue;
-      }
-      if (ch === '\\') {
-        escaped = true;
-        continue;
-      }
-      if (ch === '"') {
-        closed = true;
-        break;
-      }
-      buf += ch;
-    }
-
-    const decodeLoose = (s: string): string => {
-      try {
-        return JSON.parse(`"${s}"`) as string;
-      } catch {
-        return s
-          .replace(/\\n/g, '\n')
-          .replace(/\\r/g, '\r')
-          .replace(/\\t/g, '\t')
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\');
-      }
-    };
-
-    if (closed) return decodeLoose(buf);
-    const loose = buf.endsWith('\\') ? buf.slice(0, -1) : buf;
-    return decodeLoose(loose);
-  };
-
-  let displayText = replaced.trim();
-  let preMarkerContent = '';
-  let postMarkerContent = '';
-  if (fenceStart >= 0 && fenceEnd > fenceStart) {
-    preMarkerContent = raw.slice(0, fenceStart).trim();
-    postMarkerContent = raw.slice(fenceEnd).trim();
-  } else if (hasMarker && markerIdx >= 0) {
-    const preFence = raw.lastIndexOf('```novel-body-json', markerIdx);
-    const rawFence = preFence >= 0 ? preFence : raw.lastIndexOf('```json', markerIdx);
-    const keepUntil = rawFence >= 0 ? rawFence : markerIdx;
-    preMarkerContent = raw.slice(0, keepUntil).trim();
-  }
-
-  if (!payload && hasMarker && markerIdx >= 0) {
-    let rawFence = raw.lastIndexOf('```novel-body-json', markerIdx);
-    if (rawFence < 0) rawFence = raw.lastIndexOf('```json', markerIdx);
-    const keepUntil = rawFence >= 0 ? rawFence : markerIdx;
-    displayText = raw.slice(0, keepUntil).trim();
-  }
-
-  return {
-    payload,
-    displayText,
-    preMarkerContent,
-    postMarkerContent,
-    hasMarker,
-    streamContentMarkdown: extractStreamContentMarkdown(),
-    streamTargetN: extractStreamTargetN(),
-  };
-}
-
-function truncateUnicodeChars(s: string, maxChars: number): string {
-  const arr = [...s];
-  if (arr.length <= maxChars) return s;
-  return `${arr.slice(0, maxChars).join('')}…`;
-}
 
 export default function ScreenwriterNovelDetailPage() {
   const navigate = useNavigate();
@@ -223,13 +68,31 @@ export default function ScreenwriterNovelDetailPage() {
   const chatRef = useRef<AIChatSidePanelHandle | null>(null);
   const novelCrepeRef = useRef<NovelCrepeEditorHandle | null>(null);
   const novelEditorMountRef = useRef<HTMLDivElement | null>(null);
-  const streamMaskRef = useRef<HTMLDivElement | null>(null);
 
-  const [workspace, setWorkspace] = useState<NovelWorkspaceSnapshot | null>(null);
-  const workspaceRef = useRef<NovelWorkspaceSnapshot | null>(null);
-  useEffect(() => {
-    workspaceRef.current = workspace;
-  }, [workspace]);
+  const { workspace, workspaceRef, updateWorkspace, setSnapshot: setWorkspace } = useWorkspaceSync();
+
+  const {
+    onAssistStream,
+    aiStreamOverlay,
+    streamPreviewMd,
+    streamMaskRef,
+    editorExternallyBusy,
+  } = useNovelAiStream({
+    workspaceRef,
+    updateWorkspace,
+    message,
+    novelId: novelId ?? '',
+  });
+
+  const isAiRequestingRef = useRef(false);
+
+  const wrappedOnAssistStream = useCallback(
+    (payload: Parameters<typeof onAssistStream>[0]) => {
+      isAiRequestingRef.current = payload.isRequesting;
+      onAssistStream(payload);
+    },
+    [onAssistStream]
+  );
 
   const [navQuery, setNavQuery] = useState('');
   const [novelTitleDraft, setNovelTitleDraft] = useState('');
@@ -242,24 +105,16 @@ export default function ScreenwriterNovelDetailPage() {
   const selectionSenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [episodeNavOpen, setEpisodeNavOpen] = useState(true);
   const [aiOpen, setAiOpen] = useState(true);
-  const [aiStreamOverlay, setAiStreamOverlay] = useState(false);
-  const [streamPreviewMd, setStreamPreviewMd] = useState('');
-  const aiPendingRef = useRef<AiWritePending | null>(null);
-  const prevRequestingRef = useRef(false);
-  const autoJsonRetrySignatureRef = useRef<string | null>(null);
-  const autoJsonRetryPendingRef = useRef<AiWritePending | null>(null);
-  const turnTouchedWriteToolRef = useRef(false);
-  const turnUserPromptRef = useRef('');
 
   const [addEpOpen, setAddEpOpen] = useState(false);
   const [newEpTitle, setNewEpTitle] = useState('');
 
   useEffect(() => {
     if (!novelId) return;
-    setWorkspace(ensureNovelWorkspace(novelId));
+    updateWorkspace(ensureNovelWorkspace(novelId));
     const listItem = loadNovelList().find((x) => x.id === novelId);
     setNovelTitleDraft(listItem?.title ?? '');
-  }, [novelId]);
+  }, [novelId, updateWorkspace]);
 
   const activeEpisode = useMemo(() => {
     if (!workspace) return null;
@@ -275,20 +130,9 @@ export default function ScreenwriterNovelDetailPage() {
 
   const remountKey = useMemo(() => {
     if (!workspace || !activeEpisode) return '0';
-    const v = workspace.remountVersionByEpisode?.[activeEpisode.id] ?? 0;
-    return `${activeEpisode.id}_${v}`;
+    return activeEpisode.id;
   }, [workspace, activeEpisode]);
 
-  const editorExternallyBusy = aiStreamOverlay;
-
-  useEffect(() => {
-    if (!aiStreamOverlay || !streamPreviewMd) return;
-    const el = streamMaskRef.current;
-    if (!el) return;
-    requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-  }, [streamPreviewMd, aiStreamOverlay]);
 
   const commitNovelTitle = useCallback(() => {
     if (!novelId || !workspace) return;
@@ -385,6 +229,7 @@ export default function ScreenwriterNovelDetailPage() {
   }, [activeEpisodeIdForTags, activeEpisodeTitleForTags, selectionPlain]);
 
   const formatNovelContextTags = useCallback((_tags: AIChatContextTag[]) => {
+    if (isAiRequestingRef.current) return '';
     const ws = workspaceRef.current;
     if (!ws) return '';
     const ep = ws.episodes.find((e) => e.id === ws.activeEpisodeId);
@@ -412,228 +257,6 @@ export default function ScreenwriterNovelDetailPage() {
     if (sel) parts.push(`【选中文本】\n${sel}`);
     return parts.join('\n\n');
   }, []);
-
-  const onAssistStream = useCallback(
-    (payload: {
-      isRequesting: boolean;
-      lastAssistantPlain: string;
-      lastUserPlain: string;
-      lastUserMessageId?: string | number;
-      assistantStreaming: boolean;
-      toolCallsPending: boolean;
-      toolCallNamesAfterLastUser: string[];
-    }) => {
-      let wsInner = workspaceRef.current;
-      if (!wsInner) return;
-      const started = payload.isRequesting && !prevRequestingRef.current;
-      const ended = !payload.isRequesting && prevRequestingRef.current;
-      prevRequestingRef.current = payload.isRequesting;
-      const hasCreateEpisodeToolInTurn = payload.toolCallNamesAfterLastUser.includes(NOVEL_CREATE_EPISODE_TOOL_NAME);
-      const hasWriteToolsInTurn = payload.toolCallNamesAfterLastUser.some((name) =>
-        TOOL_EDIT_NAMES.has(name)
-      );
-      const user = payload.lastUserPlain.trim();
-      const userTurnKey = payload.lastUserMessageId != null ? String(payload.lastUserMessageId) : user;
-
-      if (started && userTurnKey !== turnUserPromptRef.current) {
-        turnUserPromptRef.current = userTurnKey;
-        turnTouchedWriteToolRef.current = false;
-      }
-      if (hasWriteToolsInTurn) {
-        turnTouchedWriteToolRef.current = true;
-      }
-
-      // novel_get_episode / novel_list_episodes 是读工具，不能清掉本轮写作目标。
-      // 只有真正写正文/改正文的工具才接管本轮写入。
-      if (hasWriteToolsInTurn && aiPendingRef.current) {
-        aiPendingRef.current = null;
-        setAiStreamOverlay(false);
-        setStreamPreviewMd('');
-      }
-
-      if (payload.isRequesting && !aiPendingRef.current) {
-        if (user.startsWith('[AUTO_JSON_RETRY]')) {
-          const retryPending = autoJsonRetryPendingRef.current;
-          if (!retryPending) {
-            setAiStreamOverlay(false);
-            setStreamPreviewMd('');
-            return;
-          }
-          aiPendingRef.current = { ...retryPending, isAutoJsonRetry: true };
-          setAiStreamOverlay(true);
-          return;
-        }
-        if (turnTouchedWriteToolRef.current) {
-          setAiStreamOverlay(false);
-          setStreamPreviewMd('');
-          return;
-        }
-        if (!hasNovelBodyWriteIntent(user)) {
-          aiPendingRef.current = null;
-          setAiStreamOverlay(false);
-          setStreamPreviewMd('');
-          return;
-        }
-        const resolved = resolveNovelStreamWriteTarget(user, wsInner);
-        let snap = resolved.snapshot;
-        const targetId = resolved.targetEpisodeId;
-        if (targetId && targetId !== NOVEL_OUTLINE_EPISODE_ID && snap.activeEpisodeId !== targetId) {
-          snap = setActiveEpisode(snap, targetId);
-        }
-        if (snap !== wsInner) {
-          workspaceRef.current = snap;
-          setWorkspace(snap);
-          wsInner = snap;
-        }
-        const baseline = targetId ? (snap.episodes.find((e) => e.id === targetId)?.contentMarkdown ?? '') : '';
-        aiPendingRef.current = {
-          targetEpisodeId: targetId,
-          mode: inferNovelBodyWriteMode(user),
-          baselineMarkdown: baseline,
-          userPrompt: user,
-        };
-        autoJsonRetrySignatureRef.current = null;
-        setAiStreamOverlay(!!targetId);
-      }
-
-      const pending = aiPendingRef.current;
-      if (pending && payload.isRequesting && !payload.toolCallsPending && !hasWriteToolsInTurn) {
-        const parsed = extractNovelWritePayload(payload.lastAssistantPlain);
-        if (parsed.hasMarker) {
-          let targetEpisodeId = pending.targetEpisodeId;
-          let wsForTarget = workspaceRef.current;
-          if (!targetEpisodeId && parsed.streamTargetN && wsForTarget) {
-            targetEpisodeId = findBodyEpisodeByEpisodeNumber(wsForTarget, parsed.streamTargetN)?.id ?? null;
-          }
-          if (!targetEpisodeId && hasCreateEpisodeToolInTurn && wsForTarget) {
-            const active = wsForTarget.episodes.find((e) => e.id === wsForTarget.activeEpisodeId);
-            targetEpisodeId = active && active.id !== NOVEL_OUTLINE_EPISODE_ID ? active.id : null;
-          }
-          if (!targetEpisodeId) {
-            setAiStreamOverlay(false);
-            setStreamPreviewMd('');
-            return;
-          }
-          if (targetEpisodeId !== pending.targetEpisodeId && wsForTarget) {
-            const baseline = wsForTarget.episodes.find((e) => e.id === targetEpisodeId)?.contentMarkdown ?? '';
-            aiPendingRef.current = { ...pending, targetEpisodeId, baselineMarkdown: baseline };
-          }
-          const baselineMarkdown =
-            wsForTarget?.episodes.find((e) => e.id === targetEpisodeId)?.contentMarkdown ?? pending.baselineMarkdown;
-          const streamingBody = parsed.streamContentMarkdown;
-          const preview =
-            pending.mode === 'append' ?
-              `${baselineMarkdown}\n\n${streamingBody}`.trim()
-            : streamingBody.trim();
-          setAiStreamOverlay(true);
-          setStreamPreviewMd(preview);
-        } else {
-          setAiStreamOverlay(false);
-          setStreamPreviewMd('');
-        }
-      }
-
-      if (ended) {
-        if (!aiPendingRef.current) {
-          setAiStreamOverlay(false);
-          setStreamPreviewMd('');
-          return;
-        }
-        const pend = aiPendingRef.current;
-        aiPendingRef.current = null;
-        setAiStreamOverlay(false);
-        setStreamPreviewMd('');
-        if (turnTouchedWriteToolRef.current) {
-          autoJsonRetrySignatureRef.current = null;
-          return;
-        }
-        if (payload.toolCallsPending || hasWriteToolsInTurn) return;
-        const parsed = extractNovelWritePayload(payload.lastAssistantPlain);
-        const jsonContent = parsed.payload?.content_markdown?.trim() ?? '';
-        const body = jsonContent || parsed.streamContentMarkdown.trim();
-        const triggerAutoJsonRetry = (reason: string): boolean => {
-          if (!AUTO_JSON_RETRY_ENABLED) return false;
-          if (pend.isAutoJsonRetry) return false;
-          const pending = pend.userPrompt.trim();
-          const signature = `${novelId ?? 'unknown'}::${pending}`;
-          if (autoJsonRetrySignatureRef.current === signature) return false;
-          const chat = chatRef.current;
-          if (!chat) return false;
-          autoJsonRetrySignatureRef.current = signature;
-          autoJsonRetryPendingRef.current = pend;
-          const retryPrompt = [
-            '[AUTO_JSON_RETRY] 仅返回 JSON，不要任何解释文字。',
-            '请严格返回一个 novel-body-json 代码块，结构：',
-            '```novel-body-json',
-            '{"novel_write_payload":{"n":<集号>,"mode":"replace","title":"<纯标题>","content_markdown":"<正文Markdown>"}}',
-            '```',
-            '要求：content_markdown 必须是完整正文，禁止“已完成/内容涵盖/核心节点”等总结语。',
-            `原始需求：${pending}`,
-            `重试原因：${reason}`,
-          ].join('\n');
-          chat.emitUserMessage(retryPrompt);
-          message.info('检测到返回非正文，已自动发起 JSON 正文重试。');
-          return true;
-        };
-
-        if (!body) {
-          triggerAutoJsonRetry('缺少 content_markdown');
-          return;
-        }
-        const currentSnapshot = workspaceRef.current;
-        if (!currentSnapshot) return;
-        let next: NovelWorkspaceSnapshot = currentSnapshot;
-        let targetEpisodeId = pend.targetEpisodeId;
-        const targetN = parsed.payload && Number.isFinite(Number(parsed.payload.n))
-          ? Math.floor(Number(parsed.payload.n))
-          : parsed.streamTargetN;
-        if (targetN != null && targetN >= 1) {
-          const hit = findBodyEpisodeByEpisodeNumber(next, targetN);
-          if (hit) {
-            targetEpisodeId = hit.id;
-          } else {
-            const title = parsed.payload?.title?.trim() || `第${targetN}集`;
-            const created = upsertEpisode(next, {
-              title,
-              contentMarkdown: '',
-            });
-            next = created.snapshot;
-            targetEpisodeId = created.episode.id;
-          }
-        }
-        if (!targetEpisodeId && hasCreateEpisodeToolInTurn) {
-          const active = next.episodes.find((e) => e.id === next.activeEpisodeId);
-          targetEpisodeId = active && active.id !== NOVEL_OUTLINE_EPISODE_ID ? active.id : null;
-        }
-        if (!targetEpisodeId) {
-          message.warning('未找到可写入的目标集；新增集必须先由 AI 调用新建集工具。');
-          return;
-        }
-        if (parsed.payload?.title?.trim()) {
-          next = upsertEpisode(next, { id: targetEpisodeId, title: parsed.payload.title }).snapshot;
-        }
-        let mode = parsed.payload?.mode === 'append' ? 'append' : pend.mode;
-        const currentContent = next.episodes.find((e) => e.id === targetEpisodeId)?.contentMarkdown ?? '';
-        if (!currentContent.trim()) {
-          mode = 'append';
-        }
-        const base =
-          mode === 'append' ?
-            (next.episodes.find((e) => e.id === targetEpisodeId)?.contentMarkdown ?? pend.baselineMarkdown)
-          : '';
-        const fin = mode === 'append' ? `${base}\n\n${body}`.trim() : body;
-        if (next.activeEpisodeId !== targetEpisodeId) {
-          next = setActiveEpisode(next, targetEpisodeId);
-        }
-        next = updateEpisodeMarkdown(next, targetEpisodeId, fin, true);
-        workspaceRef.current = next;
-        setWorkspace(next);
-        autoJsonRetrySignatureRef.current = null;
-        autoJsonRetryPendingRef.current = null;
-      }
-    },
-    [message, novelId]
-  );
 
   const filteredEpisodes = useMemo(() => {
     if (!workspace) return [];
@@ -707,17 +330,12 @@ export default function ScreenwriterNovelDetailPage() {
     if (!novelId) return [];
     return buildNovelEditorFunctionCalls({
       getSnapshot: () => workspaceRef.current,
-      setSnapshot: (snap) => {
-        if (snap && typeof snap === 'object' && 'novelId' in snap) {
-          workspaceRef.current = snap as NovelWorkspaceSnapshot;
-        }
-        setWorkspace(snap);
-      },
+      setSnapshot: setWorkspace,
       novelId,
       requestDeleteEpisodeConfirm,
       requestDeleteEpisodesConfirm,
     });
-  }, [novelId, requestDeleteEpisodeConfirm, requestDeleteEpisodesConfirm]);
+  }, [novelId, requestDeleteEpisodeConfirm, requestDeleteEpisodesConfirm, setWorkspace]);
 
   const novelProjectPrompt = useMemo(() => {
     if (!workspace) return getNovelEditorProjectPrompt([]);
@@ -749,7 +367,7 @@ export default function ScreenwriterNovelDetailPage() {
       suppressAgentSenderWelcome
       suppressSenderAgentSkill
       formatContextTags={formatNovelContextTags}
-      onAssistStream={onAssistStream}
+      onAssistStream={wrappedOnAssistStream}
       renderToolMessageContent={(toolContent, meta) => (
         <NovelEditorToolA2uiBubble raw={toolContent} toolName={meta?.toolName} />
       )}

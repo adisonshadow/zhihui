@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Flex, Input, Modal, Typography, message } from 'antd';
-import { PlusOutlined, StarOutlined } from '@ant-design/icons';
+import { PlusOutlined, StarOutlined, EditOutlined } from '@ant-design/icons';
 import { AIChat } from '@/components/AIChat';
 import type {
   AIChatSidePanelHandle,
@@ -46,6 +46,8 @@ import {
 } from '@/novelDesign/utils/resolveScreenwriterFavoriteContext';
 import { deriveNovelDesignConversationTitle } from '@/novelDesign/utils/deriveNovelDesignConversationTitle';
 import { ScreenwriterHistoryConversations } from '@/novelDesign/components/ScreenwriterHistoryConversations';
+import { ScreenwriterDrawPreferencesModal } from '@/novelDesign/components/ScreenwriterDrawPreferencesModal';
+import { loadCreationPreference, formatPreferenceBlock, formatPreferenceLines } from '@/novelDesign/storage/novelCreationPreferenceStorage';
 import '@ant-design/x-markdown/themes/dark.css';
 import './ScreenwriterAIDrawPage.css';
 
@@ -56,6 +58,8 @@ function ScreenwriterAIDrawInner() {
   const chatRef = useRef<AIChatSidePanelHandle | null>(null);
   const bootRef = useRef(false);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [preferencesVersion, setPreferencesVersion] = useState(0);
   const [favoritesRefreshKey, setFavoritesRefreshKey] = useState(0);
   const [convMeta, setConvMeta] = useState<{
     items: ConversationListMetaItem[];
@@ -120,14 +124,18 @@ function ScreenwriterAIDrawInner() {
   }, [convMeta.activeKey, convMeta.items]);
 
   const drawProjectPrompt = useMemo(
-    () =>
-      `编剧工作区：小说雏形与长篇小说创作。\n\n${getScreenwriterDrawProjectPromptSuffix()}\n\n${getScreenwriterOutlineJsonContractSuffix()}`,
-    []
+    () => {
+      const pref = loadCreationPreference();
+      const prefBlock = formatPreferenceBlock(pref);
+      return `${prefBlock}\n\n编剧工作区：小说雏形与长篇小说创作。\n\n${getScreenwriterDrawProjectPromptSuffix()}\n\n${getScreenwriterOutlineJsonContractSuffix()}`;
+    },
+    [preferencesVersion]
   );
 
   const [createProjectModalOpen, setCreateProjectModalOpen] = useState(false);
   const [createSuggestedName, setCreateSuggestedName] = useState('');
   const [createOutlineMarkdown, setCreateOutlineMarkdown] = useState<string | undefined>(undefined);
+  const [createPreferenceBlock, setCreatePreferenceBlock] = useState<string | undefined>(undefined);
 
   const favoritedSeedUuidSet = useMemo(() => {
     const s = new Set<string>();
@@ -147,15 +155,13 @@ function ScreenwriterAIDrawInner() {
     return s;
   }, [favoritesRefreshKey]);
 
-  const emptySlot = useMemo(
-    () => (
-      <ScreenwriterDrawCard
-        onStart={(prompt) => {
-          chatRef.current?.emitUserMessage(prompt);
-        }}
-      />
-    ),
-    []
+  const emptySlot = (
+    <ScreenwriterDrawCard
+      key={preferencesVersion}
+      onStart={(prompt) => {
+        chatRef.current?.emitUserMessage(prompt);
+      }}
+    />
   );
 
   const renderAssistantContent = useCallback(
@@ -182,6 +188,9 @@ function ScreenwriterAIDrawInner() {
               outlineAppendixMeta.storySeedBlock
             )
           : '';
+        const pref = loadCreationPreference();
+        const prefLines = formatPreferenceLines(pref);
+        const preferenceBlock = prefLines.join('\n');
 
         return (
           <Flex vertical gap={14} style={{ width: '100%' }}>
@@ -195,6 +204,7 @@ function ScreenwriterAIDrawInner() {
               outlineProse={outlineParsed.prose}
               fullAssistantContent={args.content}
               favoritedOutlineUuidSet={favoritedOutlineUuidSet}
+              preferenceBlock={preferenceBlock}
               onRegenerate={() =>
                 chatRef.current?.emitUserMessage(buildRegenerateOutlinePrompt(outlineParsed.prose))
               }
@@ -211,6 +221,7 @@ function ScreenwriterAIDrawInner() {
               }}
               onCreateProject={() => {
                 setCreateSuggestedName(outlineParsed.panel.storyName);
+                setCreatePreferenceBlock(`【创作偏好】\n${preferenceBlock}`);
                 setCreateOutlineMarkdown(outlineParsed.prose);
                 setCreateProjectModalOpen(true);
               }}
@@ -323,6 +334,13 @@ function ScreenwriterAIDrawInner() {
           >
             我的收藏
           </Button>
+          <Button
+            block
+            icon={<EditOutlined />}
+            onClick={() => setPreferencesOpen(true)}
+          >
+            创作偏好
+          </Button>
         </div>
         <Typography.Text type="secondary" className="screenwriter-history-conv-heading">
           历史对话
@@ -343,7 +361,7 @@ function ScreenwriterAIDrawInner() {
         <AIChat
           ref={chatRef}
           mode="SidePanel"
-          agentKey="novel"
+          agentKey="novel-idea"
           allowAgentSwitch={false}
           disableAttachmentsHeader
           sidePanelOnClose={() => navigate(-1)}
@@ -359,6 +377,11 @@ function ScreenwriterAIDrawInner() {
           sidePanelAssistantContentRender={renderAssistantContent}
         />
       </main>
+      <ScreenwriterDrawPreferencesModal
+        open={preferencesOpen}
+        onClose={() => setPreferencesOpen(false)}
+        onSaved={() => setPreferencesVersion((v) => v + 1)}
+      />
       <ScreenwriterFavoritesModal
         open={favoritesOpen}
         refreshKey={favoritesRefreshKey}
@@ -369,10 +392,12 @@ function ScreenwriterAIDrawInner() {
         open={createProjectModalOpen}
         suggestedName={createSuggestedName}
         outlineBootstrap={createOutlineMarkdown ? { outlineMarkdown: createOutlineMarkdown } : undefined}
+        preferenceBlock={createPreferenceBlock}
         onNavigateToNovelWorkspace={(novelId) => navigate(`/screenwriter/novel/${novelId}`)}
         onClose={() => {
           setCreateProjectModalOpen(false);
           setCreateOutlineMarkdown(undefined);
+          setCreatePreferenceBlock(undefined);
         }}
       />
       <Modal

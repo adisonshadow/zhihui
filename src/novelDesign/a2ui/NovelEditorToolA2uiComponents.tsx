@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Collapse, Flex, Typography } from 'antd';
+import { CheckCircleOutlined, InfoCircleOutlined, LoadingOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
 
@@ -15,17 +16,52 @@ export function NovelToolColumn(props: Record<string, unknown>) {
 
 export function NovelToolTitle(props: Record<string, unknown>) {
   const text = String(props.text ?? '');
-  const tone = String(props.tone ?? 'neutral');
-  const color =
-    tone === 'success' ?
-      'rgba(120, 220, 160, 0.95)'
-    : tone === 'error' ?
-      'rgba(255, 140, 130, 0.98)'
-    : 'rgba(255,255,255,0.88)';
+  const iconType = String(props.iconType ?? 'success');
+  const isError = iconType === 'error';
+  const isLoading = iconType === 'loading';
+  const iconColor = isError ? 'rgba(255, 140, 130, 0.98)' : 'rgba(120, 220, 160, 0.95)';
+  const IconComponent = isLoading ? LoadingOutlined : isError ? InfoCircleOutlined : CheckCircleOutlined;
   return (
-    <Text strong style={{ fontSize: 13, color }}>
-      {text}
-    </Text>
+    <Flex align="center" gap={6}>
+      {isLoading ?
+        <LoadingOutlined style={{ color: 'rgba(255,255,255,0.88)', fontSize: 14 }} spin />
+      : <IconComponent style={{ color: iconColor, fontSize: 14 }} />}
+      <Text strong style={{ fontSize: 13, color: isError ? iconColor : 'rgba(255,255,255,0.88)' }}>
+        {text}
+      </Text>
+    </Flex>
+  );
+}
+
+/** 可折叠容器：默认收起，包裹所有数据字段 */
+export function NovelToolCollapsibleCard(props: Record<string, unknown>) {
+  const children = props.children as ReactNode[] | undefined;
+  return (
+    <Collapse
+      size="small"
+      bordered={false}
+      style={{ background: 'transparent' }}
+      defaultActiveKey={[]}
+      expandIconPlacement="end"
+      items={[
+        {
+          key: 'body',
+          label: <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>查看详情</span>,
+          styles: {
+            header: {
+              alignItems: 'center',
+              padding: '4px 0',
+            },
+            body: { padding: '8px 0 0' },
+          },
+          children: (
+            <Flex vertical gap={10} style={{ width: '100%' }}>
+              {children}
+            </Flex>
+          ),
+        },
+      ]}
+    />
   );
 }
 
@@ -63,7 +99,7 @@ export function NovelToolCollapsibleField(props: Record<string, unknown>) {
       bordered={false}
       style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8 }}
       defaultActiveKey={defaultCollapsed ? [] : ['md']}
-      expandIconPosition="end"
+      expandIconPlacement="end"
       items={[
         {
           key: 'md',
@@ -97,6 +133,7 @@ export const NOVEL_EDITOR_TOOL_UI_COMPONENT_MAP: Record<
 > = {
   NovelToolColumn,
   NovelToolTitle,
+  NovelToolCollapsibleCard,
   NovelToolField,
   NovelToolCollapsibleField,
 };

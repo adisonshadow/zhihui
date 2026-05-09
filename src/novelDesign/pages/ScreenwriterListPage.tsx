@@ -16,6 +16,7 @@ import {
   Empty,
   Image as AntImage,
   Select,
+  ConfigProvider,
 } from 'antd';
 import type { RadioChangeEvent } from 'antd/es/radio';
 import {
@@ -29,6 +30,7 @@ import { Radio } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
 import { loadNovelList, saveNovelList } from '@/novelDesign/storage/novelListStorage';
+import './ScreenwriterListPage.css';
 
 const { Search } = Input;
 
@@ -290,7 +292,7 @@ export default function ScreenwriterListPage() {
         </div>
 
         {viewMode === 'card' ? (
-          <Row gutter={[16, 16]}>
+          <Row gutter={[16, 16]} className='screenwriter-list-cards'>
             {filteredSorted.map((n) => (
               <Col key={n.id} xs={24} sm={12} md={8} lg={6}>
                 <div
@@ -330,50 +332,86 @@ export default function ScreenwriterListPage() {
             ))}
           </Row>
         ) : (
-          <Table<NovelWorkspaceItem>
-            dataSource={filteredSorted}
-            rowKey="id"
-            pagination={false}
-            locale={{ emptyText: <Empty description="暂无小说草稿" /> }}
-            columns={[
-              {
-                title: '封面',
-                key: 'cover',
-                width: 96,
-                render: (_, n) => (
-                  <div style={{ width: 56 }}>
-                    <NovelCover src={n.coverDataUrl} title={n.title} />
-                  </div>
-                ),
+          <ConfigProvider
+            theme={{
+              components: {
+                Table: {
+                  /* 这里是你的组件 token */
+                  borderColor: 'rgba(255,255,255,0.1)',
+                  colorBgContainer: 'transparent',
+                  rowHoverBg: 'rgba(0, 0, 0, 0.25)',
+                },
               },
-              {
-                title: '小说名',
-                dataIndex: 'title',
-                ellipsis: true,
-                render: (t: string, n: NovelWorkspaceItem) => (
-                  <a href={`/screenwriter/novel/${n.id}`} onClick={(e) => { e.preventDefault(); openNovel(n); }}>
-                    {t}
-                  </a>
-                ),
-              },
-              {
-                title: '题材类型',
-                dataIndex: 'genres',
-                width: 220,
-                ellipsis: true,
-                render: (gens: string[]) =>
-                  gens?.length ?
-                    <Space wrap size={[4, 4]}>{gens.map((g) => <Tag key={g}>{g}</Tag>)}</Space> :
-                    '—',
-              },
-              {
-                title: '最后更新',
-                dataIndex: 'updatedAt',
-                width: 176,
-                render: (x: string) => (x ? new Date(x).toLocaleString('zh-CN') : '-'),
-              },
-            ]}
-          />
+            }}
+          >
+            <Table<NovelWorkspaceItem>
+              dataSource={filteredSorted}
+              className='screenwriter-list-table'
+              rowKey="id"
+              pagination={false}
+              showHeader={false}
+              // virtual={true}
+              locale={{ emptyText: <Empty description="暂无小说项目，请创建。建议从「AI抽卡」开始创作。" /> }}
+              columns={[
+                {
+                  title: '封面',
+                  key: 'cover',
+                  width: 96,
+                  render: (_, n) => (
+                    <div style={{ width: 56 }}>
+                      <NovelCover src={n.coverDataUrl} title={n.title} />
+                    </div>
+                  ),
+                },
+                {
+                  title: '小说名',
+                  dataIndex: 'title',
+                  ellipsis: true,
+                  render: (t: string, n: NovelWorkspaceItem) => (
+                    <a href={`/screenwriter/novel/${n.id}`} onClick={(e) => { e.preventDefault(); openNovel(n); }}>
+                      {t}
+                    </a>
+                  ),
+                },
+                {
+                  title: '题材类型',
+                  dataIndex: 'genres',
+                  width: 220,
+                  ellipsis: true,
+                  render: (gens: string[]) =>
+                    gens?.length ?
+                      <Space wrap size={[4, 4]}>{gens.map((g) => <Tag key={g}>{g}</Tag>)}</Space> :
+                      '—',
+                },
+                {
+                  title: '最后更新',
+                  dataIndex: 'updatedAt',
+                  width: 176,
+                  render: (x: string) => (x ? new Date(x).toLocaleString('zh-CN') : '-'),
+                },
+              ]}
+              styles={{
+                root: {
+                  // height: 'calc(100vh - 78px - 2 * 24px - 2 * 32px)',
+                  // overflow: 'auto',
+                  // backgroundColor: 'transparent',
+                },
+                content: {
+                  // backgroundColor: 'transparent',
+                },
+                body: {
+                  
+                  wrapper:{
+                    // backgroundColor: 'transparent',
+                  },
+                  row: {
+                    // backgroundColor: 'red',
+                  }
+
+                },
+              }}
+            />
+          </ConfigProvider>
         )}
 
         {viewMode === 'card' && filteredSorted.length === 0 && (

@@ -22,3 +22,15 @@
 .ant-sender .ant-sender-header .ant-sender-header-header{
   padding: 4px 10px !important;
 }
+
+
+
+
+
+.ant-bubble-list .ant-bubble-start:not(.ant-bubble-divider):not(.ant-bubble-system) {
+  padding-inline-end: 0 !important;
+}
+
+.ant-bubble-list .ant-bubble-end:not(.ant-bubble-divider):not(.ant-bubble-system) {
+  
+}

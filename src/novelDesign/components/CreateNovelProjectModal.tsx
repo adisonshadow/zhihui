@@ -9,6 +9,7 @@ import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import { upsertNovel } from '@/novelDesign/storage/novelListStorage';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
 import { initWorkspaceFromOutline } from '@/novelDesign/storage/novelWorkspaceStorage';
+import { loadCreationPreference } from '@/novelDesign/storage/novelCreationPreferenceStorage';
 
 function DirPicker({ value, onChange }: { value?: string; onChange?: (v: string) => void }) {
   return (
@@ -45,6 +46,7 @@ export interface CreateNovelProjectModalProps {
   open: boolean;
   suggestedName: string;
   outlineBootstrap?: OutlineBootstrapPayload | null;
+  preferenceBlock?: string;
   onClose: () => void;
   onNavigateToNovelWorkspace?: (novelId: string) => void;
 }
@@ -53,6 +55,7 @@ export function CreateNovelProjectModal({
   open,
   suggestedName,
   outlineBootstrap,
+  preferenceBlock,
   onClose,
   onNavigateToNovelWorkspace,
 }: CreateNovelProjectModalProps) {
@@ -99,16 +102,26 @@ export function CreateNovelProjectModal({
         const listItem: NovelWorkspaceItem = {
           id: novelId,
           title: displayTitle,
-          genres: [],
+          genres: (() => {
+            const pref = loadCreationPreference();
+            const tags: string[] = [];
+            const contentType = pref.customContentType?.trim() || pref.contentType;
+            if (contentType) tags.push(contentType);
+            if (pref.genre && pref.genre !== '任意') tags.push(pref.genre);
+            return tags;
+          })(),
           coverDataUrl: null,
           updatedAt: now,
           createdAt: now,
         };
         upsertNovel(listItem);
+        const baseMarkdown = outlineBootstrap?.outlineMarkdown?.trim() ?? '';
+        const prefBlock = preferenceBlock?.trim();
+        const fullOutlineMarkdown = prefBlock ? `${baseMarkdown}\n\n${prefBlock}` : baseMarkdown;
         initWorkspaceFromOutline({
           novelId,
           novelTitle: displayTitle,
-          outlineMarkdown: outlineBootstrap?.outlineMarkdown?.trim() ?? '',
+          outlineMarkdown: fullOutlineMarkdown,
         });
         message.success('项目已创建');
         form.resetFields();

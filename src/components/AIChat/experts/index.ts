@@ -6,6 +6,8 @@ import type { AgentConfig, AgentPrompts } from '../types';
 import { CAPABILITY_TAGS } from '@/types/settings';
 import { scriptAgentPrompts } from '../agents/scriptAgent';
 import { novelAgentPrompts } from '../agents/novelAgent';
+import { novelIdeaAgentPrompts } from '../agents/novelIdeaAgent';
+import { novelToScriptAgentPrompts } from '../agents/novelToScriptAgent';
 import { drawerAgentPrompts, DRAWER_TYPE_OPTIONS } from '../agents/drawerAgent';
 
 /** 主 agent：调度入口，默认选项，计划实现 function call 调度能力 */
@@ -20,18 +22,32 @@ export const AGENT_CONFIGS: AgentConfig[] = [
     missingCapabilityHint: '请先在设置中添加具备「{missing}」能力且已配置 API 的模型。',
   },
   {
+    key: 'novel-idea',
+    label: '小说创意',
+    welcomeMessage: '我是小说创意策划，可帮您故事抽卡、搭建世界观、设计大纲与人物。',
+    requiredCapabilityKeys: ['novel'],
+    missingCapabilityHint: '缺失匹配能力的模型，请在设置中为模型勾选「小说创作」能力并配置 API。',
+  },
+  {
+    key: 'novel',
+    label: '小说写作',
+    welcomeMessage: '我是小说写作助手，可帮您续写、润色、扩写与情节调整。',
+    requiredCapabilityKeys: ['novel'],
+    missingCapabilityHint: '缺失匹配能力的模型，请在设置中为模型勾选「小说创作」能力并配置 API。',
+  },
+  {
+    key: 'novel-to-script',
+    label: '转剧本',
+    welcomeMessage: '我是剧本改编专家，可将小说改编为漫剧/AI短剧的分镜剧本。',
+    requiredCapabilityKeys: ['script'],
+    missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加具备「{missing}」能力且已配置 API 的模型。',
+  },
+  {
     key: 'script',
     label: '剧本专家',
     welcomeMessage: '我是剧本专家，可帮您扩写、缩写、润色概要或剧本。',
     requiredCapabilityKeys: ['script', 'action_script'],
     missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加具备「{missing}」能力且已配置 API 的模型。',
-  },
-  {
-    key: 'novel',
-    label: '小说作家',
-    welcomeMessage: '我是小说作家，可协助故事大纲、续写、润色与人物塑造。',
-    requiredCapabilityKeys: ['novel'],
-    missingCapabilityHint: '缺失匹配能力的模型，请在设置中为模型勾选「小说创作」能力并配置 API。',
   },
   {
     key: 'drawer',
@@ -60,8 +76,10 @@ export const AGENT_PROMPTS_MAP: Record<string, AgentPrompts> = {
       { key: 'translate', label: '翻译成中文', message: '请将上述内容翻译成中文' },
     ],
   },
-  script: scriptAgentPrompts,
+  'novel-idea': novelIdeaAgentPrompts,
   novel: novelAgentPrompts,
+  'novel-to-script': novelToScriptAgentPrompts,
+  script: scriptAgentPrompts,
   drawer: drawerAgentPrompts,
 };
 

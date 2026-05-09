@@ -50,10 +50,20 @@ export function OutlinePanelField(props: Record<string, unknown>) {
   const label = String(props.label ?? '');
   const body = String(props.body ?? '');
   if (!body.trim()) return null;
+  const isStoryName = label === '故事名称';
   return (
     <Flex vertical gap={4} style={{ width: '100%' }}>
       <Text style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>{label}</Text>
-      <Text style={{ color: 'rgba(255,255,255,0.88)', whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>
+      <Text
+        style={{
+          color: 'rgba(255,255,255,0.92)',
+          whiteSpace: 'pre-wrap',
+          lineHeight: 1.65,
+          ...(isStoryName
+            ? { fontSize: 20, fontWeight: 600 }
+            : { fontSize: 14 }),
+        }}
+      >
         {body}
       </Text>
     </Flex>

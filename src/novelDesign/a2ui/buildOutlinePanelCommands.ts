@@ -19,10 +19,12 @@ export function buildOutlinePanelCommands(
     fullAssistantContent: string;
     /** 是否已在「我的大纲」收藏（按 outlineUuid） */
     outlineFavorited?: boolean;
+    /** 创作偏好文本块 */
+    preferenceBlock?: string;
   }
 ): XAgentCommand_v0_9[] {
   const surfaceId = OUTLINE_PANEL_SURFACE_ID;
-  const components = buildOutlineComponents(panel, context.outlineFavorited ?? false);
+  const components = buildOutlineComponents(panel, context.outlineFavorited ?? false, context.preferenceBlock);
   return [
     {
       version: 'v0.9',
@@ -52,14 +54,13 @@ export function buildOutlinePanelCommands(
 
 function buildOutlineComponents(
   panel: ScreenwriterOutlinePanelPayload,
-  outlineFavorited: boolean
+  outlineFavorited: boolean,
+  preferenceBlock?: string
 ): OutlineUiNode[] {
-  const badgeId = 'op_badge';
   const headingId = 'op_heading';
-  const children: string[] = [badgeId, headingId];
+  const children: string[] = [headingId];
 
   const comps: OutlineUiNode[] = [
-    { id: badgeId, component: 'OutlinePanelBadge', text: '故事大纲' },
     {
       id: headingId,
       component: 'OutlinePanelHeading',
@@ -81,6 +82,12 @@ function buildOutlineComponents(
     const id = 'op_sum';
     children.push(id);
     comps.push({ id, component: 'OutlinePanelField', label: '大纲简介', body: panel.summary.trim() });
+  }
+
+  if (preferenceBlock?.trim()) {
+    const id = 'op_pref';
+    children.push(id);
+    comps.push({ id, component: 'OutlinePanelField', label: '创作偏好', body: preferenceBlock.trim() });
   }
 
   const regenId = 'op_regen';

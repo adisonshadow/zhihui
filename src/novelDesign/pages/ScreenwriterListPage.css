@@ -1,0 +1,4 @@
+.screenwriter-list-cards, .screenwriter-list-table {
+  overflow: auto;
+  height: calc(100vh - 78px - 2 * 24px - 2 * 32px);
+}

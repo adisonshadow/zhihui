@@ -27,7 +27,14 @@ const novelEditorToolCatalog: Catalog = {
       required: ['text'],
       properties: {
         text: { type: 'string' },
-        tone: { type: 'string', enum: ['success', 'error', 'neutral'] },
+        iconType: { type: 'string', enum: ['loading', 'error', 'success'] },
+      },
+    },
+    NovelToolCollapsibleCard: {
+      type: 'object',
+      required: ['children'],
+      properties: {
+        children: { type: 'array', items: { type: 'string' } },
       },
     },
     NovelToolField: {

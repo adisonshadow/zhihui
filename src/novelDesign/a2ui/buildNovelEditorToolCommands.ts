@@ -11,6 +11,32 @@ type NovelToolUiNode = {
 
 const PREVIEW_CHARS = 2000;
 
+const TOOL_NAME_TO_CHINESE: Record<string, string> = {
+  novel_list_episodes: '列出章节',
+  novel_create_episode_and_open: '新建集并打开',
+  novel_get_episode: '读取正文',
+  novel_body_episode_exists: '查第N集',
+  novel_open_body_episode: '打开第N集',
+  novel_write_body_episode: '写第N集',
+  novel_create_episode: '新建集',
+  novel_rename_episode: '重命名集',
+  novel_reorder_episode: '调整顺序',
+  novel_delete_episode: '删除集',
+  novel_delete_body_episode_range: '删除集范围',
+  novel_split_episode: '拆分集',
+  novel_merge_episodes: '合并集',
+  novel_replace_content: '替换片段',
+  novel_delete_segment: '删除片段',
+  novel_write_episode: '写入正文',
+  novel_update_outline: '更新大纲',
+  novel_rename_novel: '改书名',
+};
+
+function getChineseLabel(toolName?: string): string {
+  if (!toolName) return '';
+  return TOOL_NAME_TO_CHINESE[toolName] ?? toolName;
+}
+
 function truncateField(s: string, max = PREVIEW_CHARS): string {
   const t = s.trim();
   if (t.length <= max) return t;
@@ -26,38 +52,24 @@ export function buildNovelEditorToolSurfaceCommands(
   const ok = data.ok === true;
   const phase = String(data.phase ?? '');
   const isWritingPhase = phase === 'writing';
-  const tone =
-    isWritingPhase ? 'neutral'
-    : ok ? 'success'
-    : 'error';
-  const isWriteResult = typeof data.summary === 'string' && typeof data.content_length === 'number';
-  const tn = options?.toolName?.trim();
-  const toolSuffix = tn ? ` · ${tn}` : '';
-  const titleText =
-    isWritingPhase ? `正在生成文档...${toolSuffix}`
-    : ok && isWriteResult ? `正文已写入编辑器${toolSuffix}`
-    : ok ? `工具结果${toolSuffix}`
-    : `工具未成功${toolSuffix}`;
+  const hasError = typeof data.error === 'string' && data.error.trim().length > 0;
+  const cnLabel = getChineseLabel(options?.toolName?.trim());
+
+  const titleText = cnLabel || '工具结果';
+  const iconType = isWritingPhase ? 'loading' : (!ok || hasError) ? 'error' : 'success';
 
   const comps: NovelToolUiNode[] = [];
-  const rootChildren: string[] = ['nt_title'];
-
-  comps.push({
-    id: 'nt_title',
-    component: 'NovelToolTitle',
-    text: titleText,
-    tone,
-  });
+  const bodyChildren: string[] = [];
 
   const addField = (id: string, label: string, body: string) => {
     if (!body.trim()) return;
-    rootChildren.push(id);
+    bodyChildren.push(id);
     comps.push({ id, component: 'NovelToolField', label, body: truncateField(body) });
   };
 
   const addMarkdownBodyField = (id: string, label: string, body: string) => {
     if (!body.trim()) return;
-    rootChildren.push(id);
+    bodyChildren.push(id);
     comps.push({
       id,
       component: 'NovelToolCollapsibleField',
@@ -123,11 +135,29 @@ export function buildNovelEditorToolSurfaceCommands(
     addField(`nt_x_${k}`, k, s);
   }
 
+  /* 标题节点（始终可见，带图标） */
+  const titleId = 'nt_title';
+  comps.push({
+    id: titleId,
+    component: 'NovelToolTitle',
+    text: titleText,
+    iconType,
+  });
+
+  /* 可折叠详情容器（默认收起） */
+  const collapseId = 'nt_collapse';
+  comps.push({
+    id: collapseId,
+    component: 'NovelToolCollapsibleCard',
+    children: bodyChildren,
+  });
+
+  /* 根列 */
   comps.push({
     id: 'root',
     component: 'NovelToolColumn',
-    gap: 10,
-    children: rootChildren,
+    gap: 4,
+    children: [titleId, collapseId],
   });
 
   return [
