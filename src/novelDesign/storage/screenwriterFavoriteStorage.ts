@@ -57,11 +57,23 @@ export function loadScreenwriterFavorites(): ScreenwriterFavoriteStory[] {
   }
 }
 
+function api() {
+  return window.yiman?.novel?.favorites;
+}
+
 export function saveScreenwriterFavorites(items: ScreenwriterFavoriteStory[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
   } catch {
     /* ignore quota */
+  }
+  // 异步同步到 SQLite
+  const a = api();
+  if (a) {
+    a.replaceAll(items.map((x) => ({
+      id: x.id, seedUuid: x.seedUuid ?? null, title: x.title, content: x.content,
+      sourceConversationKey: x.sourceConversationKey ?? null, createdAt: x.createdAt,
+    }))).catch(() => {});
   }
 }
 

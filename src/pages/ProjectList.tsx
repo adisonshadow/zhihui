@@ -17,6 +17,7 @@ import {
   Table,
   Tag,
   Empty,
+  Dropdown,
 } from 'antd';
 import {
   PlusOutlined,
@@ -26,9 +27,10 @@ import {
   EditOutlined,
   DeleteOutlined,
   FolderOpenOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import ProjectCard from '@/components/ProjectCard';
+import { ProjectCard } from '@/components/ProjectCard';
 import type { ProjectItem } from '@/types/project';
 import { useConfigSubscribe } from '@/contexts/ConfigContext';
 
@@ -80,6 +82,7 @@ function DirPicker({ value, onChange }: { value?: string; onChange?: (v: string)
 const ProjectList: React.FC = () => {
   const { message } = App.useApp();
   const appSettings = useConfigSubscribe();
+  const bgVideo = appSettings?.projectBgVideo;
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [pathValids, setPathValids] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
@@ -217,13 +220,15 @@ const ProjectList: React.FC = () => {
   return (
     <div style={{ position: 'relative' }}>
       {/* 全视口背景：fixed 铺满；顶栏靠 AppHeader 更高 z-index 浮在上层 */}
-      <video
-        autoPlay
-        loop
-        muted
-        playsInline
-        aria-hidden
-        src="/medias/grok-video-05239329-8e2d-4172-89e7-acc217c3291e.mp4"
+      {bgVideo ? (
+        <video
+          autoPlay
+          loop
+          muted
+          playsInline
+          aria-hidden
+          key={bgVideo}
+          src={`/medias/${bgVideo}`}
         style={{
           position: 'fixed',
           inset: 0,
@@ -234,6 +239,7 @@ const ProjectList: React.FC = () => {
           pointerEvents: 'none',
         }}
       />
+      ) : null}
       <div
         aria-hidden
         style={{
@@ -322,20 +328,59 @@ const ProjectList: React.FC = () => {
       {/* 列表 */}
       {viewMode === 'card' ? (
         <Row gutter={[16, 16]}>
-          {filteredAndSorted.map((project) => (
-            <Col key={project.id} xs={24} sm={12} md={8} lg={6}>
+          {filteredAndSorted.map((project) => {
+            const tags: Array<{ name: string; color?: string }> = [];
+            if (project.landscape) {
+              tags.push({ name: '横屏', color: 'blue' });
+            } else {
+              tags.push({ name: '竖屏', color: 'green' });
+            }
+            if (!(pathValids[project.id] ?? true)) {
+              tags.push({ name: '路径无效', color: 'error' });
+            }
+            return (
               <ProjectCard
-                project={project}
-                pathValid={pathValids[project.id] ?? true}
-                onOpen={() => handleOpen(project)}
-                onDelete={() => handleDelete(project)}
-                onOpenFolder={async () => {
-                  const err = await window.yiman?.shell?.openPath?.(project.project_dir);
-                  if (err) message.error(err || '无法打开目录');
-                }}
+                key={project.id}
+                title={project.name}
+                cover={{ url: project.cover_path ? `file://${project.cover_path}` : undefined, aspect: 16 / 9 }}
+                lastUpdate={project.updated_at}
+                tags={tags}
+                moreActions={
+                  <Dropdown
+                    menu={{
+                      items: [
+                        {
+                          key: 'openFolder',
+                          label: '打开项目目录',
+                          icon: <FolderOpenOutlined />,
+                          onClick: async () => {
+                            const err = await window.yiman?.shell?.openPath?.(project.project_dir);
+                            if (err) message.error(err || '无法打开目录');
+                          },
+                        },
+                        {
+                          key: 'delete',
+                          label: '删除项目',
+                          danger: true,
+                          icon: <DeleteOutlined />,
+                          onClick: () => handleDelete(project),
+                        },
+                      ],
+                    }}
+                    trigger={['click']}
+                    placement="bottomRight"
+                  >
+                    <Button
+                      type="text"
+                      icon={<MoreOutlined />}
+                      style={{ color: 'rgba(255,255,255,0.85)' }}
+                    />
+                  </Dropdown>
+                }
+                onClick={() => handleOpen(project)}
               />
-            </Col>
-          ))}
+            );
+          })}
         </Row>
       ) : (
         <Table<ProjectItem>

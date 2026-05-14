@@ -82,10 +82,144 @@ export interface AIMattingConfig {
   enabled?: boolean;
 }
 
+/** 本地 TTS 模型选项 */
+export interface LocalTtsModelOption {
+  /** 模型 key，用于标识（如 'longcat_audio_dit'） */
+  key: string;
+  /** 显示名称 */
+  label: string;
+  /** 模型描述 */
+  description?: string;
+}
+
+/** 可用本地 TTS 模型列表 */
+export const LOCAL_TTS_MODEL_OPTIONS: LocalTtsModelOption[] = [
+  {
+    key: 'longcat_audio_dit',
+    label: 'LongCat-AudioDiT',
+    description: '基于 MLX 的高质量语音合成模型，需 Apple Silicon Mac',
+  },
+  {
+    key: 'moss_tts',
+    label: 'MOSS-TTS',
+    description:
+      'OpenMOSS MOSS-TTS 本地推理；可按设备选择合适权重/推理后端（访问方式一致）。需配合 mlx-speech 与模型 README 指引',
+  },
+];
+
+/** 单个本地 TTS 模型的持久化配置 */
+export interface LocalTtsModelProfile {
+  /** 模型仓库/权重根目录（LongCat：下载目录；MOSS：含 mlx-int8 的上级目录） */
+  modelPath: string;
+  /** 常驻服务空闲超时（分钟）；默认 3；0 表示永不超时（LongCat/MOSS 均由 Node 侧计时） */
+  idleTimeoutMinutes?: number;
+  /**
+   * 仅 MOSS-TTS：MOSS-Audio-Tokenizer（codec）权重根目录；可与主模型分开下载。
+   * 保存后会注入常驻进程的 YIMAN_MOSS_CODEC_DIR（见 python/moss_tts_server.py）。
+   */
+  mossAudioTokenizerPath?: string;
+}
+
+/** REST 路径段（与 ai-model-service 路由一致） */
+export const LOCAL_TTS_MODEL_KEY_TO_REST_SEGMENT: Record<string, string> = {
+  longcat_audio_dit: 'LongCat-AudioDiT',
+  moss_tts: 'MOSS-TTS',
+  /** 旧版设置中的 key，仍路由到同一 MOSS-TTS API */
+  moss_tts_local_mlx: 'MOSS-TTS',
+};
+
+export function restSegmentForLocalTtsModelKey(modelKey: string): string {
+  return LOCAL_TTS_MODEL_KEY_TO_REST_SEGMENT[modelKey] ?? 'LongCat-AudioDiT';
+}
+
+/** 本地 TTS 总配置 */
+export interface LocalTtsConfig {
+  enabled: boolean;
+  /** 剧本/预览当前选用的模型 key */
+  modelKey: string;
+  /** 各模型独立配置 */
+  profiles: Record<string, LocalTtsModelProfile>;
+}
+
+/** 旧版扁平字段（迁移用） */
+export type LegacyLocalTtsFlat = {
+  modelPath?: string;
+  idleTimeoutMinutes?: number;
+};
+
+/** 将旧版或部分配置规范化为 LocalTtsConfig */
+export function migrateLocalTtsConfig(
+  raw: (Partial<LocalTtsConfig> & LegacyLocalTtsFlat) | undefined | null,
+): LocalTtsConfig | undefined {
+  if (raw == null) return undefined;
+  const modelKey = raw.modelKey ?? 'longcat_audio_dit';
+  const profiles: Record<string, LocalTtsModelProfile> = {};
+  if (raw.profiles && typeof raw.profiles === 'object') {
+    for (const [k, v] of Object.entries(raw.profiles)) {
+      if (!v || typeof v !== 'object') continue;
+      const p = v as LocalTtsModelProfile;
+      const row: LocalTtsModelProfile = {
+        modelPath: (p.modelPath ?? '').trim(),
+        idleTimeoutMinutes: p.idleTimeoutMinutes ?? 3,
+      };
+      if (k === 'moss_tts' || k === 'moss_tts_local_mlx') {
+        const tx = p.mossAudioTokenizerPath?.trim();
+        if (tx) row.mossAudioTokenizerPath = tx;
+      }
+      profiles[k] = row;
+    }
+  }
+  const legacyPath = typeof raw.modelPath === 'string' ? raw.modelPath.trim() : '';
+  if (legacyPath && !(profiles[modelKey]?.modelPath ?? '').trim()) {
+    profiles[modelKey] = {
+      modelPath: legacyPath,
+      idleTimeoutMinutes: raw.idleTimeoutMinutes ?? 3,
+    };
+  }
+  if (profiles.moss_tts_local_mlx && !profiles.moss_tts) {
+    profiles.moss_tts = profiles.moss_tts_local_mlx;
+    delete profiles.moss_tts_local_mlx;
+  }
+  let resolvedModelKey = modelKey;
+  if (resolvedModelKey === 'moss_tts_local_mlx') {
+    resolvedModelKey = 'moss_tts';
+  }
+  return {
+    enabled: raw.enabled === true,
+    modelKey: resolvedModelKey,
+    profiles,
+  };
+}
+
+export function getActiveLocalTtsProfile(cfg: LocalTtsConfig | undefined): LocalTtsModelProfile | undefined {
+  if (!cfg?.profiles) return undefined;
+  return cfg.profiles[cfg.modelKey];
+}
+
+/** 是否已为某模型保存过非空目录（用于 Segmented ✅） */
+export function localTtsProfileIsSaved(cfg: LocalTtsConfig | undefined, modelKey: string): boolean {
+  const p = cfg?.profiles?.[modelKey]?.modelPath?.trim();
+  return !!p;
+}
+
+/** 小说编剧配置 */
+export interface NovelWriterConfig {
+  /** 每次生成封面图片的数量，默认 4 */
+  coverImageCount: number;
+}
+
 export interface AISettings {
   models: AIModelConfig[];
   /** AI 抠图配置列表（与模型配置分离，因抠图服务非 OpenAI 协议） */
   aiMattingConfigs?: AIMattingConfig[];
+  /** 本地 TTS 配置 */
+  localTts?: LocalTtsConfig;
+  /** 小说编剧配置 */
+  novelWriter?: NovelWriterConfig;
+  /** 小说编剧列表页背景视频文件名（如 bg1.mp4），无背景时为空 */
+  novelBgVideo?: string;
+  /** 漫剧项目列表页背景视频文件名（如 bg1.mp4），无背景时为空 */
+  projectBgVideo?: string;
   /** 新建漫剧项目时「本地项目目录」的默认父路径（可选） */
   defaultProjectRoot?: string;
   /** 设计器画布：视口尺寸变化时自动按画布适配缩放（见 CanvasContainer fit） */

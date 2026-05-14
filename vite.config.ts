@@ -60,7 +60,7 @@ export default defineConfig(({ command }) => {
               minify: isBuild,
               outDir: 'dist-electron/main',
               rollupOptions: {
-                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'node:http', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg', 'font-list'],
+                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'node:http', 'node:os', 'node:child_process', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg', 'font-list'],
               },
             },
           },

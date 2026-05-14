@@ -23,14 +23,88 @@
   padding: 4px 10px !important;
 }
 
-
-
-
-
-.ant-bubble-list .ant-bubble-start:not(.ant-bubble-divider):not(.ant-bubble-system) {
-  padding-inline-end: 0 !important;
+/* Footer 内 Sender 上方：引用指示条（tag + 悬停显示关闭） */
+.yiman-sender-ref-indicator-row {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  gap: 4px;
 }
 
-.ant-bubble-list .ant-bubble-end:not(.ant-bubble-divider):not(.ant-bubble-system) {
-  
+.yiman-ref-indicator-tag {
+  flex: 1;
+  min-width: 0;
+
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 2px 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.88);
+  vertical-align: middle;
+  position: relative;
+}
+
+.yiman-ref-indicator-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  opacity: 1;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.yiman-ref-indicator-content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yiman-ref-indicator-close {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 1;
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  padding: 0 !important;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  color: rgba(255, 255, 255, 0.45) !important;
+}
+
+.yiman-ref-indicator-tag:hover .yiman-ref-indicator-close {
+  opacity: 1;
+}
+.yiman-ref-indicator-tag:hover .yiman-ref-indicator-icon {
+  opacity: 0;
+}
+
+.yiman-ref-indicator-close:hover {
+  color: rgba(255, 255, 255, 0.88) !important;
+}
+
+
+
+
+
+
+/* .ant-bubble-list .ant-bubble-start:not(.ant-bubble-divider):not(.ant-bubble-system) {
+  padding-inline-end: 0 !important;
+} */
+
+.ant-bubble-start{
+  padding: 0 !important;
+}
+
+.ant-bubble-start:has(.ant-bubble-body>.ant-bubble-content:empty) {
+  padding: 0 !important;
 }

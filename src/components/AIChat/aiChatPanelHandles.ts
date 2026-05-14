@@ -1,7 +1,7 @@
 /**
  * SidePanel ref 与 Sender 命令式 API。见 docs/06 §13
  */
-import type { AIChatContextTag } from './types';
+import type { AIChatContextTag, RefIndicatorType } from './types';
 import type { TemplateSlotValue } from './registryTypes';
 
 export interface AIChatSenderHandle {
@@ -22,6 +22,8 @@ export interface ConversationListMetaItem {
 }
 
 export interface AIChatSidePanelHandle {
+  /** 设置 Sender Header 区引用指示条；仅当数组 length > 0 时展示 */
+  setRefIndicator: (items: RefIndicatorType[]) => void;
   updateGlobalContext: (opts: {
     contextBlocks?: Array<{ label: string; content: string }>;
     contextTags?: AIChatContextTag[];

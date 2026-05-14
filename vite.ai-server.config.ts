@@ -15,7 +15,7 @@ export default defineConfig({
       fileName: () => 'index.js',
     },
     rollupOptions: {
-      external: ['onnxruntime-node', 'sharp', 'node:http', 'node:path', 'node:fs', 'node:url'],
+      external: ['onnxruntime-node', 'sharp', 'node:http', 'node:path', 'node:fs', 'node:url', 'node:os', 'node:child_process'],
       output: {
         format: 'esm',
         inlineDynamicImports: true,

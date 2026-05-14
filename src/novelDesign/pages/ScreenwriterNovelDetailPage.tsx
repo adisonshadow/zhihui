@@ -14,18 +14,21 @@ import {
   App,
   Space,
   Modal,
+  Tooltip,
 } from 'antd';
-import { ArrowLeftOutlined, MenuUnfoldOutlined, CommentOutlined } from '@ant-design/icons';
+import { MenuUnfoldOutlined, CommentOutlined, OrderedListOutlined, AlignLeftOutlined } from '@ant-design/icons';
 
-import { AIChat } from '@/components/AIChat';
+import { AIChat, applyRefIndicatorUserChoicePrefix } from '@/components/AIChat';
 import type { SidePanelAssistantContentRenderArgs } from '@/components/AIChat/AIChatSidePanel';
 import type { AIChatSidePanelHandle } from '@/components/AIChat/aiChatPanelHandles';
-import type { AIChatContextTag } from '@/components/AIChat/types';
+import type { AIChatSidePanelOnSubmit, AIChatContextTag, RefIndicatorType } from '@/components/AIChat/types';
 import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import { NovelCrepeEditor, type NovelCrepeEditorHandle } from '@/novelDesign/components/NovelCrepeEditor';
 import { ScreenwriterAssistantMarkdown } from '@/novelDesign/components/ScreenwriterAssistantMarkdown';
 import { buildNovelEditorFunctionCalls } from '@/novelDesign/AITools/novelEditorFunctionCalls';
-import { NovelEditorToolA2uiBubble } from '@/novelDesign/a2ui/NovelEditorToolA2uiBubble';
+import { NovelEditorThoughtChain } from '@/novelDesign/components/NovelEditorThoughtChain';
+import { NextSuggestionButtons } from '@/novelDesign/components/NextSuggestionButtons';
+import { extractNextSuggestions } from '@/novelDesign/parsers/nextSuggestionJsonParser';
 import { getNovelEditorProjectPrompt } from '@/novelDesign/prompts/novelEditorProjectPrompt';
 import { formatNovelEpisodeNavLabel } from '@/novelDesign/utils/novelEpisodeDisplay';
 import {
@@ -38,26 +41,22 @@ import {
 } from '@/novelDesign/storage/novelWorkspaceStorage';
 import { loadNovelList, upsertNovel } from '@/novelDesign/storage/novelListStorage';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
-import { extractNovelWritePayload, truncateUnicodeChars } from '@/novelDesign/parsers/novelBodyJsonParser';
-import { hasNovelBodyWriteIntent } from '@/novelDesign/utils/novelWriteIntent';
+import { extractNovelWritePayload } from '@/novelDesign/parsers/novelBodyJsonParser';
 import { useNovelAiStream } from '@/novelDesign/hooks/useNovelAiStream';
 import { useWorkspaceSync } from '@/novelDesign/hooks/useWorkspaceSync';
+import { NovelCoverAiPopover } from '@/novelDesign/components/NovelCoverAiPopover';
 import '@ant-design/x-markdown/themes/dark.css';
 import './ScreenwriterNovelDetailPage.css';
 
 const { Text } = Typography;
 
-/** Sender 槽位里选中文本最长展示字符数（汉字/符号均按 Unicode 标量计） */
-const SELECTION_SENDER_DISPLAY_CHARS = 6;
-/** 每次发给模型的故事大纲正文上限，避免长篇大纲撑爆上下文。 */
 const STORY_OUTLINE_CONTEXT_CHARS = 20000;
 const CURRENT_EPISODE_CONTEXT_CHARS = 12000;
-const NOVEL_BODY_WRITE_TOOL_NAMES = new Set(['novel_write_body_episode', 'novel_write_episode']);
-const TOOL_EDIT_NAMES = new Set([
-  'novel_replace_content',
-  'novel_delete_segment',
-  'novel_update_outline',
-]);
+
+/** refIndicator：当前集（切换集时仅保留本项，清空选文等其它引用） */
+const NOVEL_REF_EPISODE = 'selectedEpisode';
+/** refIndicator：正文选区（同集内更新选文时仅替换本 key，保留集项） */
+const NOVEL_REF_SELECTION = 'selectedText';
 
 export default function ScreenwriterNovelDetailPage() {
   const navigate = useNavigate();
@@ -84,11 +83,16 @@ export default function ScreenwriterNovelDetailPage() {
     novelId: novelId ?? '',
   });
 
-  const isAiRequestingRef = useRef(false);
+  const lastUserMsgIdRef = useRef<string | number>('');
+  const contextSentThisTurnRef = useRef(false);
 
   const wrappedOnAssistStream = useCallback(
     (payload: Parameters<typeof onAssistStream>[0]) => {
-      isAiRequestingRef.current = payload.isRequesting;
+      const uid = payload.lastUserMessageId;
+      if (uid !== undefined && uid !== null && uid !== lastUserMsgIdRef.current) {
+        lastUserMsgIdRef.current = uid;
+        contextSentThisTurnRef.current = false;
+      }
       onAssistStream(payload);
     },
     [onAssistStream]
@@ -99,9 +103,9 @@ export default function ScreenwriterNovelDetailPage() {
   const [selectionPlain, setSelectionPlain] = useState('');
   /** 立即更新，发送消息时用于携带完整选区（不走 state 延迟） */
   const selectionPlainRef = useRef('');
-  /** 已同步给 Sender slot 的值，防止重复触发 */
+  /** 已同步给 refIndicator 防抖结束值，防止重复触发 setState */
   const selectionPlainForSenderRef = useRef('');
-  /** 防抖 timer：拖选过程中不刷新 Sender slot，避免 DOM 变动抢走焦点 */
+  /** 防抖 timer：拖选过程中不刷新 refIndicator，避免 DOM 变动抢走焦点 */
   const selectionSenderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [episodeNavOpen, setEpisodeNavOpen] = useState(true);
   const [aiOpen, setAiOpen] = useState(true);
@@ -121,8 +125,7 @@ export default function ScreenwriterNovelDetailPage() {
     return workspace.episodes.find((e) => e.id === workspace.activeEpisodeId) ?? null;
   }, [workspace]);
 
-  /** 仅在换集或改标题时需要刷新 Sender Slot，避免正文每击键触发 slotConfig 变化抢焦点 */
-  const activeEpisodeIdForTags = workspace?.activeEpisodeId ?? '';
+  /** 仅在换集或改标题时参与 refIndicator 同步，避免正文每击键触发 */
   const activeEpisodeTitleForTags = useMemo(() => {
     if (!workspace?.activeEpisodeId) return '';
     return workspace.episodes.find((e) => e.id === workspace.activeEpisodeId)?.title ?? '';
@@ -210,26 +213,44 @@ export default function ScreenwriterNovelDetailPage() {
     }, 300);
   }, []);
 
+  const novelAiOnSubmit: AIChatSidePanelOnSubmit = useCallback(
+    (message, _slotConfig, _skill, refIndicator) => ({
+      message: applyRefIndicatorUserChoicePrefix(message, refIndicator),
+    }),
+    []
+  );
+
   useEffect(() => {
     const chat = chatRef.current;
-    if (!chat || !activeEpisodeIdForTags) return;
-    const epLine = `「${activeEpisodeTitleForTags}」`;
-    const tags: AIChatContextTag[] =
-      selectionPlain.trim() ?
-        [
-          { id: 'novel_ctx_episode', description: `${epLine}` },
-          {
-            id: 'novel_ctx_selection',
-            description: `选中文本：「${truncateUnicodeChars(selectionPlain, SELECTION_SENDER_DISPLAY_CHARS)}」`,
-          },
-        ]
-      : [{ id: 'novel_ctx_episode', description: `${epLine}` }];
-    chat.updateGlobalContext({ replace: true, contextTags: tags });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 勿依赖全文内容，避免编辑时反复刷新 Sender
-  }, [activeEpisodeIdForTags, activeEpisodeTitleForTags, selectionPlain]);
+    const ws = workspaceRef.current;
+    if (!chat || !ws) return;
+    const ep = ws.episodes.find((e) => e.id === ws.activeEpisodeId);
+    if (!ep) return;
+    const episodeItem: RefIndicatorType = {
+      key: NOVEL_REF_EPISODE,
+      description: '选中的集：%f',
+      icon: <OrderedListOutlined />,
+      content: formatNovelEpisodeNavLabel(ep),
+    };
+    const fullSel = selectionPlainRef.current.trim();
+    if (!fullSel) {
+      chat.setRefIndicator([episodeItem]);
+      return;
+    }
+    chat.setRefIndicator([
+      episodeItem,
+      {
+        key: NOVEL_REF_SELECTION,
+        description: '选中文本：%f',
+        icon: <AlignLeftOutlined />,
+        content: fullSel,
+      },
+    ]);
+  }, [workspace?.activeEpisodeId, activeEpisodeTitleForTags, selectionPlain]);
 
   const formatNovelContextTags = useCallback((_tags: AIChatContextTag[]) => {
-    if (isAiRequestingRef.current) return '';
+    if (contextSentThisTurnRef.current) return '';
+    contextSentThisTurnRef.current = true;
     const ws = workspaceRef.current;
     if (!ws) return '';
     const ep = ws.episodes.find((e) => e.id === ws.activeEpisodeId);
@@ -253,8 +274,6 @@ export default function ScreenwriterNovelDetailPage() {
         parts.push(`【当前编辑】${ep.title}\n${body || '（正文为空）'}`);
       }
     }
-    const sel = selectionPlainRef.current.trim();
-    if (sel) parts.push(`【选中文本】\n${sel}`);
     return parts.join('\n\n');
   }, []);
 
@@ -352,6 +371,17 @@ export default function ScreenwriterNovelDetailPage() {
     return getNovelEditorProjectPrompt(eps);
   }, [workspace]);
 
+  const suggestionMessages: Record<string, string> = useMemo(() => ({
+    '新增一集': '根据故事大纲和当前剧情，新增一集小说。先查看最后一集是否已完成，未完成则继续完成，已完成则创建新集',
+    '续写当前内容': '从当前章节末尾自然续写，保持人称、时态与原有文风，追加到当前集',
+    '重写本集': '重写当前章节，换个表达方式但保留核心情节走向，替换当前集内容',
+    '润色润稿': '润色当前章节，提升流畅度与画面感，不要改变原意，替换当前集内容',
+    '扩写细写': '将当前章节扩写，补充环境描写、心理活动或动作细节，替换当前集内容',
+    '精简压缩': '将当前章节压缩为更短篇幅，保留关键情节与情绪，替换当前集内容',
+    '优化对白': '优化当前章节的人物对白，使其更符合人设、有潜台词，替换当前集内容',
+    '加强冲突': '在当前章节中加强戏剧冲突，替换当前集内容',
+  }), []);
+
   const novelChat = (
     <AIChat
       ref={chatRef}
@@ -367,10 +397,9 @@ export default function ScreenwriterNovelDetailPage() {
       suppressAgentSenderWelcome
       suppressSenderAgentSkill
       formatContextTags={formatNovelContextTags}
+      onSubmit={novelAiOnSubmit}
       onAssistStream={wrappedOnAssistStream}
-      renderToolMessageContent={(toolContent, meta) => (
-        <NovelEditorToolA2uiBubble raw={toolContent} toolName={meta?.toolName} />
-      )}
+      renderToolMessageContent={() => null}
       sidePanelAssistantContentRender={({
         toolCallNames,
         status,
@@ -379,25 +408,63 @@ export default function ScreenwriterNovelDetailPage() {
         content,
         defaultNode,
       }: SidePanelAssistantContentRenderArgs) => {
-        const hasEditTool = toolCallNames?.some((name) => TOOL_EDIT_NAMES.has(name)) ?? false;
-        if (hasEditTool && (status === 'loading' || status === 'updating')) {
-          const raw = JSON.stringify({
-            ok: true,
-            phase: 'writing',
-            title_in_editor: activeEpisodeTitleForTags || activeEpisode?.title || '当前章节',
-            summary: '正在生成文档...',
-          });
-          return <NovelEditorToolA2uiBubble raw={raw} toolName={toolCallNames?.[0]} />;
-        }
-        const hasBodyWriteTool = toolCallNames?.some((name) => NOVEL_BODY_WRITE_TOOL_NAMES.has(name));
-        const parsedContent = extractNovelWritePayload(content);
-        const asPlain = parsedContent.displayText.replace(/\s+/g, ' ').trim();
-        let prevUser = '';
+        const isStreaming = status === 'loading' || status === 'updating';
+
+        const bubbleToolResults: string[] = [];
         if (
-          asPlain &&
+          conversationBubbleSnapshot?.length &&
           typeof bubbleMessageIndex === 'number' &&
-          conversationBubbleSnapshot?.length
+          (toolCallNames?.length ?? 0) > 0
         ) {
+          for (let i = bubbleMessageIndex + 1; i < conversationBubbleSnapshot.length; i++) {
+            const row = conversationBubbleSnapshot[i];
+            if (row?.role === 'tool') {
+              bubbleToolResults.push(row.content);
+            } else if (row?.role === 'user' || row?.role === 'assistant') {
+              break;
+            }
+          }
+        }
+
+        const toolChainNodes =
+          toolCallNames?.length
+            ? toolCallNames.map((name, i) => (
+                <NovelEditorThoughtChain
+                  key={`${name}_${bubbleMessageIndex}_${i}`}
+                  toolCallNames={[name]}
+                  toolResultContents={[bubbleToolResults[i] ?? '']}
+                  streaming={isStreaming}
+                />
+              ))
+            : null;
+
+        const parsedContent = extractNovelWritePayload(content);
+        const nsDisplay = extractNextSuggestions(parsedContent.displayText);
+        const nsPre = extractNextSuggestions(parsedContent.preMarkerContent || '');
+        const nsPost = extractNextSuggestions(parsedContent.postMarkerContent || '');
+        const mergedSuggestionLabels = [
+          ...new Set([...nsDisplay.suggestions, ...nsPre.suggestions, ...nsPost.suggestions]),
+        ];
+        const suggestionNodes =
+          mergedSuggestionLabels.length > 0 ? (
+            <NextSuggestionButtons
+              suggestions={mergedSuggestionLabels}
+              onSuggestionClick={(label) => {
+                const msg = suggestionMessages[label] ?? label;
+                chatRef.current?.emitUserMessage(msg);
+              }}
+            />
+          ) : null;
+
+        const finalDisplayText = nsDisplay.displayText;
+        const asPlain =
+          [nsPre.displayText, nsPost.displayText, nsDisplay.displayText]
+            .filter((x) => x.trim())
+            .join('\n')
+            .replace(/\s+/g, ' ')
+            .trim() || finalDisplayText.replace(/\s+/g, ' ').trim();
+        let prevUser = '';
+        if (asPlain && typeof bubbleMessageIndex === 'number' && conversationBubbleSnapshot?.length) {
           for (let i = bubbleMessageIndex - 1; i >= 0; i--) {
             const row = conversationBubbleSnapshot[i];
             if (row?.role === 'user') {
@@ -407,44 +474,50 @@ export default function ScreenwriterNovelDetailPage() {
           }
           if (prevUser && prevUser === asPlain) return null;
         }
-        const prevUserIsWriteIntent = prevUser ? hasNovelBodyWriteIntent(prevUser) : false;
-        const renderWriteCard = (phase: 'writing' | 'done') => {
-          const raw = JSON.stringify({
-            ok: true,
-            phase,
-            title_in_editor: activeEpisodeTitleForTags || activeEpisode?.title || '当前章节',
-            ...(phase === 'done' ?
-              {
-                created_time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-                summary: '正文已写入编辑器。',
-              }
-            : { summary: '正在生成文档...' }),
-          });
-          return <NovelEditorToolA2uiBubble raw={raw} toolName={toolCallNames?.[0]} />;
-        };
-        const renderPrePostWithCard = (phase: 'writing' | 'done') => (
-          <Flex vertical gap={8}>
-            {parsedContent.preMarkerContent ? <ScreenwriterAssistantMarkdown content={parsedContent.preMarkerContent} /> : null}
-            {renderWriteCard(phase)}
-            {parsedContent.postMarkerContent ? <ScreenwriterAssistantMarkdown content={parsedContent.postMarkerContent} /> : null}
-          </Flex>
-        );
-        if (prevUserIsWriteIntent && !hasBodyWriteTool && (status === 'loading' || status === 'updating')) {
-          if (!parsedContent.hasMarker) return defaultNode;
-          return renderPrePostWithCard('writing');
-        }
-        if (prevUserIsWriteIntent && !hasBodyWriteTool && status !== 'loading' && status !== 'updating') {
-          if (!parsedContent.hasMarker) return defaultNode;
-          return renderPrePostWithCard('done');
-        }
-        if (hasBodyWriteTool) return null;
+
         if (parsedContent.payload) {
-          if (!parsedContent.displayText) return null;
-          return <ScreenwriterAssistantMarkdown content={parsedContent.displayText} />;
+          if (!finalDisplayText && !suggestionNodes) return null;
+          return (
+            <Flex vertical gap={8}>
+              {finalDisplayText ? <ScreenwriterAssistantMarkdown content={finalDisplayText} /> : null}
+              {toolChainNodes}
+              {suggestionNodes}
+            </Flex>
+          );
         }
+
         if (parsedContent.hasMarker) {
-          return renderPrePostWithCard(status === 'loading' || status === 'updating' ? 'writing' : 'done');
+          const isWriting = isStreaming;
+          const writeLine = isWriting ? '⏳ 正在写入编辑器…' : '✅ 正文已写入编辑器';
+          const preMd = nsPre.displayText;
+          const postMd = nsPost.displayText;
+          return (
+            <Flex vertical gap={8}>
+              {preMd ? <ScreenwriterAssistantMarkdown content={preMd} /> : null}
+              <span style={{ fontSize: 12, color: 'rgba(120,220,160,0.9)' }}>{writeLine}</span>
+              {postMd ? <ScreenwriterAssistantMarkdown content={postMd} /> : null}
+              {toolChainNodes}
+              {suggestionNodes}
+            </Flex>
+          );
         }
+
+        if (toolChainNodes || suggestionNodes) {
+          const assistantBodyWithoutSuggestions =
+            mergedSuggestionLabels.length > 0 ? extractNextSuggestions(content).displayText : null;
+          return (
+            <Flex vertical gap={8}>
+              {assistantBodyWithoutSuggestions !== null ? (
+                <ScreenwriterAssistantMarkdown content={assistantBodyWithoutSuggestions} />
+              ) : (
+                defaultNode
+              )}
+              {toolChainNodes}
+              {suggestionNodes}
+            </Flex>
+          );
+        }
+
         return defaultNode;
       }}
     />
@@ -489,9 +562,11 @@ export default function ScreenwriterNovelDetailPage() {
     <div className="screenwriter-novel-workbench">
       <header className="screenwriter-novel-topbar">
         <Space orientation="horizontal" size={14} wrap>
-          <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/screenwriter')}>
-            返回列表
-          </Button>
+          <Tooltip title="返回列表">
+            <Button type="text" icon={<i className="iconfont">&#xe930;</i>} onClick={() => navigate('/screenwriter')}>
+              <i className="iconfont">&#xe647;</i>
+            </Button>
+          </Tooltip>
           <Input
             value={novelTitleDraft}
             variant="filled"
@@ -501,6 +576,19 @@ export default function ScreenwriterNovelDetailPage() {
             placeholder="小说名称"
             maxLength={120}
           />
+          <Tooltip title="设置封面">
+            <NovelCoverAiPopover
+              novelId={novelId}
+              models={models}
+              getSnapshot={() => workspaceRef.current}
+              onCoverSaved={() => message.success('封面已更新')}
+              trigger={
+                <Button type="text">
+                  <i className="iconfont">&#xe988;</i>
+                </Button>
+              }
+            />
+          </Tooltip>
           <Flex align="center" gap={8}>
             <MenuUnfoldOutlined style={{ opacity: episodeNavOpen ? 1 : 0.55 }} />
             <Text style={{ whiteSpace: 'nowrap' }}>集导航</Text>

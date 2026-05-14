@@ -221,7 +221,7 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
               episode: episode.episode,
               title_in_editor: episode.title,
               nav_label: formatNovelEpisodeNavLabel(episode),
-              summary: `已创建第${episode.episode}集「${episode.title}」并已切换到该集编辑器，请直接输出 novel-body-json 写入正文。`,
+              summary: `已创建第${episode.episode}集「${episode.title}」并已切换到该集编辑器。`,
             },
           };
         });

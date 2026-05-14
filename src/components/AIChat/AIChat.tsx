@@ -5,7 +5,7 @@
  */
 import React, { forwardRef, type ComponentType } from 'react';
 import type { TooltipPlacement } from 'antd/es/tooltip';
-import type { AIChatMode } from './types';
+import type { AIChatMode, AIChatSidePanelOnSubmit } from './types';
 import { AIChatSidePanel, type SidePanelAssistantContentRenderArgs } from './AIChatSidePanel';
 import { AIChatFloatingBottom } from './AIChatFloatingBottom';
 import { AIChatPopover } from './AIChatPopover';
@@ -53,6 +53,9 @@ export interface AIChatProps extends Omit<AIChatCoreProps, 'agentKey'> {
   /** 初始是否展开（FloatingBottom / Popover，默认 false） */
   defaultOpen?: boolean;
 
+  /** SidePanel：发送前扩展回调（含 refIndicator，可返回覆盖 message/slotConfig/skill） */
+  onSubmit?: AIChatSidePanelOnSubmit;
+
   /** SidePanel 专属（仅 mode=SidePanel 使用） */
   prepareGenStoriesCardComponent?: ComponentType<{ onStart: (userPrompt: string) => void }>;
   sidePanelEmptyExtras?: React.ReactNode;
@@ -62,6 +65,26 @@ export interface AIChatProps extends Omit<AIChatCoreProps, 'agentKey'> {
   /** 自定义 SidePanel assistant 消息渲染 */
   sidePanelAssistantContentRender?: (args: SidePanelAssistantContentRenderArgs) => React.ReactNode;
 }
+
+/**
+ * RefIndicator 使用示例：
+
+  chatRef.current?.setRefIndicator([
+    {
+      key: 'selectedEpOpen',
+      description: '选中的集',
+      icon: <OrderedListOutlined />,
+      content: '第2集',
+    },
+  ]);
+  <AIChat
+    mode="SidePanel"
+    onSubmit={(message, slotConfig, skill, refIndicator) => {
+      // 可据此拼上下文；需要改发送内容时可 return { message: '...' }
+    }}
+  />
+  
+*/
 
 export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AIChat(
   {
@@ -85,6 +108,7 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
     sidePanelExternalConversationControl,
     sidePanelOnClose,
     sidePanelAssistantContentRender,
+    onSubmit,
     ...coreProps
   },
   ref
@@ -101,6 +125,7 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
           sidePanelExternalConversationControl={sidePanelExternalConversationControl}
           sidePanelOnClose={sidePanelOnClose}
           sidePanelAssistantContentRender={sidePanelAssistantContentRender}
+          onSubmit={onSubmit}
           {...coreProps}
         />
       );
@@ -131,6 +156,12 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
           popoverHeight={popoverHeight}
           placement={popoverPlacement}
           defaultOpen={defaultOpen}
+          prepareGenStoriesCardComponent={prepareGenStoriesCardComponent}
+          sidePanelEmptyExtras={sidePanelEmptyExtras}
+          sidePanelExternalConversationControl={sidePanelExternalConversationControl}
+          sidePanelOnClose={sidePanelOnClose}
+          sidePanelAssistantContentRender={sidePanelAssistantContentRender}
+          onSubmit={onSubmit}
           {...coreProps}
         />
       );
@@ -154,6 +185,7 @@ export const AIChat = forwardRef<AIChatSidePanelHandle, AIChatProps>(function AI
           sidePanelExternalConversationControl={sidePanelExternalConversationControl}
           sidePanelOnClose={sidePanelOnClose}
           sidePanelAssistantContentRender={sidePanelAssistantContentRender}
+          onSubmit={onSubmit}
           {...coreProps}
         />
       );

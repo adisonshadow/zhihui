@@ -308,6 +308,11 @@ function extractSenderPlainText(raw: unknown): string {
   return '';
 }
 
+/** `handleSubmit` 选项：编程式投递勿用 Sender 内模板待发的 `pendingOutboundFulltextRef` 覆盖正文 */
+export interface AIChatHandleSubmitOptions {
+  ignorePendingOutbound?: boolean;
+}
+
 /** BottomSender / 画布预览用：与 useAIChatCore 的 onDrawerSessionSync 对齐 */
 export interface AIChatDrawerSessionSync {
   isRequesting: boolean;
@@ -402,6 +407,10 @@ export interface AIChatCoreProps {
   suppressAgentSenderWelcome?: boolean;
   /** true 时不展示 Sender 顶部的「专家 / skill」标签（如「小说作家」），与 suppressAgentSenderWelcome 可并用 */
   suppressSenderAgentSkill?: boolean;
+  /** true：无消息时不展示「常用提示词」Prompts（如封面 Popover） */
+  suppressEmptyConversationPrompts?: boolean;
+  /** true：绘图师 Agent 不注入类型选择等 Sender slot（仍可用绘图模型出图） */
+  suppressDrawerSenderSlots?: boolean;
   /**
    * `role: tool` 的气泡内容渲染（如 JSON 工具返回 → A2UI）。
    * 未提供时回退为纯文本 / pre。
@@ -444,6 +453,7 @@ export function useAIChatCore({
   onAssistStream,
   suppressAgentSenderWelcome = false,
   suppressSenderAgentSkill = false,
+  suppressDrawerSenderSlots = false,
 }: AIChatCoreProps) {
   const normalizedContextBlocks = contextBlocks ?? EMPTY_CONTEXT_BLOCKS;
   const normalizedContextTags = contextTags ?? EMPTY_CONTEXT_TAGS;
@@ -771,9 +781,9 @@ export function useAIChatCore({
     for (const block of effectiveContextBlocks) {
       if (block.content?.trim()) ctx.push({ role: 'user', content: `【${block.label}】\n${block.content}` });
     }
-    if (formatContextTags && effectiveContextTags.length > 0) {
+    if (formatContextTags) {
       const formatted = formatContextTags(effectiveContextTags);
-      if (formatted) ctx.push({ role: 'user', content: formatted });
+      if (formatted?.trim()) ctx.push({ role: 'user', content: formatted });
     }
     return ctx;
   }, [effectiveContextBlocks, effectiveContextTags, formatContextTags]);
@@ -838,9 +848,16 @@ export function useAIChatCore({
   const toolsContinuationBusyRef = useRef(false);
 
   const handleSubmit = useCallback(
-    async (userText: string, slotConfig?: SlotConfigType[], _skill?: unknown) => {
+    async (
+      userText: string,
+      slotConfig?: SlotConfigType[],
+      _skill?: unknown,
+      opts?: AIChatHandleSubmitOptions
+    ) => {
       const visible = (userText ?? '').trim();
-      const pending = pendingOutboundFulltextRef.current;
+      const pendingRaw = pendingOutboundFulltextRef.current;
+      const pending =
+        opts?.ignorePendingOutbound ? null : pendingRaw;
       const outbound = (pending != null && pending !== '' ? pending : visible).trim();
       pendingOutboundFulltextRef.current = null;
       lastTemplateDisplayRef.current = null;
@@ -936,7 +953,7 @@ export function useAIChatCore({
     const pending = pendingNewConversationSubmitRef.current;
     if (!pending || pending.key !== activeKey || isDefaultMessagesRequesting) return;
     pendingNewConversationSubmitRef.current = null;
-    handleSubmit(pending.text);
+    handleSubmit(pending.text, undefined, undefined, { ignorePendingOutbound: true });
   }, [activeKey, handleSubmit, isDefaultMessagesRequesting]);
 
   const userTurnIndices = (messages ?? [])
@@ -967,7 +984,7 @@ export function useAIChatCore({
   const dismissToolCardAndSubmit = useCallback(
     (messageId: string | number, prompt: string) => {
       setMessages((ori) => ori.filter((x) => x.id !== messageId));
-      handleSubmit(prompt);
+      handleSubmit(prompt, undefined, undefined, { ignorePendingOutbound: true });
     },
     [setMessages, handleSubmit]
   );
@@ -978,7 +995,7 @@ export function useAIChatCore({
         appendToolCardMessage('prepare-gen-stories');
         return;
       }
-      handleSubmit(item.message);
+      handleSubmit(item.message, undefined, undefined, { ignorePendingOutbound: true });
     },
     [appendToolCardMessage, handleSubmit]
   );
@@ -1541,7 +1558,8 @@ export function useAIChatCore({
       }
     }
     if (agent && agent.key !== MAIN_AGENT_KEY) {
-      const hasDrawerSlot = agent.key === 'drawer' && agent.welcomeSlot?.type === 'select';
+      const hasDrawerSlot =
+        agent.key === 'drawer' && agent.welcomeSlot?.type === 'select' && !suppressDrawerSenderSlots;
       if (hasDrawerSlot) {
         slots.push(...getDrawerSlotConfig());
       } else if (agent.welcomeMessage && !suppressAgentSenderWelcome) {
@@ -1559,6 +1577,7 @@ export function useAIChatCore({
     forcedFunctionCallNames,
     fcByName,
     suppressAgentSenderWelcome,
+    suppressDrawerSenderSlots,
   ]);
 
   const handleSenderChange = useCallback(

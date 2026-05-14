@@ -4,11 +4,13 @@
  */
 import { useEffect, useState } from 'react';
 import { App, Modal, Button, Form, Layout, Menu, Typography } from 'antd';
-import type { AISettings, AIModelConfig } from '@/types/settings';
+import type { AISettings, AIModelConfig, LocalTtsConfig, NovelWriterConfig } from '@/types/settings';
 import { getAISettings, saveAISettings } from '@/utils/settingsStorage';
 import { CustomModelList } from '@/pages/settings/CustomModelList';
 import { CustomModelForm, type CustomModelFormValues } from '@/pages/settings/CustomModelForm';
 import { GeneralSettingsPanel } from '@/pages/settings/GeneralSettingsPanel';
+import { LocalTtsSettingsPanel } from '@/pages/settings/LocalTtsSettingsPanel';
+import { NovelWriterSettingsPanel } from '@/pages/settings/NovelWriterSettingsPanel';
 import { AddAiModelModal } from '@/pages/settings/AddAiModelModal';
 import {
   ModelPresetQuickForm,
@@ -26,7 +28,7 @@ function runAfterFormPaint(cb: () => void) {
   setTimeout(cb, 0);
 }
 
-type MenuKey = 'general' | 'ai';
+type MenuKey = 'general' | 'ai' | 'localtts' | 'novelwriter';
 
 interface SettingsProps {
   modal?: boolean;
@@ -82,7 +84,10 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
   };
 
   const handleApplyGeneral = async (
-    patch: Pick<AISettings, 'defaultProjectRoot' | 'canvasAutoFitViewport' | 'modalMaskBlur'>,
+    patch: Pick<
+      AISettings,
+      'defaultProjectRoot' | 'canvasAutoFitViewport' | 'modalMaskBlur' | 'novelBgVideo' | 'projectBgVideo'
+    >,
   ) => {
     if (!config) {
       message.warning('配置加载中，请稍候再试');
@@ -93,6 +98,34 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
       ...patch,
     };
     const ok = await persistConfig(next, '通用设置已保存');
+    if (ok) setConfig(next);
+    return ok;
+  };
+
+  const handleApplyNovelWriter = async (patch: { novelWriter: NovelWriterConfig }) => {
+    if (!config) {
+      message.warning('配置加载中，请稍候再试');
+      return false;
+    }
+    const next: AISettings = {
+      ...config,
+      novelWriter: patch.novelWriter,
+    };
+    const ok = await persistConfig(next, '小说编剧设置已保存');
+    if (ok) setConfig(next);
+    return ok;
+  };
+
+  const handleApplyLocalTts = async (patch: { localTts: LocalTtsConfig }) => {
+    if (!config) {
+      message.warning('配置加载中，请稍候再试');
+      return false;
+    }
+    const next: AISettings = {
+      ...config,
+      localTts: patch.localTts,
+    };
+    const ok = await persistConfig(next, '本地 TTS 设置已保存');
     if (ok) setConfig(next);
     return ok;
   };
@@ -262,6 +295,8 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
           items={[
             { key: 'general', label: '通用' },
             { key: 'ai', label: 'AI模型' },
+            { key: 'localtts', label: '本地TTS' },
+            { key: 'novelwriter', label: '小说编剧' },
           ]}
           onClick={({ key }) => setMenuKey(key as MenuKey)}
         />
@@ -271,6 +306,10 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
           <Text type="secondary">加载中…</Text>
         ) : menuKey === 'general' ? (
           <GeneralSettingsPanel config={config} onApply={handleApplyGeneral} />
+        ) : menuKey === 'localtts' ? (
+          <LocalTtsSettingsPanel config={config} onApply={handleApplyLocalTts} />
+        ) : menuKey === 'novelwriter' ? (
+          <NovelWriterSettingsPanel config={config} onApply={handleApplyNovelWriter} />
         ) : (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>

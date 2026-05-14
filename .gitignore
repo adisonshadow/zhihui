@@ -8,5 +8,6 @@ dist-electron
 .env.*
 !.env.example
 electron/models
+python/env
 release
 docs/Ant Design X Skills

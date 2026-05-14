@@ -21,8 +21,9 @@ export {
   mergeFunctionCallDefs,
 } from './utils/functionRegistry';
 export { ReasoningChatProvider } from './providers/ReasoningChatProvider';
-export type { AIChatMode, AgentConfig, AgentPrompts, AIChatContextTag, PromptItem, AgentProviderType } from './types';
-export type { AIChatCoreProps, AIChatDrawerSessionSync } from './AIChatCore';
+export type { AIChatMode, AgentConfig, AgentPrompts, AIChatContextTag, PromptItem, AgentProviderType, RefIndicatorType, AIChatSidePanelOnSubmit, AIChatSidePanelOnSubmitReturn } from './types';
+export { applyRefIndicatorUserChoicePrefix } from './applyRefIndicatorUserChoicePrefix';
+export type { AIChatCoreProps, AIChatDrawerSessionSync, AIChatHandleSubmitOptions } from './AIChatCore';
 export type { AIChatProps } from './AIChat';
 export type { AIChatFloatingBottomProps } from './AIChatFloatingBottom';
 export type { AIChatPopoverProps } from './AIChatPopover';

@@ -140,10 +140,14 @@ export class ReasoningChatProvider extends AbstractChatProvider<
     } as ChatInput;
   }
 
-  transformLocalMessage(requestParams: Partial<ChatInput>): ReasoningMessage {
+  transformLocalMessage(requestParams: Partial<ChatInput>): ReasoningMessage | ReasoningMessage[] {
     const msgs = requestParams?.messages ?? [];
-    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-    return { role: 'user', content: lastUser?.content ?? '' };
+    if (msgs.length === 0) return [];
+    const lastMsg = msgs[msgs.length - 1];
+    if (lastMsg.role === 'user') {
+      return { role: 'user', content: lastMsg.content ?? '' };
+    }
+    return [];
   }
 
   /**

@@ -33,9 +33,76 @@ export interface AIMattingConfig {
   enabled?: boolean;
 }
 
+/** 本地 TTS 单模型配置（与渲染进程 types/settings 对齐） */
+export interface LocalTtsModelProfile {
+  modelPath: string;
+  idleTimeoutMinutes?: number;
+  /** 仅 MOSS：MOSS-Audio-Tokenizer 目录 */
+  mossAudioTokenizerPath?: string;
+}
+
+/** 本地 TTS 配置 */
+export interface LocalTtsConfig {
+  enabled: boolean;
+  modelKey: string;
+  profiles: Record<string, LocalTtsModelProfile>;
+}
+
+function migrateLocalTtsFromDisk(raw: Record<string, unknown> | undefined): LocalTtsConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const modelKey = (typeof raw.modelKey === 'string' ? raw.modelKey : null) ?? 'longcat_audio_dit';
+  const profiles: Record<string, LocalTtsModelProfile> = {};
+  if (raw.profiles && typeof raw.profiles === 'object') {
+    for (const [k, v] of Object.entries(raw.profiles as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue;
+      const p = v as Record<string, unknown>;
+      const row: LocalTtsModelProfile = {
+        modelPath: typeof p.modelPath === 'string' ? p.modelPath : '',
+        idleTimeoutMinutes: typeof p.idleTimeoutMinutes === 'number' ? p.idleTimeoutMinutes : 3,
+      };
+      if (
+        (k === 'moss_tts' || k === 'moss_tts_local_mlx') &&
+        typeof p.mossAudioTokenizerPath === 'string' &&
+        p.mossAudioTokenizerPath.trim()
+      ) {
+        row.mossAudioTokenizerPath = p.mossAudioTokenizerPath.trim();
+      }
+      profiles[k] = row;
+    }
+  }
+  const legacyPath = typeof raw.modelPath === 'string' ? raw.modelPath.trim() : '';
+  if (legacyPath && !(profiles[modelKey]?.modelPath ?? '').trim()) {
+    profiles[modelKey] = {
+      modelPath: legacyPath,
+      idleTimeoutMinutes: typeof raw.idleTimeoutMinutes === 'number' ? raw.idleTimeoutMinutes : 3,
+    };
+  }
+  if (profiles.moss_tts_local_mlx && !profiles.moss_tts) {
+    profiles.moss_tts = profiles.moss_tts_local_mlx;
+    delete profiles.moss_tts_local_mlx;
+  }
+  let resolvedModelKey = modelKey;
+  if (resolvedModelKey === 'moss_tts_local_mlx') {
+    resolvedModelKey = 'moss_tts';
+  }
+  return {
+    enabled: raw.enabled === true,
+    modelKey: resolvedModelKey,
+    profiles,
+  };
+}
+
+export interface NovelWriterConfig {
+  coverImageCount: number;
+}
+
 export interface AISettings {
   models: AIModelConfig[];
   aiMattingConfigs?: AIMattingConfig[];
+  localTts?: LocalTtsConfig;
+  novelWriter?: NovelWriterConfig;
+  novelBgVideo?: string;
+  projectBgVideo?: string;
   defaultProjectRoot?: string;
   canvasAutoFitViewport?: boolean;
   /** 弹窗遮罩模糊；默认 true */
@@ -132,6 +199,21 @@ export function loadAISettings(): AISettings {
         if (typeof parsed.modalMaskBlur === 'boolean') {
           result.modalMaskBlur = parsed.modalMaskBlur;
         }
+        if (parsed.novelWriter && typeof parsed.novelWriter === 'object') {
+          const nw = parsed.novelWriter as Record<string, unknown>;
+          const coverCount = typeof nw.coverImageCount === 'number' ? nw.coverImageCount : 4;
+          result.novelWriter = { coverImageCount: Math.max(1, Math.min(12, coverCount)) };
+        }
+        if (typeof parsed.novelBgVideo === 'string') {
+          result.novelBgVideo = parsed.novelBgVideo;
+        }
+        if (typeof parsed.projectBgVideo === 'string') {
+          result.projectBgVideo = parsed.projectBgVideo;
+        }
+        if (parsed.localTts && typeof parsed.localTts === 'object') {
+          const migrated = migrateLocalTtsFromDisk(parsed.localTts as Record<string, unknown>);
+          if (migrated) result.localTts = migrated;
+        }
         return result;
       }
       // 旧版格式：{ text, image, video, audio }
@@ -199,6 +281,14 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
           }))
         : [],
     };
+    if (data.localTts) {
+      const lt = data.localTts;
+      toSave.localTts = {
+        enabled: lt.enabled === true,
+        modelKey: lt.modelKey ?? 'longcat_audio_dit',
+        profiles: lt.profiles && typeof lt.profiles === 'object' ? lt.profiles : {},
+      };
+    }
     if (data.defaultProjectRoot !== undefined) {
       toSave.defaultProjectRoot = data.defaultProjectRoot;
     }
@@ -207,6 +297,17 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
     }
     if (data.modalMaskBlur !== undefined) {
       toSave.modalMaskBlur = data.modalMaskBlur;
+    }
+    if (data.novelWriter) {
+      toSave.novelWriter = {
+        coverImageCount: Math.max(1, Math.min(12, data.novelWriter.coverImageCount ?? 4)),
+      };
+    }
+    if (data.novelBgVideo !== undefined) {
+      toSave.novelBgVideo = data.novelBgVideo;
+    }
+    if (data.projectBgVideo !== undefined) {
+      toSave.projectBgVideo = data.projectBgVideo;
     }
     fs.writeFileSync(p, JSON.stringify(toSave, null, 2), 'utf-8');
     return { ok: true };

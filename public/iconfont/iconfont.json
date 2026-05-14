@@ -6,6 +6,90 @@
   "description": "",
   "glyphs": [
     {
+      "icon_id": "4936646",
+      "name": "sound-fill",
+      "font_class": "sound-fill",
+      "unicode": "e865",
+      "unicode_decimal": 59493
+    },
+    {
+      "icon_id": "12880869",
+      "name": "sound",
+      "font_class": "sound",
+      "unicode": "e687",
+      "unicode_decimal": 59015
+    },
+    {
+      "icon_id": "17912986",
+      "name": "Novel",
+      "font_class": "Novel",
+      "unicode": "e9a7",
+      "unicode_decimal": 59815
+    },
+    {
+      "icon_id": "18267913",
+      "name": "分布式",
+      "font_class": "fenbushi",
+      "unicode": "e995",
+      "unicode_decimal": 59797
+    },
+    {
+      "icon_id": "18267938",
+      "name": "区块",
+      "font_class": "qukuai",
+      "unicode": "e99d",
+      "unicode_decimal": 59805
+    },
+    {
+      "icon_id": "18267941",
+      "name": "全领域规模",
+      "font_class": "quanlingyuguimo",
+      "unicode": "e99e",
+      "unicode_decimal": 59806
+    },
+    {
+      "icon_id": "23016196",
+      "name": "剧集剧本",
+      "font_class": "jujijuben",
+      "unicode": "e62a",
+      "unicode_decimal": 58922
+    },
+    {
+      "icon_id": "31307404",
+      "name": "plg-瀑布流",
+      "font_class": "plg-pubuliu",
+      "unicode": "e69b",
+      "unicode_decimal": 59035
+    },
+    {
+      "icon_id": "39560129",
+      "name": "02-novel",
+      "font_class": "a-02-novel",
+      "unicode": "e683",
+      "unicode_decimal": 59011
+    },
+    {
+      "icon_id": "40070008",
+      "name": "all-application-filled",
+      "font_class": "all-application-filled",
+      "unicode": "ea88",
+      "unicode_decimal": 60040
+    },
+    {
+      "icon_id": "46082520",
+      "name": "icon_card_novel",
+      "font_class": "icon_card_novel",
+      "unicode": "e6ac",
+      "unicode_decimal": 59052
+    },
+    {
+      "icon_id": "46753570",
+      "name": "瀑布流",
+      "font_class": "pubuliu",
+      "unicode": "e647",
+      "unicode_decimal": 58951
+    },
+    {
       "icon_id": "2494097",
       "name": "corel-painter",
       "font_class": "corel-painter",

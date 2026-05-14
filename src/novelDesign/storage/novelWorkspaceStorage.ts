@@ -51,11 +51,68 @@ function loadAll(): Record<string, NovelWorkspaceSnapshot> {
   }
 }
 
+function api() {
+  return window.yiman?.novel;
+}
+
+/** 先写入 novels 表，满足 novel_workspace_meta / novel_episodes 对 novel_id 的外键 */
+async function ensureNovelParentRowInDb(s: NovelWorkspaceSnapshot): Promise<void> {
+  const a = api();
+  if (!a?.upsert) return;
+  const listItem = loadNovelList().find((x) => x.id === s.novelId);
+  const title = (listItem?.title ?? s.title ?? '未命名小说').trim() || '未命名小说';
+  await a.upsert({
+    id: s.novelId,
+    title,
+    genres: listItem?.genres ?? [],
+    coverDataUrl: listItem?.coverDataUrl ?? null,
+    electronProjectId: s.electronProjectId ?? null,
+    createdAt: listItem?.createdAt,
+    updatedAt: listItem?.updatedAt ?? s.updatedAt,
+  });
+}
+
+/** 异步同步工作区数据到 SQLite（须先 upsert novels，否则会 SQLITE_CONSTRAINT_FOREIGNKEY） */
+function syncSnapshotToDb(s: NovelWorkspaceSnapshot): void {
+  const a = api();
+  if (!a?.saveWorkspaceMeta || !a.replaceAllEpisodes) return;
+  const eps = s.episodes.map((e) => ({
+    id: e.id,
+    novelId: s.novelId,
+    title: e.title,
+    episode: e.episode ?? null,
+    contentMarkdown: e.contentMarkdown,
+    order: e.order,
+    updatedAt: e.updatedAt,
+  }));
+  void (async () => {
+    try {
+      await ensureNovelParentRowInDb(s);
+      await a.saveWorkspaceMeta({
+        novelId: s.novelId,
+        title: s.title,
+        activeEpisodeId: s.activeEpisodeId,
+        remountVersions: s.remountVersionByEpisode ?? {},
+        updatedAt: s.updatedAt,
+      });
+      if (eps.length > 0) {
+        await a.replaceAllEpisodes(s.novelId, eps);
+      }
+    } catch {
+      /* ignore */
+    }
+  })();
+}
+
 function saveAll(map: Record<string, NovelWorkspaceSnapshot>): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
   } catch {
     /* ignore quota */
+  }
+  // 异步同步到 SQLite
+  for (const s of Object.values(map)) {
+    syncSnapshotToDb(s);
   }
 }
 

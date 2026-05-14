@@ -1,9 +1,18 @@
 /**
  * AI 对话 - SidePanel 布局模式
- * 使用 Ant Design Layout：Header（agent+对话历史）、Content（提示词/对话）、Footer（Sender，agent+选中对象以 slot 形式在 Sender 内）
+ * 使用 Ant Design Layout：Header（agent+对话历史）、Content（提示词/对话）、Footer（ref 指示条 + Sender + 附件等）
  */
-import { forwardRef, useImperativeHandle, useState, type ComponentType, type ReactNode } from 'react';
-import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
+import type { SlotConfigType, SkillType } from '@ant-design/x/lib/sender/interface';
 import { Button, Space, Divider, Flex, Select, Layout, Dropdown, InputNumber, Tooltip } from 'antd';
 import { PlusOutlined, LinkOutlined, RollbackOutlined, MessageOutlined, CloseOutlined } from '@ant-design/icons';
 import { useAIChatCore } from './AIChatCore';
@@ -14,6 +23,7 @@ import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 import { getToolCardIdFromContent, isToolCardContent } from './utils/toolCardMarkers';
 import { PrepareGenStoriesCard } from './tools/PrepareGenStoriesCard';
 import { DrawerBubbleContent } from './utils/drawerContentRender';
+import type { AIChatSidePanelOnSubmit, RefIndicatorType } from './types';
 import './AIChatSidePanel.css';
 
 function modelSelectLabel(m: AIModelConfig): string {
@@ -21,6 +31,40 @@ function modelSelectLabel(m: AIModelConfig): string {
 }
 
 const { Header, Content, Footer } = Layout;
+
+function RefIndicatorBar({
+  items,
+  onRemoveKey,
+}: {
+  items: RefIndicatorType[];
+  onRemoveKey: (key: string) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <Flex wrap="wrap" gap={6} align="center" className="yiman-sender-ref-indicator-row">
+      {items.map((item) => (
+        <Tooltip key={item.key} title={item.description}>
+          <span className="yiman-ref-indicator-tag">
+            {item.icon ? <span className="yiman-ref-indicator-icon">{item.icon}</span> : null}
+            <span className="yiman-ref-indicator-content">{item.content}</span>
+            <Button
+              type="text"
+              size="small"
+              className="yiman-ref-indicator-close"
+              icon={<CloseOutlined />}
+              aria-label="移除"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRemoveKey(item.key);
+              }}
+            />
+          </span>
+        </Tooltip>
+      ))}
+    </Flex>
+  );
+}
 
 export interface SidePanelAssistantContentRenderArgs {
   content: string;
@@ -51,6 +95,11 @@ export interface AIChatSidePanelProps extends AIChatCoreProps {
   sidePanelOnClose?: () => void;
   /** 自定义 assistant 消息渲染（抽卡页用于给每个小说雏形注入工具面板） */
   sidePanelAssistantContentRender?: (args: SidePanelAssistantContentRenderArgs) => ReactNode;
+  /**
+   * 发送前回调：参数在 Sender `onSubmit` 基础上增加 `refIndicator`。
+   * 若返回对象，可覆盖随后提交给后端的 `message` / `slotConfig` / `skill`（与 Sender 前三参对齐）。
+   */
+  onSubmit?: AIChatSidePanelOnSubmit;
 }
 
 export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanelProps>(
@@ -64,52 +113,22 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
     sidePanelExternalConversationControl = false,
     sidePanelOnClose,
     sidePanelAssistantContentRender,
+    onSubmit: sidePanelOnSubmit,
     renderToolMessageContent,
+    suppressEmptyConversationPrompts = false,
+    suppressDrawerSenderSlots = false,
     ...coreProps
   } = props;
 
   const PrepCardResolved = prepareGenStoriesCardComponent ?? PrepareGenStoriesCard;
 
-  const core = useAIChatCore({ ...coreProps, agentKey, onAgentChange, enableReasoning });
+  const core = useAIChatCore({ ...coreProps, agentKey, onAgentChange, enableReasoning, suppressDrawerSenderSlots });
   const [historyOpen, setHistoryOpen] = useState(false);
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      updateGlobalContext: core.updateGlobalContext,
-      emitUserMessage: (text: string) => core.handleSubmit(text),
-      emitUserMessageInNewConversation: (text: string) => core.handleSubmitInNewConversation(text),
-      selectConversation: (key: string) => core.handleConversationChange(key),
-      newConversation: () => core.handleNewConversation(),
-      getActiveConversationKey: () => core.activeKey,
-      getConversationsMeta: () => core.convItems,
-      renameConversation: (key: string, title: string) => core.renameConversation(key, title),
-      setConversationPinned: (key: string, pinned: boolean) => core.setConversationPinned(key, pinned),
-      deleteConversation: (key: string) => core.deleteConversation(key),
-      getSender: () => ({
-        setAgentKey: (key: string) => onAgentChange?.(key),
-        applyPromptTemplate: core.applyPromptTemplate,
-        addImageAttachment: core.attachDrawerImageFromSrc,
-        setForcedFunctionCalls: core.setForcedFunctionCallNames,
-      }),
-    }),
-    [
-      core.updateGlobalContext,
-      core.applyPromptTemplate,
-      core.attachDrawerImageFromSrc,
-      core.setForcedFunctionCallNames,
-      core.handleSubmit,
-      core.handleSubmitInNewConversation,
-      core.handleConversationChange,
-      core.handleNewConversation,
-      core.renameConversation,
-      core.setConversationPinned,
-      core.deleteConversation,
-      core.activeKey,
-      core.convItems,
-      onAgentChange,
-    ]
-  );
+  const [refIndicatorItems, setRefIndicatorItems] = useState<RefIndicatorType[]>([]);
+  const refIndicatorRef = useRef<RefIndicatorType[]>([]);
+  useEffect(() => {
+    refIndicatorRef.current = refIndicatorItems;
+  }, [refIndicatorItems]);
 
   const {
     convItems,
@@ -150,6 +169,84 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
     selectedChatModelId,
     onChatModelChange,
   } = core;
+
+  /** Sender、emitUserMessage、Prompts：统一走注册的 `onSubmit`（含 refIndicator）；后两者忽略模板 pending */
+  const commitOutboundSubmit = useCallback(
+    (
+      message: string,
+      slotConfig: SlotConfigType[] | undefined,
+      skill: SkillType | undefined,
+      ignorePendingOutbound: boolean
+    ) => {
+      const trimmed = (message ?? '').trim();
+      if (!trimmed) return;
+      const refs = refIndicatorRef.current;
+      const ret = sidePanelOnSubmit?.(trimmed, slotConfig, skill, refs);
+      const finalMessage = typeof ret?.message === 'string' && ret.message.trim() ? ret.message.trim() : trimmed;
+      const finalSlots = ret?.slotConfig ?? slotConfig;
+      const finalSkill = ret?.skill ?? skill;
+      handleSubmit(finalMessage, finalSlots, finalSkill, { ignorePendingOutbound });
+      senderRef.current?.clear?.();
+    },
+    [sidePanelOnSubmit, handleSubmit, senderRef]
+  );
+
+  const handleSenderSubmit = useCallback(
+    (message: string, slotConfig?: SlotConfigType[], skill?: SkillType) => {
+      commitOutboundSubmit(message, slotConfig, skill, false);
+    },
+    [commitOutboundSubmit]
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setRefIndicator: (items: RefIndicatorType[]) => {
+        setRefIndicatorItems(Array.isArray(items) ? items : []);
+      },
+      updateGlobalContext: core.updateGlobalContext,
+      emitUserMessage: (text: string) => commitOutboundSubmit(text, undefined, undefined, true),
+      emitUserMessageInNewConversation: (text: string) => {
+        const trimmed = (text ?? '').trim();
+        if (!trimmed) return;
+        const refs = refIndicatorRef.current;
+        const ret = sidePanelOnSubmit?.(trimmed, undefined, undefined, refs);
+        const finalMessage =
+          typeof ret?.message === 'string' && ret.message.trim() ? ret.message.trim() : trimmed;
+        core.handleSubmitInNewConversation(finalMessage);
+      },
+      selectConversation: (key: string) => core.handleConversationChange(key),
+      newConversation: () => core.handleNewConversation(),
+      getActiveConversationKey: () => core.activeKey,
+      getConversationsMeta: () => core.convItems,
+      renameConversation: (key: string, title: string) => core.renameConversation(key, title),
+      setConversationPinned: (key: string, pinned: boolean) => core.setConversationPinned(key, pinned),
+      deleteConversation: (key: string) => core.deleteConversation(key),
+      getSender: () => ({
+        setAgentKey: (key: string) => onAgentChange?.(key),
+        applyPromptTemplate: core.applyPromptTemplate,
+        addImageAttachment: core.attachDrawerImageFromSrc,
+        setForcedFunctionCalls: core.setForcedFunctionCallNames,
+      }),
+    }),
+    [
+      core.updateGlobalContext,
+      core.applyPromptTemplate,
+      core.attachDrawerImageFromSrc,
+      core.setForcedFunctionCallNames,
+      core.handleSubmitInNewConversation,
+      core.handleConversationChange,
+      core.handleNewConversation,
+      core.renameConversation,
+      core.setConversationPinned,
+      core.deleteConversation,
+      core.activeKey,
+      core.convItems,
+      onAgentChange,
+      commitOutboundSubmit,
+      sidePanelOnSubmit,
+    ]
+  );
 
   return (
     <Layout
@@ -305,6 +402,7 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
           {sidePanelEmptyExtras && (
             <div style={{ marginBottom: 16 }}>{sidePanelEmptyExtras}</div>
           )}
+          {!suppressEmptyConversationPrompts ? (
           <Prompts
             wrap
             title="常用提示词："
@@ -312,13 +410,20 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
             onItemClick={(info) => {
               const key = (info?.data as { key?: string })?.key;
               const item = promptItems.find((x) => x.key === key);
-              if (item) handlePromptItemClick(item);
+              if (!item) return;
+              // Prompts 点击不经过 Sender onSubmit；与 emitUserMessage 一样走注册的 onSubmit + ref
+              if (item.launchTool === 'prepare-gen-stories') {
+                handlePromptItemClick(item);
+                return;
+              }
+              commitOutboundSubmit(item.message, undefined, undefined, true);
             }}
             styles={{
               title: { fontSize: 12, color: 'rgba(255,255,255,0.65)', marginBottom: 8 },
               item: { display: 'inline-block', margin: '2px 4px 2px 0', padding: '3px 8px' },
             }}
           />
+          ) : null}
           </>
         ) : (
           <Bubble.List
@@ -382,7 +487,8 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
               },
               user: {
                 placement: 'end',
-                variant: 'borderless',
+                variant: 'filled',
+                shape: 'corner',
                 contentRender: (content: string, info?: unknown) => {
                   const idx = (info as { extraInfo?: { index?: number } })?.extraInfo?.index;
                   const showRollback = idx != null && userTurnIndices.includes(idx);
@@ -440,7 +546,13 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
           <div style={{ fontSize: 12, color: 'rgba(255,100,100,0.9)', marginBottom: 4 }}>{missingHint}</div>
         )}
         {/* 与 docs/AI-demo/demo.tsx chatSender 一致：纵向留白，输入区独立成块 */}
-        <Flex vertical gap={12} className="aichat-sender-wrap" style={{ width: '100%', minWidth: 1, overflow: 'hidden' }}>
+        <Flex vertical gap={6} className="aichat-sender-wrap" style={{ width: '100%', minWidth: 1, overflow: 'hidden' }}>
+        {refIndicatorItems.length > 0 ? (
+          <RefIndicatorBar
+            items={refIndicatorItems}
+            onRemoveKey={(k) => setRefIndicatorItems((p) => p.filter((x) => x.key !== k))}
+          />
+        ) : null}
         <Sender
           key={`${agentKey}-${composerNonce}`}
           ref={senderRef}
@@ -450,15 +562,14 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
           header={senderHeader}
           loading={isRequesting}
           placeholder={senderPlaceholder}
-          onSubmit={(msg, slotConfig, skill) => {
-            handleSubmit(msg, slotConfig, skill);
-            senderRef.current?.clear?.();
-          }}
+          onSubmit={handleSenderSubmit}
           onChange={handleSenderChange}
           onPasteFile={onSenderPasteFile}
           disabled={!hasValidModel}
           autoSize={{ minRows: 1, maxRows: 6 }}
-          
+
+          allowSpeech={true}
+
           footer={(_oriNode, info) => {
             const comps = info?.components;
             const SendButton = comps?.SendButton;
@@ -507,10 +618,10 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
                       loading={isRequesting}
                       onClick={() => {
                         const v = senderRef.current?.getValue?.();
-                        const text = (v && typeof v === 'object' && 'value' in v ? v.value : '')?.trim?.();
+                        const raw = v && typeof v === 'object' && 'value' in v ? String((v as { value?: unknown }).value ?? '') : '';
+                        const text = raw.trim();
                         if (text) {
-                          handleSubmit(text, v?.slotConfig, v?.skill);
-                          senderRef.current?.clear?.();
+                          handleSenderSubmit(text, (v as { slotConfig?: SlotConfigType[] })?.slotConfig, (v as { skill?: SkillType })?.skill);
                         }
                       }}
                     >

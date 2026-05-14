@@ -43,11 +43,34 @@ export function loadScreenwriterOutlineFavorites(): ScreenwriterFavoriteOutline[
   }
 }
 
+function api() {
+  return window.yiman?.novel?.outlineFavorites;
+}
+
 export function saveScreenwriterOutlineFavorites(items: ScreenwriterFavoriteOutline[]): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
   } catch {
     /* ignore quota */
+  }
+  // 异步同步到 SQLite（fire-and-forget）
+  const a = api();
+  if (a) {
+    for (const item of items) {
+      a.insert({
+        id: item.id,
+        outlineUuid: item.outlineUuid ?? null,
+        title: item.title,
+        prose: item.prose,
+        panelStoryName: item.panel?.storyName ?? null,
+        panelSource: item.panel?.source ?? '',
+        panelSummary: item.panel?.summary ?? '',
+        fullContent: item.fullContent ?? null,
+        favoriteAppendix: item.favoriteAppendix ?? null,
+        sourceConversationKey: item.sourceConversationKey ?? null,
+        createdAt: item.createdAt,
+      }).catch(() => {});
+    }
   }
 }
 

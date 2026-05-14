@@ -2,6 +2,7 @@
  * 编剧：小说列表（布局参考漫剧项目列表，数据存 localStorage）
  */
 import { useEffect, useMemo, useState } from 'react';
+import React from 'react';
 import {
   App,
   Row,
@@ -30,47 +31,19 @@ import { Radio } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
 import { loadNovelList, saveNovelList } from '@/novelDesign/storage/novelListStorage';
+import { ProjectCard } from '@/components/ProjectCard';
+import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import './ScreenwriterListPage.css';
 
 const { Search } = Input;
 
 type SortBy = 'updated_at' | 'created_at' | 'title';
 
-/** 占位封面（无图时） */
-function NovelCover({ src, title }: { src?: string | null; title: string }) {
-  const base = (
-    <div
-      aria-hidden
-      style={{
-        width: '100%',
-        aspectRatio: '16 / 9',
-        borderRadius: 8,
-        background: 'linear-gradient(145deg, rgba(80,100,140,0.55), rgba(35,42,62,0.92))',
-        border: '1px solid rgba(255,255,255,0.08)',
-      }}
-    />
-  );
-  if (!src?.trim()) return base;
-  return (
-    <AntImage
-      src={src}
-      alt={title}
-      style={{
-        width: '100%',
-        aspectRatio: '3 / 4',
-        borderRadius: 8,
-        objectFit: 'cover',
-        border: '1px solid rgba(255,255,255,0.08)',
-      }}
-      preview={{ mask: '预览' }}
-      fallback=""
-    />
-  );
-}
-
 export default function ScreenwriterListPage() {
   const { message } = App.useApp();
   const navigate = useNavigate();
+  const config = useConfigSubscribe();
+  const bgVideo = config?.novelBgVideo;
   const [novels, setNovels] = useState<NovelWorkspaceItem[]>([]);
   const [searchText, setSearchText] = useState('');
   const [sortBy, setSortBy] = useState<SortBy>('updated_at');
@@ -186,13 +159,15 @@ export default function ScreenwriterListPage() {
 
   return (
     <div style={{ position: 'relative' }}>
-      <video
-        autoPlay
-        loop
-        muted
-        playsInline
-        aria-hidden
-        src="/medias/touch_my_face.mp4" // grok-052.mp4   // grok-05239329-8e2.mp4
+      {bgVideo ? (
+        <video
+          autoPlay
+          loop
+          muted
+          playsInline
+          aria-hidden
+          key={bgVideo}
+          src={`/medias/${bgVideo}`}
         style={{
           position: 'fixed',
           inset: 0,
@@ -203,6 +178,7 @@ export default function ScreenwriterListPage() {
           pointerEvents: 'none',
         }}
       />
+      ) : null}
       <div
         aria-hidden
         style={{
@@ -294,41 +270,14 @@ export default function ScreenwriterListPage() {
         {viewMode === 'card' ? (
           <Row gutter={[16, 16]} className='screenwriter-list-cards'>
             {filteredSorted.map((n) => (
-              <Col key={n.id} xs={24} sm={12} md={8} lg={6}>
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openNovel(n)}
-                  onKeyDown={(ev) => ev.key === 'Enter' && openNovel(n)}
-                  style={{
-                    borderRadius: 10,
-                    padding: 12,
-                    background: 'rgba(30,30,30,0.75)',
-                    border: '1px solid rgba(255,255,255,0.1)',
-                    cursor: 'pointer',
-                    backdropFilter: 'blur(10px)',
-                  }}
-                >
-                  <NovelCover src={n.coverDataUrl} title={n.title} />
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontWeight: 600, color: 'rgba(255,255,255,0.92)', marginBottom: 6 }}>
-                      {n.title}
-                    </div>
-                    <Space size={[4, 4]} wrap>
-                      {n.genres.length ?
-                        n.genres.map((g) => (
-                          <Tag key={g} color="blue" style={{ margin: 0 }}>
-                            {g}
-                          </Tag>
-                        )) :
-                        <Tag style={{ margin: 0 }}>未设置题材</Tag>}
-                    </Space>
-                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 8 }}>
-                      更新 {n.updatedAt ? new Date(n.updatedAt).toLocaleString('zh-CN') : '-'}
-                    </div>
-                  </div>
-                </div>
-              </Col>
+              <ProjectCard
+                key={n.id}
+                title={n.title}
+                cover={{ url: n.coverDataUrl, aspect: 16 / 9 }}
+                lastUpdate={n.updatedAt}
+                tags={n.genres.map((g) => ({ name: g, color: 'blue' }))}
+                onClick={() => openNovel(n)}
+              />
             ))}
           </Row>
         ) : (
@@ -359,7 +308,17 @@ export default function ScreenwriterListPage() {
                   width: 96,
                   render: (_, n) => (
                     <div style={{ width: 56 }}>
-                      <NovelCover src={n.coverDataUrl} title={n.title} />
+                      {n.coverDataUrl ? (
+                        <AntImage
+                          src={n.coverDataUrl}
+                          alt={n.title}
+                          style={{ width: '100%', aspectRatio: '16 / 9', borderRadius: 8, objectFit: 'cover' }}
+                          preview={{ mask: '预览' }}
+                          fallback=""
+                        />
+                      ) : (
+                        <div aria-hidden style={{ width: '100%', aspectRatio: '16 / 9', borderRadius: 8 }} />
+                      )}
                     </div>
                   ),
                 },

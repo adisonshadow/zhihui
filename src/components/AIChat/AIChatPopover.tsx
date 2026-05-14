@@ -2,17 +2,17 @@
  * AI 对话 - Popover 布局模式
  * 以触发元素打开 Popover 展示对话界面，适合嵌入到任意 UI 位置
  */
-import React, { forwardRef, useState } from 'react';
+import React, { forwardRef, useState, type ComponentPropsWithoutRef } from 'react';
 import { Popover, Button } from 'antd';
 import type { TooltipPlacement } from 'antd/es/tooltip';
 import { CommentOutlined } from '@ant-design/icons';
 import { AIChatSidePanel } from './AIChatSidePanel';
-import type { AIChatCoreProps } from './AIChatCore';
 import type { AIChatSidePanelHandle } from './aiChatPanelHandles';
 
-export interface AIChatPopoverProps extends AIChatCoreProps {
-  agentKey: string;
-  onAgentChange?: (key: string) => void;
+type SidePanelPassthrough = ComponentPropsWithoutRef<typeof AIChatSidePanel>;
+
+/** Popover 壳 + 与 SidePanel 一致的对话能力 */
+export type AIChatPopoverProps = SidePanelPassthrough & {
   /** Popover 标题，默认 'AI 助手' */
   title?: string;
   /** 自定义触发元素；不传则渲染默认按钮 */
@@ -25,7 +25,7 @@ export interface AIChatPopoverProps extends AIChatCoreProps {
   defaultOpen?: boolean;
   /** Popover 弹出方向，默认 'topRight' */
   placement?: TooltipPlacement;
-}
+};
 
 export const AIChatPopover = forwardRef<AIChatSidePanelHandle, AIChatPopoverProps>(function AIChatPopover(
   {
@@ -37,7 +37,7 @@ export const AIChatPopover = forwardRef<AIChatSidePanelHandle, AIChatPopoverProp
     popoverHeight = 520,
     defaultOpen = false,
     placement = 'topRight',
-    ...coreProps
+    ...sidePanelProps
   },
   ref
 ) {
@@ -45,12 +45,7 @@ export const AIChatPopover = forwardRef<AIChatSidePanelHandle, AIChatPopoverProp
 
   const content = (
     <div style={{ width: popoverWidth, height: popoverHeight }}>
-      <AIChatSidePanel
-        ref={ref}
-        agentKey={agentKey}
-        onAgentChange={onAgentChange}
-        {...coreProps}
-      />
+      <AIChatSidePanel ref={ref} agentKey={agentKey} onAgentChange={onAgentChange} {...sidePanelProps} />
     </div>
   );
 

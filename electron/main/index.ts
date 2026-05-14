@@ -7,7 +7,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } from 'electro
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { initAppDb, getProjects, createProject, deleteProject, importProject } from './db';
 import { readImageFileForEditor } from './imageEditorImport';
@@ -93,6 +93,34 @@ import { getSystemFonts, getSystemFontFaces } from './fontService';
 import { extractKeyFrames, extractFramesUniform, keyFramesToDataUrls, generateSpriteSheet, cleanupDir } from './videoToSpriteService';
 import { ensureLamaCleanerRunning, openLamaCleanerInstallTerminal } from './lamaCleanerHost';
 import { fetchVolcTosImageAsDataUrl } from './volcTosImageFetch';
+import {
+  initNovelDb,
+  listNovels,
+  upsertNovel as dbUpsertNovel,
+  deleteNovel,
+  getEpisodes,
+  getWorkspaceMeta,
+  upsertEpisode as dbUpsertEpisode,
+  deleteEpisode as dbDeleteNovelEpisode,
+  saveWorkspaceMeta,
+  replaceAllEpisodes,
+  listScreenwriterFavorites,
+  insertScreenwriterFavorite,
+  deleteScreenwriterFavorite,
+  deleteScreenwriterFavoriteBySeedUuid,
+  getScreenwriterFavoriteBySeedUuid,
+  replaceAllScreenwriterFavorites,
+  listScreenwriterOutlineFavorites,
+  insertScreenwriterOutlineFavorite,
+  deleteScreenwriterOutlineFavorite,
+  deleteScreenwriterOutlineFavoriteByOutlineUuid,
+  getScreenwriterOutlineFavoriteByOutlineUuid,
+  type NovelRow,
+  type EpisodeRow,
+  type WorkspaceMetaRow,
+  type ScreenwriterFavoriteRow,
+  type ScreenwriterOutlineFavoriteRow,
+} from './novelDb';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -194,31 +222,34 @@ const AIMODEL_PORT = 19815;
 
 app.whenReady().then(async () => {
   await initAppDb();
+  initNovelDb();
+  // 读取 AI 设置，提取本地 TTS 配置
+  const aiSettings = loadAISettings();
+  const ttsEnv: Record<string, string> = { ...process.env, AIMODEL_PORT: String(AIMODEL_PORT) };
+  if (aiSettings.localTts) {
+    ttsEnv.YIMAN_LOCAL_TTS_CONFIG = JSON.stringify(aiSettings.localTts);
+    const mk = aiSettings.localTts.modelKey ?? 'longcat_audio_dit';
+    const activePath = aiSettings.localTts.profiles?.[mk]?.modelPath?.trim();
+    if (aiSettings.localTts.enabled && activePath) {
+      console.log('[Main] 本地 TTS 配置已注入:', mk, activePath);
+    }
+  }
   // 启动 AI 模型服务子进程（纯 Node 优先，无 Electron/Dock 图标；否则回退到 Electron 子进程）
   const serverScript = path.join(__dirname, '../ai-server/index.js');
   const useNodeServer = fs.existsSync(serverScript);
   const spawnCwd = path.join(__dirname, '../../'); // 项目根，便于 node 解析 node_modules
+  // stdout/stderr 继承当前终端，便于直接看到 ai-model-service 内全部日志（含 [TTS LongCat-AudioDiT]）；
+  // 若用 pipe 且只解析 JSON，则普通 console.log 会被吞掉。
   aiModelServerProcess = useNodeServer
     ? spawn('node', [serverScript], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, AIMODEL_PORT: String(AIMODEL_PORT) },
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: ttsEnv,
         cwd: spawnCwd,
       })
     : spawn(process.execPath, [path.join(__dirname, 'index.js'), '--ai-model-server'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, AIMODEL_PORT: String(AIMODEL_PORT) },
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: ttsEnv,
       });
-  aiModelServerProcess.stdout?.on('data', (c) => {
-    const s = c.toString().trim();
-    if (s.startsWith('{')) {
-      try {
-        const j = JSON.parse(s);
-        if (j.ready) console.log('[AI Model Service] 就绪，端口', j.port);
-      } catch {
-        /* ignore */
-      }
-    }
-  });
   // 等待服务就绪（最多 10 秒）
   const { pingMattingService } = await import('../ai-model-service/client.js');
   for (let i = 0; i < 50; i++) {
@@ -454,6 +485,29 @@ ipcMain.handle('app:fs:readFileAsDataUrl', (_, fullPath: string) => {
 
 /** 图片编辑器：位图正确 MIME，SVG 保留矢量 data URL，PDF/EPS/ODG 等栅格化为 PNG */
 ipcMain.handle('app:fs:readImageFileForEditor', async (_, fullPath: string) => readImageFileForEditor(fullPath));
+
+/**
+ * 列出 medias 目录下所有视频文件（背景视频选择器使用）
+ * 优先 source public/medias（dev），其次 dist-electron/ai-server/medias（prod）
+ */
+ipcMain.handle('app:fs:listMedias', async () => {
+  const candidates = [
+    path.join(__dirname, '../../public/medias'),
+    path.join(__dirname, '../ai-server/medias'),
+  ];
+  for (const dir of candidates) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir);
+      return files
+        .filter((f) => /\.(mp4|webm)$/i.test(f))
+        .sort();
+    } catch {
+      /* try next */
+    }
+  }
+  return [];
+});
 ipcMain.handle('app:shell:showItemInFolder', (_, fullPath: string) => shell.showItemInFolder(fullPath));
 ipcMain.handle('app:shell:openPath', (_: unknown, path: string) => shell.openPath(path));
 ipcMain.handle('app:shell:openExternal', async (_: unknown, url: string) => {
@@ -471,7 +525,9 @@ ipcMain.handle('app:shell:openExternal', async (_: unknown, url: string) => {
 
 // AI 供应商配置（见功能文档 3.1、开发计划 2.3）
 ipcMain.handle('app:settings:get', () => loadAISettings());
-ipcMain.handle('app:settings:save', (_, data: AISettings) => saveAISettings(data));
+ipcMain.handle('app:settings:save', async (_, data: AISettings) => {
+  return saveAISettings(data);
+});
 
 // 项目级数据（见技术文档 3.2、开发计划 2.4）
 ipcMain.handle('app:project:getMeta', (_, projectDir: string) => getProjectMeta(projectDir));
@@ -1051,6 +1107,250 @@ ipcMain.handle(
       event.sender.send('app:project:exportVideo:progress', p);
     };
     return exportSceneVideo(projectDir, sceneId, options, onProgress);
+  }
+);
+
+// ===== 小说编剧 =====
+
+// 小说列表
+ipcMain.handle('app:novel:list', () => {
+  return listNovels().map(toNovelWorkspaceItem);
+});
+
+ipcMain.handle('app:novel:upsert', (_e, item: {
+  id: string; title: string; genres: string[]; coverDataUrl?: string | null;
+  electronProjectId?: string | null; createdAt?: string; updatedAt?: string;
+}) => {
+  const row = dbUpsertNovel(item);
+  return toNovelWorkspaceItem(row);
+});
+
+ipcMain.handle('app:novel:delete', (_e, id: string) => {
+  return { ok: deleteNovel(id) };
+});
+
+// 小说工作区
+ipcMain.handle('app:novel:getEpisodes', (_e, novelId: string) => {
+  return getEpisodes(novelId).map(toEpisodeItem);
+});
+
+ipcMain.handle('app:novel:getWorkspaceMeta', (_e, novelId: string) => {
+  const meta = getWorkspaceMeta(novelId);
+  if (!meta) return null;
+  return {
+    novelId: meta.novel_id,
+    title: meta.title,
+    activeEpisodeId: meta.active_episode_id,
+    remountVersions: safeJsonParse(meta.remount_versions, {}),
+    updatedAt: meta.updated_at,
+  };
+});
+
+ipcMain.handle('app:novel:upsertEpisode', (_e, ep: {
+  id: string; novelId: string; title: string; episode?: number | null;
+  contentMarkdown?: string; order: number; updatedAt: string;
+}) => {
+  dbUpsertEpisode(ep);
+});
+
+ipcMain.handle('app:novel:deleteEpisode', (_e, novelId: string, episodeId: string) => {
+  dbDeleteNovelEpisode(novelId, episodeId);
+});
+
+ipcMain.handle('app:novel:saveWorkspaceMeta', (_e, meta: {
+  novelId: string; title?: string; activeEpisodeId: string;
+  remountVersions: Record<string, number>; updatedAt: string;
+}) => {
+  saveWorkspaceMeta(meta);
+});
+
+ipcMain.handle('app:novel:replaceAllEpisodes', (_e, novelId: string, episodes: Array<{
+  id: string; novelId: string; title: string; episode?: number | null;
+  contentMarkdown: string; order: number; updatedAt: string;
+}>) => {
+  replaceAllEpisodes(novelId, episodes);
+});
+
+// 编剧收藏 - 故事雏形
+ipcMain.handle('app:novel:favorites:list', () => {
+  return listScreenwriterFavorites().map(toFavoriteStory);
+});
+
+ipcMain.handle('app:novel:favorites:insert', (_e, item: {
+  id: string; seedUuid?: string | null; title: string; content: string;
+  sourceConversationKey?: string | null; createdAt: string;
+}) => {
+  insertScreenwriterFavorite(item);
+});
+
+ipcMain.handle('app:novel:favorites:delete', (_e, id: string) => {
+  return { ok: deleteScreenwriterFavorite(id) };
+});
+
+ipcMain.handle('app:novel:favorites:deleteBySeedUuid', (_e, seedUuid: string) => {
+  return { ok: deleteScreenwriterFavoriteBySeedUuid(seedUuid) };
+});
+
+ipcMain.handle('app:novel:favorites:getBySeedUuid', (_e, seedUuid: string) => {
+  const row = getScreenwriterFavoriteBySeedUuid(seedUuid);
+  return row ? toFavoriteStory(row) : null;
+});
+
+ipcMain.handle('app:novel:favorites:replaceAll', (_e, items: Array<{
+  id: string; seedUuid?: string | null; title: string; content: string;
+  sourceConversationKey?: string | null; createdAt: string;
+}>) => {
+  replaceAllScreenwriterFavorites(items);
+});
+
+// 编剧收藏 - 大纲
+ipcMain.handle('app:novel:outlineFavorites:list', () => {
+  return listScreenwriterOutlineFavorites().map(toFavoriteOutline);
+});
+
+ipcMain.handle('app:novel:outlineFavorites:insert', (_e, item: {
+  id: string; outlineUuid?: string | null; title: string; prose: string;
+  panelStoryName?: string | null; panelSource?: string; panelSummary?: string;
+  fullContent?: string | null; favoriteAppendix?: string | null;
+  sourceConversationKey?: string | null; createdAt: string;
+}) => {
+  insertScreenwriterOutlineFavorite(item);
+});
+
+ipcMain.handle('app:novel:outlineFavorites:delete', (_e, id: string) => {
+  return { ok: deleteScreenwriterOutlineFavorite(id) };
+});
+
+ipcMain.handle('app:novel:outlineFavorites:deleteByOutlineUuid', (_e, outlineUuid: string) => {
+  return { ok: deleteScreenwriterOutlineFavoriteByOutlineUuid(outlineUuid) };
+});
+
+ipcMain.handle('app:novel:outlineFavorites:getByOutlineUuid', (_e, outlineUuid: string) => {
+  const row = getScreenwriterOutlineFavoriteByOutlineUuid(outlineUuid);
+  return row ? toFavoriteOutline(row) : null;
+});
+
+// ----- helper types & converters -----
+interface NovelWorkspaceItem {
+  id: string; title: string; genres: string[];
+  coverDataUrl?: string | null; electronProjectId?: string | null;
+  updatedAt: string; createdAt: string;
+}
+interface EpisodeItem {
+  id: string; novelId: string; title: string; episode?: number | null;
+  contentMarkdown: string; order: number; updatedAt: string;
+}
+interface FavoriteStoryItem {
+  id: string; seedUuid?: string | null; title: string; content: string;
+  sourceConversationKey?: string | null; createdAt: string;
+}
+interface FavoriteOutlineItem {
+  id: string; outlineUuid?: string | null; title: string; prose: string;
+  panel: { storyName?: string; source: string; summary: string };
+  fullContent?: string; favoriteAppendix?: string;
+  sourceConversationKey?: string | null; createdAt: string;
+}
+
+function safeJsonParse(s: string, fallback: unknown) { try { return JSON.parse(s); } catch { return fallback; } }
+
+function toNovelWorkspaceItem(r: NovelRow): NovelWorkspaceItem {
+  return {
+    id: r.id, title: r.title,
+    genres: safeJsonParse(r.genres, []),
+    coverDataUrl: r.cover_data_url,
+    electronProjectId: r.electron_project_id,
+    updatedAt: r.updated_at, createdAt: r.created_at,
+  };
+}
+function toEpisodeItem(r: EpisodeRow): EpisodeItem {
+  return {
+    id: r.id, novelId: r.novel_id, title: r.title,
+    episode: r.episode, contentMarkdown: r.content_markdown,
+    order: r.order, updatedAt: r.updated_at,
+  };
+}
+function toFavoriteStory(r: ScreenwriterFavoriteRow): FavoriteStoryItem {
+  return {
+    id: r.id, seedUuid: r.seed_uuid, title: r.title,
+    content: r.content, sourceConversationKey: r.source_conversation_key,
+    createdAt: r.created_at,
+  };
+}
+function toFavoriteOutline(r: ScreenwriterOutlineFavoriteRow): FavoriteOutlineItem {
+  return {
+    id: r.id, outlineUuid: r.outline_uuid, title: r.title, prose: r.prose,
+    panel: { storyName: r.panel_story_name ?? undefined, source: r.panel_source, summary: r.panel_summary },
+    fullContent: r.full_content ?? undefined,
+    favoriteAppendix: r.favorite_appendix ?? undefined,
+    sourceConversationKey: r.source_conversation_key,
+    createdAt: r.created_at,
+  };
+}
+
+// ===== 本地 TTS（通过 AI 模型服务代理） =====
+
+const AIMODEL_BASE = `http://127.0.0.1:${AIMODEL_PORT}`;
+
+/** modelKey → REST 路径段（与 ai-model-service 一致） */
+const LOCAL_TTS_REST_SEGMENT: Record<string, string> = {
+  longcat_audio_dit: 'LongCat-AudioDiT',
+  moss_tts: 'MOSS-TTS',
+  moss_tts_local_mlx: 'MOSS-TTS',
+};
+
+function restSegmentForLocalTts(modelId: string): string {
+  return LOCAL_TTS_REST_SEGMENT[modelId] ?? 'LongCat-AudioDiT';
+}
+
+/** 获取本地 TTS 模型列表 */
+ipcMain.handle('app:tts:local:models', async () => {
+  return {
+    models: [
+      { id: 'longcat_audio_dit', name: 'LongCat-AudioDiT' },
+      { id: 'moss_tts', name: 'MOSS-TTS' },
+    ],
+  };
+});
+
+/** 本地 TTS 健康检查（代理到 AI 服务） */
+ipcMain.handle('app:tts:local:health', async (_e, modelId?: string) => {
+  try {
+    const id = modelId ?? loadAISettings().localTts?.modelKey ?? 'longcat_audio_dit';
+    const seg = restSegmentForLocalTts(id);
+    const res = await fetch(`${AIMODEL_BASE}/api/v1/tts/${seg}/health`);
+    return await res.json();
+  } catch (e) {
+    return { ok: false, message: `AI 服务不可达: ${e instanceof Error ? e.message : String(e)}` };
+  }
+});
+
+/** 执行本地 TTS 合成（代理到 AI 服务） */
+ipcMain.handle(
+  'app:tts:local:run',
+  async (_e, payload: { modelId?: string; text: string; options?: Record<string, unknown> }) => {
+    const { text, options } = payload;
+    const modelId =
+      payload.modelId ?? loadAISettings().localTts?.modelKey ?? 'longcat_audio_dit';
+    if (!text?.trim()) {
+      return { ok: false, message: '文本为空' };
+    }
+    try {
+      const speed = (options as { speed?: number })?.speed ?? 1.0;
+      const seg = restSegmentForLocalTts(modelId);
+      const res = await fetch(`${AIMODEL_BASE}/api/v1/tts/${seg}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text.trim(), speed }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        return { ok: false, message: err.error || `HTTP ${res.status}` };
+      }
+      const audioBuffer = Buffer.from(await res.arrayBuffer());
+      return { ok: true, audioBase64: audioBuffer.toString('base64'), format: 'wav' };
+    } catch (e) {
+      return { ok: false, message: `请求失败: ${e instanceof Error ? e.message : String(e)}` };
+    }
   }
 );
 }

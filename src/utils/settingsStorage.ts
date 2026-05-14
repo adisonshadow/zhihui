@@ -2,7 +2,7 @@
  * AI 设置存储：Electron 优先，Web 模式降级到 localStorage
  * 见 docs/配置订阅使用.md
  */
-import type { AISettings } from '@/types/settings';
+import { type AISettings, migrateLocalTtsConfig } from '@/types/settings';
 
 const STORAGE_KEY = 'yiman:settings';
 
@@ -14,6 +14,20 @@ function getFromLocalStorage(): AISettings | null {
     return {
       models: Array.isArray(parsed?.models) ? parsed.models : [],
       aiMattingConfigs: Array.isArray(parsed?.aiMattingConfigs) ? parsed.aiMattingConfigs : [],
+      localTts: migrateLocalTtsConfig(
+        parsed?.localTts && typeof parsed.localTts === 'object' ? parsed.localTts : undefined,
+      ),
+      novelWriter:
+        parsed?.novelWriter && typeof parsed.novelWriter === 'object'
+          ? {
+              coverImageCount:
+                typeof parsed.novelWriter.coverImageCount === 'number'
+                  ? Math.max(1, Math.min(12, parsed.novelWriter.coverImageCount))
+                  : 4,
+            }
+          : undefined,
+      novelBgVideo: typeof parsed?.novelBgVideo === 'string' ? parsed.novelBgVideo : 'bg1.mp4',
+      projectBgVideo: typeof parsed?.projectBgVideo === 'string' ? parsed.projectBgVideo : 'bg1.mp4',
       defaultProjectRoot:
         typeof parsed?.defaultProjectRoot === 'string' ? parsed.defaultProjectRoot : undefined,
       canvasAutoFitViewport:

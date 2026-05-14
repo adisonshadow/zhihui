@@ -22,7 +22,10 @@
     "files": [
       "dist",
       "dist-electron",
-      "electron/models/**"
+      "electron/models/**",
+      "python/**/*.py",
+      "python/requirements.txt",
+      "!python/env/**"
     ],
     "mac": {
       "category": "public.app-category.entertainment",

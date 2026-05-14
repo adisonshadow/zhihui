@@ -2,6 +2,8 @@
  * AI 对话通用组件类型定义
  * 支持多种展示模式（SidePanel、FloatingBottom、Popover），不同模式功能一致、布局有差异
  */
+import type { ReactNode } from 'react';
+import type { SkillType, SlotConfigType } from '@ant-design/x/lib/sender/interface';
 import type { AIModelConfig } from '@/types/settings';
 
 /** 展示模式 */
@@ -76,3 +78,25 @@ export interface AIChatContextTag {
   id: string;
   description: string;
 }
+
+/** SidePanel Sender Header 区引用指示（类似 tag，可悬停移除） */
+export interface RefIndicatorType {
+  key: string;
+  description: string;
+  icon?: ReactNode;
+  content: ReactNode;
+}
+
+/** `AIChatSidePanel` 扩展 `onSubmit` 的返回值：可覆盖随后交给 `handleSubmit` 的参数（与 Sender `onSubmit` 前三项对齐） */
+export interface AIChatSidePanelOnSubmitReturn {
+  message?: string;
+  slotConfig?: SlotConfigType[];
+  skill?: SkillType;
+}
+
+export type AIChatSidePanelOnSubmit = (
+  message: string,
+  slotConfig: SlotConfigType[] | undefined,
+  skill: SkillType | undefined,
+  refIndicator: RefIndicatorType[]
+) => void | AIChatSidePanelOnSubmitReturn;

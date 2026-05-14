@@ -45,6 +45,8 @@ const api = {
         | { ok: true; kind: 'svg'; svgText: string }
         | { ok: false; error: string }
       >,
+    /** 返回 public/medias（或等价打包目录）下所有视频文件名称 */
+    listMedias: () => ipcRenderer.invoke('app:fs:listMedias') as Promise<string[]>,
     /** 拖入本地文件时取绝对路径（Electron），供 PDF/EPS/ODG 栅格化或 SVG 读原文 */
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
@@ -302,6 +304,108 @@ const api = {
       }
       return ipcRenderer.invoke('app:project:exportVideo', projectDir, sceneId, options);
     },
+  },
+  /** 小说编剧 */
+  novel: {
+    list: () => ipcRenderer.invoke('app:novel:list') as Promise<Array<{
+      id: string; title: string; genres: string[];
+      coverDataUrl?: string | null; electronProjectId?: string | null;
+      updatedAt: string; createdAt: string;
+    }>>,
+    upsert: (item: {
+      id: string; title: string; genres: string[]; coverDataUrl?: string | null;
+      electronProjectId?: string | null; createdAt?: string; updatedAt?: string;
+    }) => ipcRenderer.invoke('app:novel:upsert', item),
+    delete: (id: string) => ipcRenderer.invoke('app:novel:delete', id) as Promise<{ ok: boolean }>,
+
+    getEpisodes: (novelId: string) => ipcRenderer.invoke('app:novel:getEpisodes', novelId) as Promise<Array<{
+      id: string; novelId: string; title: string; episode?: number | null;
+      contentMarkdown: string; order: number; updatedAt: string;
+    }>>,
+    getWorkspaceMeta: (novelId: string) => ipcRenderer.invoke('app:novel:getWorkspaceMeta', novelId) as Promise<{
+      novelId: string; title: string; activeEpisodeId: string;
+      remountVersions: Record<string, number>; updatedAt: string;
+    } | null>,
+    upsertEpisode: (ep: {
+      id: string; novelId: string; title: string; episode?: number | null;
+      contentMarkdown?: string; order: number; updatedAt: string;
+    }) => ipcRenderer.invoke('app:novel:upsertEpisode', ep),
+    deleteEpisode: (novelId: string, episodeId: string) =>
+      ipcRenderer.invoke('app:novel:deleteEpisode', novelId, episodeId),
+    saveWorkspaceMeta: (meta: {
+      novelId: string; title?: string; activeEpisodeId: string;
+      remountVersions: Record<string, number>; updatedAt: string;
+    }) => ipcRenderer.invoke('app:novel:saveWorkspaceMeta', meta),
+    replaceAllEpisodes: (novelId: string, episodes: Array<{
+      id: string; novelId: string; title: string; episode?: number | null;
+      contentMarkdown: string; order: number; updatedAt: string;
+    }>) => ipcRenderer.invoke('app:novel:replaceAllEpisodes', novelId, episodes),
+
+    // 故事雏形收藏
+    favorites: {
+      list: () => ipcRenderer.invoke('app:novel:favorites:list') as Promise<Array<{
+        id: string; seedUuid?: string | null; title: string; content: string;
+        sourceConversationKey?: string | null; createdAt: string;
+      }>>,
+      insert: (item: {
+        id: string; seedUuid?: string | null; title: string; content: string;
+        sourceConversationKey?: string | null; createdAt: string;
+      }) => ipcRenderer.invoke('app:novel:favorites:insert', item),
+      delete: (id: string) => ipcRenderer.invoke('app:novel:favorites:delete', id) as Promise<{ ok: boolean }>,
+      deleteBySeedUuid: (seedUuid: string) => ipcRenderer.invoke('app:novel:favorites:deleteBySeedUuid', seedUuid) as Promise<{ ok: boolean }>,
+      getBySeedUuid: (seedUuid: string) => ipcRenderer.invoke('app:novel:favorites:getBySeedUuid', seedUuid) as Promise<{
+        id: string; seedUuid?: string | null; title: string; content: string;
+        sourceConversationKey?: string | null; createdAt: string;
+      } | null>,
+      replaceAll: (items: Array<{
+        id: string; seedUuid?: string | null; title: string; content: string;
+        sourceConversationKey?: string | null; createdAt: string;
+      }>) => ipcRenderer.invoke('app:novel:favorites:replaceAll', items),
+    },
+
+    // 大纲收藏
+    outlineFavorites: {
+      list: () => ipcRenderer.invoke('app:novel:outlineFavorites:list') as Promise<Array<{
+        id: string; outlineUuid?: string | null; title: string; prose: string;
+        panel: { storyName?: string; source: string; summary: string };
+        fullContent?: string; favoriteAppendix?: string;
+        sourceConversationKey?: string | null; createdAt: string;
+      }>>,
+      insert: (item: {
+        id: string; outlineUuid?: string | null; title: string; prose: string;
+        panelStoryName?: string | null; panelSource?: string; panelSummary?: string;
+        fullContent?: string | null; favoriteAppendix?: string | null;
+        sourceConversationKey?: string | null; createdAt: string;
+      }) => ipcRenderer.invoke('app:novel:outlineFavorites:insert', item),
+      delete: (id: string) => ipcRenderer.invoke('app:novel:outlineFavorites:delete', id) as Promise<{ ok: boolean }>,
+      deleteByOutlineUuid: (outlineUuid: string) => ipcRenderer.invoke('app:novel:outlineFavorites:deleteByOutlineUuid', outlineUuid) as Promise<{ ok: boolean }>,
+      getByOutlineUuid: (outlineUuid: string) => ipcRenderer.invoke('app:novel:outlineFavorites:getByOutlineUuid', outlineUuid) as Promise<{
+        id: string; outlineUuid?: string | null; title: string; prose: string;
+        panel: { storyName?: string; source: string; summary: string };
+        fullContent?: string; favoriteAppendix?: string;
+        sourceConversationKey?: string | null; createdAt: string;
+      } | null>,
+    },
+  },
+  /** 本地 TTS */
+  localTts: {
+    /** 获取已注册的本地 TTS 模型列表 */
+    listModels: () =>
+      ipcRenderer.invoke('app:tts:local:models') as Promise<{
+        models?: Array<{ id: string; name: string }>;
+      }>,
+    /** 健康检查（可选指定 modelId，默认当前设置里的 modelKey） */
+    healthCheck: (modelId?: string) =>
+      ipcRenderer.invoke('app:tts:local:health', modelId) as Promise<{
+        ok: boolean;
+        message?: string;
+      }>,
+    /** 执行 TTS 合成，返回 audio base64 */
+    run: (payload: { modelId: string; text: string; options?: Record<string, unknown> }) =>
+      ipcRenderer.invoke('app:tts:local:run', payload) as Promise<
+        | { ok: true; audioBase64: string; format: string }
+        | { ok: false; message: string }
+      >,
   },
 };
 

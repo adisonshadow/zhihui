@@ -55,6 +55,7 @@ declare global {
           | { ok: false; error: string }
         >;
         getPathForFile: (file: File) => string;
+        listMedias: () => Promise<string[]>;
       };
       settings: {
         get: () => Promise<import('@/types/settings').AISettings>;
@@ -229,6 +230,24 @@ declare global {
           projectDir: string,
           data: { script_expert_prompt?: string | null; painting_prompt?: string | null }
         ) => Promise<{ ok: boolean; error?: string }>;
+      };
+      /** 本地 TTS */
+      localTts?: {
+        listModels: () => Promise<{
+          models?: Array<{ id: string; name: string }>;
+        }>;
+        healthCheck: (modelId?: string) => Promise<{
+          ok: boolean;
+          message?: string;
+        }>;
+        run: (payload: {
+          modelId?: string;
+          text: string;
+          options?: Record<string, unknown>;
+        }) => Promise<
+          | { ok: true; audioBase64: string; format: string }
+          | { ok: false; message: string }
+        >;
       };
     };
   }

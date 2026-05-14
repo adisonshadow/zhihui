@@ -1,8 +1,8 @@
 @font-face {
   font-family: "iconfont"; /* Project id 5155951 */
-  src: url('iconfont.woff2?t=1777265186989') format('woff2'),
-       url('iconfont.woff?t=1777265186989') format('woff'),
-       url('iconfont.ttf?t=1777265186989') format('truetype');
+  src: url('iconfont.woff2?t=1778655133964') format('woff2'),
+       url('iconfont.woff?t=1778655133964') format('woff'),
+       url('iconfont.ttf?t=1778655133964') format('truetype');
 }
 
 .iconfont {
@@ -11,6 +11,54 @@
   font-style: normal;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-sound-fill:before {
+  content: "\e865";
+}
+
+.icon-sound:before {
+  content: "\e687";
+}
+
+.icon-Novel:before {
+  content: "\e9a7";
+}
+
+.icon-fenbushi:before {
+  content: "\e995";
+}
+
+.icon-qukuai:before {
+  content: "\e99d";
+}
+
+.icon-quanlingyuguimo:before {
+  content: "\e99e";
+}
+
+.icon-jujijuben:before {
+  content: "\e62a";
+}
+
+.icon-plg-pubuliu:before {
+  content: "\e69b";
+}
+
+.icon-a-02-novel:before {
+  content: "\e683";
+}
+
+.icon-all-application-filled:before {
+  content: "\ea88";
+}
+
+.icon-icon_card_novel:before {
+  content: "\e6ac";
+}
+
+.icon-pubuliu:before {
+  content: "\e647";
 }
 
 .icon-corel-painter:before {

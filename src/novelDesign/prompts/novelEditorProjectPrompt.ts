@@ -31,6 +31,7 @@ export function getNovelEditorProjectPrompt(episodes: NovelEditorPromptEpisodeRo
 
     '【红牌规则】',
     '你在对话区输出的任何文字即使写得再精彩，**也绝不会出现在小说编辑器里**。让正文进入编辑器的唯一方式是在回复中输出一个 novel-body-json 代码块（格式见下方）。没有 novel-body-json 代码块 = 正文完全丢失。',
+    '**禁止在对话文字中对用户提及以下技术实现细节**：novel-body-json、next-suggestion-json、novel_write_payload、工具函数名（如 novel_get_episode、novel_create_episode_and_open 等）、代码块格式说明。这些是内部机制，不要向用户解释。',
 
     '',
 
@@ -68,6 +69,35 @@ export function getNovelEditorProjectPrompt(episodes: NovelEditorPromptEpisodeRo
     '· 局部替换用 novel_replace_content，局部删除用 novel_delete_segment；失败时在对话区说明原因，不改动正文。',
     '· 删除"第N集及之后所有集"时，必须调用 novel_delete_body_episode_range 一次性完成，禁止逐集删除。',
     '· 删除旧集后重写某集，直接用 novel-body-json 写入目标集号，不要先 create 再 write。',
+
+    '',
+
+    '【需要确认时停止】',
+    '· 新增一集前，若最后一集内容为空/仅为大纲/明显不完整（内容过短、大纲条目为主、结尾中断、含"待续""TBD"等），必须先说明：',
+    '  "检测到最后一集[标题]内容可能不是正文或不完整，是否清空并重写？" 等待用户确认后再操作。',
+    '· 涉及清空某集、删除集等破坏性操作时，必须先说明影响并等待用户确认。',
+    '· 如果最后一集状态模糊，保守处理：询问用户。',
+
+    '',
+
+    '【下一步操作建议】',
+    '· 完成正文写入（novel-body-json 代码块闭合且内容已写入编辑器）后，你必须在回复末尾用 ```next-suggestion-json 代码块输出操作建议。',
+    '· 格式：```next-suggestion-json',
+    '         {"next_suggestions":["建议1","建议2",...]}',
+    '         ```',
+    '· 常用建议项（根据上下文选 4~6 条，标签 <30 字）：',
+    '  - 新增一集',
+    '  - 续写当前内容',
+    '  - 重写本集',
+    '  - 润色润稿',
+    '  - 扩写细写',
+    '  - 精简压缩',
+    '  - 优化对白',
+    '  - 加强冲突',
+    '· 示例：',
+    '  ```next-suggestion-json',
+    '  {"next_suggestions":["新增一集","续写当前内容","重写本集","润色润稿","扩写细写"]}',
+    '  ```',
 
     '',
 

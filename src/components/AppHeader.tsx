@@ -4,7 +4,7 @@
  */
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { SettingOutlined, VideoCameraOutlined, CommentOutlined, EditOutlined, FileTextOutlined } from '@ant-design/icons';
+import { SettingOutlined, VideoCameraOutlined, CommentOutlined, EditOutlined, FileTextOutlined, SoundOutlined } from '@ant-design/icons';
 import { useConfigModal } from '@/contexts/ConfigContext';
 import './AppHeader.css';
 
@@ -100,6 +100,21 @@ const AppHeader: React.FC = () => {
                 <CommentOutlined />
               </span>
               <span className="yiman-header-label">AI 对话预览</span>
+            </a>
+          )}
+          {isDevMode && (
+            <a
+              className={`yiman-header-link ${location.pathname === '/localtts-preview' ? 'active' : ''}`}
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                navigate('/localtts-preview');
+              }}
+            >
+              <span className="yiman-header-icon">
+                <SoundOutlined />
+              </span>
+              <span className="yiman-header-label">本地TTS预览</span>
             </a>
           )}
         </nav>
