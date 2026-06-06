@@ -1,24 +1,27 @@
 /**
- * 小说封面 Popover 专用 Function Call（仅挂载在 novel agent，extraFunctionCalls 注入）。
+ * 小说封面 Popover：extraFunctionCalls 注入 novel agent。
+ * 出图走内置 generate_images（注册表实现）；同步候选 URL 到 ref；落盘用 novel_cover_apply_choice。
  */
 import type { MutableRefObject } from 'react';
-import type { AIModelConfig } from '@/types/settings';
 import type { FunctionCallDef } from '@/components/AIChat/utils/functionRegistry';
+import { getFunctionCallDef } from '@/components/AIChat/utils/functionRegistry';
+import { explicitGenerateImagesAspect } from '@/components/AIChat/tools/builtInTools/generate_images/aspectRatioForApi';
 import { NOVEL_OUTLINE_EPISODE_ID, type NovelWorkspaceSnapshot } from '@/novelDesign/storage/novelWorkspaceStorage';
 import { loadNovelList, upsertNovel } from '@/novelDesign/storage/novelListStorage';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
-import { generateFourCoverImages } from '@/novelDesign/AITools/novelCoverImageBatch';
+import { persistNovelCoverForNovel } from '@/novelDesign/utils/novelCoverProjectFiles';
 
 const OUTLINE_MAX = 16000;
+const MAX_COVER_CANDIDATES = 6;
 
 export interface NovelCoverPopoverFcDeps {
   getSnapshot: () => NovelWorkspaceSnapshot | null;
   novelId: string;
-  getImageModel: () => AIModelConfig | null;
-  /** 最近一次「出图」结果，供 choice 落盘 */
   coverCandidatesRef: MutableRefObject<string[]>;
   onCoverSaved: () => void;
   coverCount: number;
+  /** 设置中填写的作者名；有值时强化出图提示须含「作者 xxx」 */
+  coverAuthorName?: string;
 }
 
 function ok<T extends Record<string, unknown>>(x: T) {
@@ -27,6 +30,52 @@ function ok<T extends Record<string, unknown>>(x: T) {
 
 function err(message: string) {
   return { ok: false as const, error: message };
+}
+
+function wrapGenerateImagesForCoverPopover(
+  deps: NovelCoverPopoverFcDeps,
+  n: number,
+): FunctionCallDef {
+  const base = getFunctionCallDef('generate_images');
+  if (!base) {
+    throw new Error('[novelCover] 内置 generate_images 未注册，请确认应用已执行 registerGenerateImagesTool');
+  }
+  const coverAuthor = (deps.coverAuthorName ?? '').trim();
+  const authorNote =
+    coverAuthor ?
+      ` 每条 prompt 还须明确要求画面上有清晰可读的文字「作者 ${coverAuthor}」，与书名版式协调；勿改写署名。`
+    : '';
+  const coverNote =
+    `\n【封面助手】须 aspectRatio: "1:1"；prompts 须恰好 ${n} 条（与当前设置的候选张数一致，至多 ${MAX_COVER_CANDIDATES}）。${authorNote}`;
+
+  return {
+    ...base,
+    scope: { type: 'agent', agentKey: 'novel' },
+    description: `${base.description}${coverNote}`,
+    senderLabel: '封面候选出图',
+    handler: async (args: Record<string, unknown>) => {
+      const prompts = Array.isArray(args.prompts)
+        ? (args.prompts as unknown[]).map((s) => String(s ?? '').trim()).filter(Boolean)
+        : [];
+      if (prompts.length !== n) {
+        return err(`封面出图须传入恰好 ${n} 条非空 prompts（当前 ${prompts.length} 条）`);
+      }
+      if (explicitGenerateImagesAspect(args.aspectRatio) !== '1:1') {
+        return err('封面出图须显式传入 aspectRatio: "1:1"');
+      }
+      const out = (await base.handler(args as never)) as {
+        ok?: boolean;
+        images?: string[];
+        errors?: string[];
+        summary?: string;
+        error?: string;
+      };
+      if (out?.ok === true && Array.isArray(out.images)) {
+        deps.coverCandidatesRef.current = out.images.filter(Boolean);
+      }
+      return out;
+    },
+  };
 }
 
 export function buildNovelCoverPopoverFunctionCalls(deps: NovelCoverPopoverFcDeps): FunctionCallDef[] {
@@ -48,68 +97,55 @@ export function buildNovelCoverPopoverFunctionCalls(deps: NovelCoverPopoverFcDep
     },
   };
 
-  const n = deps.coverCount;
-
-  const coverMutate: FunctionCallDef = {
-    name: 'novel_cover_generate_or_apply',
-    description: `封面专用二合一工具：① 传入恰好 ${n} 条英文或中文出图提示词，依次调用绘图模型生成 ${n} 张候选并返回预览信息；② 用户在对话里声明选择第几张后，仅传入 choice（1–${n}）将对应图写入小说封面。`,
+  const n = Math.min(Math.max(1, deps.coverCount), MAX_COVER_CANDIDATES);
+  const applyChoice: FunctionCallDef = {
+    name: 'novel_cover_apply_choice',
+    description: `用户已明确选定第几张封面（1–${n}）时调用：将本会话最近一次「封面候选出图」（generate_images）得到的第 N 张图写入当前小说封面。仅在用户确认后调用；不要与出图参数混用。`,
     parameters: {
       type: 'object',
       properties: {
-        prompts: {
-          type: 'array',
-          items: { type: 'string' },
-          minItems: n,
-          maxItems: n,
-          description: `${n} 条出图提示词，需与小说气质一致；与 choice 互斥。`,
-        },
         choice: {
           type: 'integer',
           minimum: 1,
           maximum: n,
-          description: `用户确认的第 N 张候选；与 prompts 互斥。`,
+          description: `候选序号 1–${n}，与上一轮出图张数一致`,
         },
       },
+      required: ['choice'],
       additionalProperties: false,
     },
     scope: { type: 'agent', agentKey: 'novel' },
-    senderLabel: '封面出图/落盘',
-    handler: async (args: { prompts?: string[]; choice?: number }) => {
-      const hasChoice = typeof args.choice === 'number' && Number.isFinite(args.choice);
-      const prompts = Array.isArray(args.prompts) ? args.prompts.map((s) => String(s ?? '').trim()) : [];
-
-      if (hasChoice) {
-        const c = Math.floor(Number(args.choice));
-        if (c < 1 || c > n) return err(`choice 须在 1–${n}`);
-        const urls = deps.coverCandidatesRef.current;
-        const url = urls[c - 1];
-        if (!url) return err(`尚未生成候选图或所选序号无图，请先调用本工具传入 ${n} 条 prompts`);
-        const list = loadNovelList();
-        const item = list.find((x) => x.id === deps.novelId);
-        if (!item) return err('小说列表中找不到该作品');
-        const now = new Date().toISOString();
-        const next: NovelWorkspaceItem = { ...item, coverDataUrl: url, updatedAt: now };
-        upsertNovel(next);
-        deps.onCoverSaved();
-        deps.coverCandidatesRef.current = [];
-        return ok({ applied: true, choice: c, message: '封面已更新到列表与数据库。' });
+    senderLabel: '封面选定落盘',
+    handler: async (args: { choice?: number }) => {
+      const cRaw = args.choice;
+      if (typeof cRaw !== 'number' || !Number.isFinite(cRaw)) {
+        return err('须传入整数 choice');
       }
-
-      if (prompts.length !== n) return err(`生成候选时必须传入恰好 ${n} 条 prompts`);
-      const model = deps.getImageModel();
-      const { urls, errors } = await generateFourCoverImages(model, prompts);
-      deps.coverCandidatesRef.current = urls.filter(Boolean);
-      // 不要将 base64 图片数据放进 tool result，避免回传给 LLM 撑爆上下文
-      // 图片通过 coverCandidatesRef 传递给 sidePanelAssistantContentRender 展示
-      const candidateCount = urls.filter(Boolean).length;
-      const md = `已生成 ${candidateCount} 张候选封面。请用户回复「选第 N 个」或「第 N 张」后，你再调用同一工具并只传 choice=1~${n}。`;
-      return ok({
-        markdownForAssistant: md,
-        candidateCount,
-        errors: errors.length ? errors : undefined,
-      });
+      const c = Math.floor(cRaw);
+      if (c < 1 || c > n) return err(`choice 须在 1–${n}`);
+      const urls = deps.coverCandidatesRef.current;
+      const url = urls[c - 1];
+      if (!url) {
+        return err(`尚未有可用候选图或所选序号无图，请先调用 generate_images 完成 ${n} 张 1:1 出图`);
+      }
+      const list = loadNovelList();
+      const item = list.find((x) => x.id === deps.novelId);
+      if (!item) return err('小说列表中找不到该作品');
+      const now = new Date().toISOString();
+      const saved = await persistNovelCoverForNovel(deps.novelId, url);
+      const next: NovelWorkspaceItem = { ...item, coverDataUrl: saved.coverDataUrl, updatedAt: now };
+      upsertNovel(next);
+      deps.onCoverSaved();
+      deps.coverCandidatesRef.current = [];
+      const diskHint =
+        saved.savedToProjectDir && saved.projectCoverPath ?
+          `已保存到项目目录：${saved.projectCoverPath}`
+        : '已缓存封面（未配置项目目录时无法写入项目文件夹，请从「创建小说项目」选择存储路径）';
+      return ok({ applied: true, choice: c, message: diskHint });
     },
   };
 
-  return [readOutline, coverMutate];
+  const generateForCover = wrapGenerateImagesForCoverPopover(deps, n);
+
+  return [readOutline, generateForCover, applyChoice];
 }

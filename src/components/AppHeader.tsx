@@ -4,12 +4,9 @@
  */
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { SettingOutlined, VideoCameraOutlined, CommentOutlined, EditOutlined, FileTextOutlined, SoundOutlined } from '@ant-design/icons';
+import { SoundOutlined } from '@ant-design/icons';
 import { useConfigModal } from '@/contexts/ConfigContext';
 import './AppHeader.css';
-
-/** 开发模式：显示 AI 对话预览入口 */
-const isDevMode = import.meta.env.DEV;
 
 const AppHeader: React.FC = () => {
   const navigate = useNavigate();
@@ -19,17 +16,26 @@ const AppHeader: React.FC = () => {
   const isImageEditor = location.pathname === '/image-editor';
   const isScreenwriterDraw = location.pathname === '/screenwriter/draw';
   const isScreenwriterNovelWorkspace = /^\/screenwriter\/novel\/[^/]+$/.test(location.pathname);
-  if (isProjectEditor || isImageEditor || isScreenwriterDraw || isScreenwriterNovelWorkspace) return null;
+  const isAudiobookNovelWorkspace = /^\/audiobook\/novel\/[^/]+$/.test(location.pathname);
+  const isMusicDesign = location.pathname === '/music-design';
+  const isAudioRecorder = location.pathname === '/audio-recorder';
+  if (
+    isProjectEditor ||
+    isImageEditor ||
+    isScreenwriterDraw ||
+    isScreenwriterNovelWorkspace ||
+    isAudiobookNovelWorkspace ||
+    isMusicDesign ||
+    isAudioRecorder
+  ) {
+    return null;
+  }
 
   return (
     <div className="yiman-header">
       <div className="yiman-header-inner">
         <div
           className="yiman-header-brand"
-          onClick={() => navigate('/')}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && navigate('/')}
         >
           <img className="yiman-header-logo" src="/logo.png" alt="芝绘" />
           <span className="yiman-header-title">芝绘</span>
@@ -44,9 +50,11 @@ const AppHeader: React.FC = () => {
             }}
           >
             <span className="yiman-header-icon">
-              <FileTextOutlined />
+              <svg className="font-svg-icon" aria-hidden="true">
+                <use xlinkHref="#icon-notebook"></use>
+              </svg>
             </span>
-            <span className="yiman-header-label">小说编剧</span>
+            <span className="yiman-header-label">小说</span>
           </a>
           <a
             className={`yiman-header-link ${location.pathname === '/' ? 'active' : ''}`}
@@ -57,22 +65,41 @@ const AppHeader: React.FC = () => {
             }}
           >
             <span className="yiman-header-icon">
-              <VideoCameraOutlined />
+              <svg className="font-svg-icon" aria-hidden="true">
+                <use xlinkHref="#icon-tv"></use>
+              </svg>
             </span>
-            <span className="yiman-header-label">漫剧项目</span>
+            <span className="yiman-header-label">漫剧</span>
           </a>
           <a
-            className={`yiman-header-link ${location.pathname === '/image-editor' ? 'active' : ''}`}
+            className={`yiman-header-link ${location.pathname.startsWith('/audiobook') ? 'active' : ''}`}
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              navigate('/image-editor');
+              navigate('/audiobook');
             }}
           >
             <span className="yiman-header-icon">
-              <EditOutlined />
+              <svg className="font-svg-icon" aria-hidden="true">
+                <use xlinkHref="#icon-microphone"></use>
+              </svg>
             </span>
-            <span className="yiman-header-label">图片编辑</span>
+            <span className="yiman-header-label">有声书</span>
+          </a>
+          <a
+            className={`yiman-header-link ${location.pathname.startsWith('/toolbox') ? 'active' : ''}`}
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              navigate('/toolbox');
+            }}
+          >
+            <span className="yiman-header-icon">
+              <svg className="font-svg-icon" aria-hidden="true">
+                <use xlinkHref="#icon-helmet"></use>
+              </svg>
+            </span>
+            <span className="yiman-header-label">工具</span>
           </a>
           <a
             className={`yiman-header-link ${location.pathname === '/settings' ? 'active' : ''}`}
@@ -83,40 +110,12 @@ const AppHeader: React.FC = () => {
             }}
           >
             <span className="yiman-header-icon">
-              <SettingOutlined />
+              <svg className="font-svg-icon" aria-hidden="true">
+                <use xlinkHref="#icon-setting"></use>
+              </svg>
             </span>
             <span className="yiman-header-label">设置</span>
           </a>
-          {isDevMode && (
-            <a
-              className={`yiman-header-link ${location.pathname === '/aichat-preview' ? 'active' : ''}`}
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                navigate('/aichat-preview');
-              }}
-            >
-              <span className="yiman-header-icon">
-                <CommentOutlined />
-              </span>
-              <span className="yiman-header-label">AI 对话预览</span>
-            </a>
-          )}
-          {isDevMode && (
-            <a
-              className={`yiman-header-link ${location.pathname === '/localtts-preview' ? 'active' : ''}`}
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                navigate('/localtts-preview');
-              }}
-            >
-              <span className="yiman-header-icon">
-                <SoundOutlined />
-              </span>
-              <span className="yiman-header-label">本地TTS预览</span>
-            </a>
-          )}
         </nav>
       </div>
     </div>

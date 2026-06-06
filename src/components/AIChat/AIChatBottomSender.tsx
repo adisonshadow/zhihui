@@ -1,5 +1,6 @@
 /**
- * AI 对话 - 仅底部 Sender 条（无对话列表、无顶栏），用于嵌入画布底部等分镜
+ * AI 对话 - 仅底部 Sender 条（无对话列表、无顶栏），用于嵌入画布底部等分镜。
+ * 整条相对于视口 position: fixed；bottom: 0；内容区 maxWidth 居中（与预览页主栏宽度对齐）。
  */
 import type { ReactNode } from 'react';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
@@ -47,17 +48,33 @@ export function AIChatBottomSender({
   return (
     <div
       style={{
-        position: 'sticky',
+        position: 'fixed',
         bottom: 0,
+        left: 0,
+        right: 0,
         zIndex: 30,
-        flexShrink: 0,
-        marginTop: 'auto',
-        borderTop: '1px solid rgba(255,255,255,0.10)',
-        background: 'var(--ant-color-bg-layout)',
-        boxShadow: '0 -10px 28px rgba(0,0,0,0.45)',
-        padding: '10px 16px 12px',
+        display: 'flex',
+        justifyContent: 'center',
+        boxSizing: 'border-box',
+        paddingLeft: 24,
+        paddingRight: 24,
+        paddingBottom: 'max(12px, env(safe-area-inset-bottom, 0px))',
       }}
+      className='aichat-bottom-sender-container'
     >
+      <div
+        style={{
+          width: '100%',
+          maxWidth: 960,
+          flexShrink: 0,
+          borderTop: '6px solid rgba(33, 37, 241, 0.93)',
+          borderRadius: '10px 10px 0 0',
+          background: 'var(--ant-color-bg-layout)',
+          boxShadow: '0 -10px 28px rgba(0,0,0,0.45)',
+          padding: '10px 16px 12px',
+          boxSizing: 'border-box',
+        }}
+      >
       {aboveSender}
       {missingHint && (
         <div style={{ fontSize: 12, color: 'rgba(255,100,100,0.9)', marginBottom: 6 }}>{missingHint}</div>
@@ -66,8 +83,15 @@ export function AIChatBottomSender({
         <Sender
           key={`${agentKey}-${composerNonce}`}
           ref={senderRef}
+          style={{
+            backgroundColor: '#37373d',
+          }}
           {...(composerDefaultText != null ? { defaultValue: composerDefaultText } : {})}
-          slotConfig={senderSlotConfig as readonly SlotConfigType[]}
+          slotConfig={
+            senderSkill || (senderSlotConfig?.length ?? 0) > 0
+              ? (senderSlotConfig as readonly SlotConfigType[])
+              : undefined
+          }
           skill={senderSkill}
           header={senderHeader}
           loading={isRequesting}
@@ -148,6 +172,7 @@ export function AIChatBottomSender({
           suffix={false}
         />
       </Flex>
+      </div>
     </div>
   );
 }

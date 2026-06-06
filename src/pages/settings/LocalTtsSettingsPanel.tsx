@@ -15,13 +15,16 @@ const { Text } = Typography;
 
 const AI_VALIDATE_URL = 'http://127.0.0.1:19815/api/v1/tts/validate-profile';
 
+function profileHasMossTokenizer(key: string): boolean {
+  return key === 'moss_tts' || key === 'moss_tts_nano';
+}
+
 function emptyProfiles(): Record<string, LocalTtsModelProfile> {
   const o: Record<string, LocalTtsModelProfile> = {};
   for (const m of LOCAL_TTS_MODEL_OPTIONS) {
-    o[m.key] =
-      m.key === 'moss_tts'
-        ? { modelPath: '', idleTimeoutMinutes: 3, mossAudioTokenizerPath: '' }
-        : { modelPath: '', idleTimeoutMinutes: 3 };
+    o[m.key] = profileHasMossTokenizer(m.key)
+      ? { modelPath: '', idleTimeoutMinutes: 3, mossAudioTokenizerPath: '' }
+      : { modelPath: '', idleTimeoutMinutes: 3 };
   }
   return o;
 }
@@ -79,7 +82,7 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
       profiles[k] = {
         modelPath: p.modelPath ?? '',
         idleTimeoutMinutes: p.idleTimeoutMinutes ?? 3,
-        ...(k === 'moss_tts' || k === 'moss_tts_local_mlx'
+        ...(profileHasMossTokenizer(k) || k === 'moss_tts_local_mlx'
           ? { mossAudioTokenizerPath: p.mossAudioTokenizerPath ?? '' }
           : {}),
       };
@@ -169,7 +172,7 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
               modelPath: (p.modelPath ?? '').trim(),
               idleTimeoutMinutes: Number(p.idleTimeoutMinutes ?? 3),
             };
-            if (m.key === 'moss_tts') {
+            if (profileHasMossTokenizer(m.key)) {
               const tx = (p.mossAudioTokenizerPath ?? '').trim();
               if (tx) base.mossAudioTokenizerPath = tx;
             }
@@ -238,6 +241,42 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
             extra="查看https://modelscope.cn/search?page=1&search=MOSS-Audio-Tokenizer&type=model，选择 MOSS 模型对应的版本并下载到本地的目录；留空则自动在主模型目录下查找 moss_audio_tokenizer 等子目录。"
           >
             <DirPickerField />
+          </Form.Item>
+          <Form.Item
+            name={['profiles', 'moss_tts', 'idleTimeoutMinutes']}
+            label="空闲超时（分钟）"
+            extra="MOSS 常驻进程无请求后退出；0 表示永不超时。默认 3。"
+            rules={[{ required: modelKey === 'moss_tts', type: 'number' }]}
+            getValueProps={(v) => ({ value: v ?? 3 })}
+          >
+            <InputNumber min={0} max={120} style={{ width: 120 }} />
+          </Form.Item>
+        </div>
+
+        <div style={{ display: modelKey === 'moss_tts_nano' ? 'block' : 'none' }}>
+          <Form.Item
+            name={['profiles', 'moss_tts_nano', 'modelPath']}
+            label="MOSS-TTS-Nano 模型目录"
+            rules={[{ required: modelKey === 'moss_tts_nano', message: '请输入模型目录' }]}
+            extra="可填 ModelScope 下载根目录（如 …/MOSS-TTS-Nano）；须另有 MLX 子目录或单独下载 Hugging Face：mlx-community/MOSS-TTS-Nano-100M（含 model.safetensors）。仅 pytorch_model.bin 的原版包无法用于本地合成。"
+          >
+            <DirPickerField />
+          </Form.Item>
+          <Form.Item
+            name={['profiles', 'moss_tts_nano', 'mossAudioTokenizerPath']}
+            label="MOSS-Audio-Tokenizer-Nano 目录（可选）"
+            extra="https://modelscope.cn/models/openmoss/MOSS-Audio-Tokenizer-Nano；留空则自动在主模型目录下查找 audio_tokenizer 等子目录。"
+          >
+            <DirPickerField />
+          </Form.Item>
+          <Form.Item
+            name={['profiles', 'moss_tts_nano', 'idleTimeoutMinutes']}
+            label="空闲超时（分钟）"
+            extra="Nano 常驻进程无请求后退出；0 表示永不超时。默认 3。"
+            rules={[{ required: modelKey === 'moss_tts_nano', type: 'number' }]}
+            getValueProps={(v) => ({ value: v ?? 3 })}
+          >
+            <InputNumber min={0} max={120} style={{ width: 120 }} />
           </Form.Item>
         </div>
 

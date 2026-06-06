@@ -26,7 +26,8 @@ const TOOL_CHINESE_MAP: Record<string, string> = {
   novel_update_outline: '更新大纲',
   novel_rename_novel: '改书名',
   novel_get_story_outline: '读取故事大纲',
-  novel_cover_generate_or_apply: '封面出图/落盘',
+  novel_cover_apply_choice: '封面选定落盘',
+  generate_images: '生成图片',
 };
 
 function chineseLabel(name: string): string {
@@ -62,13 +63,11 @@ function parseToolResult(raw: string): { ok: boolean | null; summary: string } |
 export interface NovelEditorThoughtChainProps {
   toolCallNames: string[];
   toolResultContents: string[];
-  streaming?: boolean;
 }
 
 export function NovelEditorThoughtChain({
   toolCallNames,
   toolResultContents,
-  streaming,
 }: NovelEditorThoughtChainProps) {
   const items: ThoughtChainItemType[] = useMemo(() => {
     const result: ThoughtChainItemType[] = [];
@@ -78,7 +77,8 @@ export function NovelEditorThoughtChain({
       const label = chineseLabel(name);
       const rawContent = toolResultContents[i] ?? '';
       const parsed = parseToolResult(rawContent);
-      const pending = !rawContent || streaming;
+      // 已有 tool 回包则视为工具阶段结束；勿因同条 assistant 仍在流式续写而一直显示「处理中」
+      const pending = !rawContent.trim();
 
       let status: ThoughtChainItemType['status'];
       if (pending) {
@@ -100,7 +100,7 @@ export function NovelEditorThoughtChain({
     }
 
     return result;
-  }, [toolCallNames, toolResultContents, streaming]);
+  }, [toolCallNames, toolResultContents]);
 
   if (items.length === 0) return null;
 

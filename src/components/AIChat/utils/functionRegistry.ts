@@ -47,6 +47,11 @@ export function unregisterFunctionCall(name: string): void {
   _registry.delete(name);
 }
 
+/** 读取已注册定义（用于业务侧包装内置 tool 等，读到的 handler 为注册表中的原始实现） */
+export function getFunctionCallDef(name: string): FunctionCallDef | undefined {
+  return _registry.get(name);
+}
+
 /**
  * 获取指定 Agent 可用的所有 Function Call（包含 orchestrator 作用域）。
  * 用于在请求模型时附带 tools 列表。

@@ -10,7 +10,10 @@ export function applyRefIndicatorUserChoicePrefix(
   const trimmed = (message ?? '').trim();
   if (!refIndicator.length) return trimmed;
   const parts = refIndicator.map((item) =>
-    String(item.description ?? '').replace(/%f/g, String(item.content ?? ''))
+    String(item.description ?? '').replace(
+      /%f/g,
+      String(item.aiSummary ?? item.content ?? ''),
+    ),
   );
   const summary = parts.join(' \n');
   return `用户选择了：${summary}\n\n${trimmed}`;

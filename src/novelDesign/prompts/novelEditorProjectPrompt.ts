@@ -66,7 +66,8 @@ export function getNovelEditorProjectPrompt(episodes: NovelEditorPromptEpisodeRo
     '【通用规则】',
     '· 写作前必须参考故事大纲——如果不在上下文里，先用 novel_get_episode(__story_outline__) 读取。',
     '· 故事大纲永远名为"故事大纲"，禁止对其调用 novel_rename_episode。',
-    '· 局部替换用 novel_replace_content，局部删除用 novel_delete_segment；失败时在对话区说明原因，不改动正文。',
+    '· **故事大纲正文**（书中设定、卷纲、人物备忘、世界观条等）若只需改个别词句或片段，须用 novel_replace_content（episode_id 与读取大纲时一致，即 __story_outline__）；不要用 novel-body-json 整集替换故事大纲，除非用户明确要求重写整份大纲。',
+    '· 其它正文集局部替换仍用 novel_replace_content；局部删除用 novel_delete_segment；失败时在对话区说明原因，不改动正文。',
     '· 删除"第N集及之后所有集"时，必须调用 novel_delete_body_episode_range 一次性完成，禁止逐集删除。',
     '· 删除旧集后重写某集，直接用 novel-body-json 写入目标集号，不要先 create 再 write。',
 
@@ -112,7 +113,14 @@ export function getNovelEditorProjectPrompt(episodes: NovelEditorPromptEpisodeRo
     '· 结构操作：novel_create_episode / novel_delete_episode / novel_delete_body_episode_range / novel_rename_episode / novel_reorder_episode / novel_split_episode / novel_merge_episodes',
     '· 导航查询：novel_list_episodes / novel_get_episode / novel_body_episode_exists / novel_open_body_episode',
     '· 局部编辑：novel_replace_content / novel_delete_segment',
-    '· 大纲：novel_get_episode(__story_outline__) / novel_update_outline',
-    '· 小说信息：novel_rename_novel',
+    '· 大纲：novel_get_episode(__story_outline__) / novel_update_outline（整块覆盖或末尾追加）；大纲内局部字句 → novel_replace_content（episode_id=__story_outline__）',
+    '· 小说信息：novel_rename_novel（会同步替换故事大纲 Markdown 中的旧书名常见写法；个案仍可用 novel_replace_content 精修）',
+    '',
+    '【结构化剧本区（Script.ts）】',
+    '· 故事大纲页：编辑全书顶层 Script 元数据与角色（novel_script_update_meta / novel_script_upsert_character 等），不维护 Script.episodes[]。',
+    '· 正文集：剧本为结构化分场（每场底层 1 个镜头，UI 不展示镜头层）；写入用 novel_script_add_scene、novel_script_set_shot、novel_script_upsert_dialogue 等，勿用 Markdown 写入剧本栏。',
+    '· 每场应填写：staging、description（画面动作，勿把对白塞这里）、dialogues 数组（character_id/speaker + text/line，小说中的对话须逐条落入对白区）、sound。',
+    '· 章转剧本：对当前正文集调用 novel_script_add_scene（或 novel_script_replace_episode），每场 shots 长度应为 1；改编不得修改小说正文 contentMarkdown。',
+    '· 界面：novel_script_set_middle_view 可切换 novel / both / script 视图。',
   ].join('\n');
 }

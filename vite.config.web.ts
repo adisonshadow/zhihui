@@ -19,6 +19,17 @@ export default defineConfig({
   },
   resolve: {
     alias: { '@': path.join(__dirname, 'src') },
+    dedupe: [
+      '@codemirror/state',
+      '@codemirror/view',
+      '@codemirror/language',
+      '@codemirror/commands',
+      '@codemirror/autocomplete',
+      '@codemirror/search',
+      '@codemirror/lint',
+      '@lezer/common',
+      '@lezer/highlight',
+    ],
   },
   plugins: [react()],
 });

@@ -10,6 +10,10 @@ import { LinkOutlined } from '@ant-design/icons';
 import { Bubble, Sender, Attachments, Prompts } from '@ant-design/x';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
 import { parseDrawerContent } from './utils/drawerContentRender';
+import { computePendingGenerateImagesBubbleExtra } from './tools/builtInTools/generate_images/bubblePendingMeta';
+import { extractImageUrlsFromToolMessageContent } from './tools/builtInTools/generate_images/toolResultParse';
+import { computePendingGenerateVideoBubbleExtra } from './tools/builtInTools/generate_video/bubblePendingMeta';
+import { extractVideoUrlFromToolMessageContent } from './tools/builtInTools/generate_video/toolResultParse';
 import { useXChat } from '@ant-design/x-sdk';
 import { createImagesGenerationProvider } from './providers/imagesProviderFactory';
 import { ReasoningChatProvider } from './providers/ReasoningChatProvider';
@@ -25,7 +29,13 @@ import {
   mergeFunctionCallDefs,
   toOpenAITools,
 } from './utils/functionRegistry';
-import type { PromptTemplateDef, RegisterableSenderSlot, TemplateSlotValue } from './registryTypes';
+import type {
+  PromptTemplateDef,
+  RegisterableSenderSlot,
+  TemplateSlotValue,
+  ExposedMultimodalAgentDecl,
+  A2UIConfig,
+} from './registryTypes';
 import { renderPromptTemplate } from './registryTypes';
 import {
   getDrawerBasePrompt,
@@ -58,8 +68,20 @@ function buildProvider(
   return new ReasoningChatProvider(modelConfig, enableReasoning);
 }
 
+// ── 新架构：TaskID 生成器 ──
+let _taskIdCounter = 0;
+/** 生成唯一 TaskID（方案 §1.4） */
+export function generateTaskID(): string {
+  _taskIdCounter += 1;
+  const ts = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `task_${ts}_${rand}_${_taskIdCounter}`;
+}
+
 const CONV_STORAGE_PREFIX = 'yiman:aichat:conversations:';
 const MODEL_PICK_PREFIX = 'yiman:aichat:modelPick:';
+/** 跨 Agent / 工作台共享的最近一次模型选择 */
+const MODEL_PICK_GLOBAL_KEY = `${MODEL_PICK_PREFIX}global`;
 const EMPTY_CONTEXT_BLOCKS: Array<{ label: string; content: string }> = [];
 const EMPTY_CONTEXT_TAGS: AIChatContextTag[] = [];
 const EMPTY_EXTRA_SENDER_SLOTS: SlotConfigType[] = [];
@@ -135,14 +157,26 @@ interface ConversationItem {
   titleUserLocked?: boolean;
 }
 
+function coerceConversationLastActive(raw: unknown, conversationKey: string): number {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  const m = String(conversationKey ?? '').match(/^conv_(\d+)$/);
+  if (m) {
+    const k = Number(m[1]);
+    if (Number.isFinite(k) && k >= 0) return k;
+  }
+  return 0;
+}
+
 function normalizeLoadedConversation(raw: ConversationItem): ConversationItem {
-  const m = raw.key?.match?.(/^conv_(\d+)$/);
-  const lastActive = raw.lastActive ?? (m ? parseInt(m[1], 10) : 0);
   return {
     ...raw,
     pinned: !!(raw as { pinned?: boolean }).pinned,
     titleUserLocked: !!(raw as { titleUserLocked?: boolean }).titleUserLocked,
-    lastActive,
+    lastActive: coerceConversationLastActive((raw as { lastActive?: unknown }).lastActive, raw.key ?? ''),
   };
 }
 
@@ -210,17 +244,112 @@ function stringifyMessageContent(raw: unknown): string {
   }
 }
 
+/**
+ * 某条 assistant（含 tool_calls）在完整 SDK 列表中，其后直到下一则 user/assistant 之前的连续 tool 消息正文。
+ * Bubble 列表会过滤隐藏大部分 tool 行，`conversationBubbleSnapshot` 中不存在这些行，须用本函数取回包供 ThoughtChain 等。
+ */
+function extractToolChainResultContentsAfterAssistant(
+  sdkList: Array<{ id: string | number; message?: { role?: string; content?: unknown } }>,
+  assistantMsgId: string | number,
+): string[] {
+  const idx = sdkList.findIndex((r) => r.id === assistantMsgId);
+  if (idx < 0) return [];
+  const out: string[] = [];
+  for (let i = idx + 1; i < sdkList.length; i++) {
+    const row = sdkList[i];
+    if (row?.message?.role === 'tool') {
+      out.push(stringifyMessageContent(row.message.content));
+    } else if (row?.message?.role === 'assistant' || row?.message?.role === 'user') {
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * 从 SDK 消息列表中扫描当前 assistant 消息之前的 tool 结果，提取其中的图片 URL。
+ * 用于在 tool 气泡隐藏后，将 generate_images 产出的图片展示在后续 assistant 气泡中。
+ */
+function extractToolResultImages(
+  sdkList: Array<{ id: string | number; message?: { role?: string; content?: unknown } }>,
+  currentMsgId: string | number,
+): string[] | undefined {
+  let currentIdx = -1;
+  for (let i = 0; i < sdkList.length; i++) {
+    if (sdkList[i].id === currentMsgId) {
+      currentIdx = i;
+      break;
+    }
+  }
+  if (currentIdx < 0) return undefined;
+
+  const results: string[] = [];
+  for (let i = currentIdx - 1; i >= 0; i--) {
+    const row = sdkList[i];
+    if (row?.message?.role === 'tool') {
+      const raw = stringifyMessageContent(row.message.content);
+      const urls = extractImageUrlsFromToolMessageContent(raw);
+      results.push(...urls);
+    } else if (row?.message?.role === 'assistant' || row?.message?.role === 'user') {
+      break; // 越过非 tool 消息边界即停止
+    }
+  }
+
+  return results.length > 0 ? [...new Set(results)] : undefined;
+}
+
+/**
+ * 从 SDK 消息列表中扫描当前 assistant 消息之前的 tool 结果，提取其中的视频 URL（generate_video）。
+ */
+function extractToolResultVideoUrl(
+  sdkList: Array<{ id: string | number; message?: { role?: string; content?: unknown } }>,
+  currentMsgId: string | number,
+): string | undefined {
+  let currentIdx = -1;
+  for (let i = 0; i < sdkList.length; i++) {
+    if (sdkList[i].id === currentMsgId) {
+      currentIdx = i;
+      break;
+    }
+  }
+  if (currentIdx < 0) return undefined;
+
+  for (let i = currentIdx - 1; i >= 0; i--) {
+    const row = sdkList[i];
+    if (row?.message?.role === 'tool') {
+      const raw = stringifyMessageContent(row.message.content);
+      const u = extractVideoUrlFromToolMessageContent(raw).trim();
+      if (u) return u;
+    } else if (row?.message?.role === 'assistant' || row?.message?.role === 'user') {
+      break;
+    }
+  }
+  return undefined;
+}
+
+/** DeepSeek/Volc thinking：下一请求需在 assistant 消息中回传上一轮流式积累的 reasoning_content（见 DeepSeek 「Thinking Mode」文档） */
+function reasoningContentForReplay(
+  echo: boolean | undefined,
+  reasoningContent: unknown
+): string | undefined {
+  if (!echo || typeof reasoningContent !== 'string' || reasoningContent.length === 0) return undefined;
+  return reasoningContent;
+}
+
 /** 映射到 OpenAI Chat Completions 单条消息（assistant 带 tool_calls、tool role） */
-function mapSdkMessageRowToChatApiPayload(m: {
-  message?: {
-    role?: string;
-    content?: unknown;
-    reasoningContent?: unknown;
-    toolCalls?: Array<{ id: string; name: string; arguments: string }>;
-    toolCallId?: string;
-  };
-  status?: string;
-}): Record<string, unknown> | null {
+function mapSdkMessageRowToChatApiPayload(
+  m: {
+    message?: {
+      role?: string;
+      content?: unknown;
+      reasoningContent?: unknown;
+      toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+      toolCallId?: string;
+    };
+    status?: string;
+  },
+  opts?: { echoReasoning?: boolean },
+): Record<string, unknown> | null {
   const role = m.message?.role;
   if (!role || role === 'system') return null;
   if (role === 'tool') {
@@ -232,6 +361,7 @@ function mapSdkMessageRowToChatApiPayload(m: {
     };
   }
   const contentPlain = stringifyMessageContent(m.message?.content);
+  const reasoningReplay = reasoningContentForReplay(opts?.echoReasoning, m.message?.reasoningContent);
   if (role === 'assistant') {
     const tc = (m.message as { toolCalls?: Array<{ id: string; name: string; arguments: string }> }).toolCalls;
     if (tc?.length) {
@@ -248,8 +378,12 @@ function mapSdkMessageRowToChatApiPayload(m: {
       };
       if (contentPlain.trim()) row.content = contentPlain;
       else row.content = null;
+      if (reasoningReplay !== undefined) row.reasoning_content = reasoningReplay;
       return row;
     }
+    const row: Record<string, unknown> = { role: 'assistant', content: contentPlain };
+    if (reasoningReplay !== undefined) row.reasoning_content = reasoningReplay;
+    return row;
   }
   return { role, content: contentPlain };
 }
@@ -285,6 +419,64 @@ function persistedMessagesEqual(
   return JSON.stringify(persisted ?? []) === JSON.stringify(next);
 }
 
+/** 规整 tool arguments，避免 hydrate 后与 localStorage JSON 字面量略有差异误判为会话更新 */
+function canonicalToolArgumentsForCompare(argumentsStr: unknown): string {
+  const raw = typeof argumentsStr === 'string' ? argumentsStr.trim() : String(argumentsStr ?? '');
+  try {
+    return JSON.stringify(JSON.parse(raw === '' ? '{}' : raw));
+  } catch {
+    return raw;
+  }
+}
+
+function canonicalToolCallsForCompare(
+  tc?: Array<{ id: string; name: string; arguments: string }>
+): string {
+  if (!tc?.length) return '';
+  return tc
+    .map((x) => {
+      const id = String(x.id ?? '');
+      const name = String(x.name ?? '');
+      return `${id}\x00${name}\x00${canonicalToolArgumentsForCompare(x.arguments)}`;
+    })
+    .join('\x1e');
+}
+
+/** 若为合法 JSON，按 parse 后再 stringify；否则仅 trimEnd，减少对「实质相同表述」的假差异 */
+function canonicalStoredPlainContent(content: string): string {
+  try {
+    return JSON.stringify(JSON.parse(content));
+  } catch {
+    return content.trimEnd();
+  }
+}
+
+function storedMessageSemanticsEqual(
+  a: ConversationItem['messages'][number],
+  b: ConversationItem['messages'][number]
+): boolean {
+  if (a.role !== b.role) return false;
+  if ((a.toolCallId ?? '').trim() !== (b.toolCallId ?? '').trim()) return false;
+  const ra = (a.reasoningContent ?? '').trimEnd();
+  const rb = (b.reasoningContent ?? '').trimEnd();
+  if (ra !== rb) return false;
+  if (canonicalStoredPlainContent(a.content) !== canonicalStoredPlainContent(b.content)) return false;
+  return canonicalToolCallsForCompare(a.toolCalls) === canonicalToolCallsForCompare(b.toolCalls);
+}
+
+/** 与 persistedMessagesEqual 相比更宽松：语义相同则不刷新会话列表的排序时间戳 */
+function conversationMessagesSemanticsEqual(
+  prev: ConversationItem['messages'] | undefined,
+  next: ConversationItem['messages']
+): boolean {
+  const p = prev ?? [];
+  if (p.length !== next.length) return false;
+  for (let i = 0; i < p.length; i++) {
+    if (!storedMessageSemanticsEqual(p[i], next[i])) return false;
+  }
+  return true;
+}
+
 function toXChatMessages(messages: ConversationItem['messages']) {
   return messages.map((m, i) => ({
     id: `msg_${i}`,
@@ -308,9 +500,42 @@ function extractSenderPlainText(raw: unknown): string {
   return '';
 }
 
+/** 项目级提示拆段（与有声书工作台 `buildNovelAudiobookProjectPromptParts` 同形） */
+export type AIProjectPromptParts = {
+  displayContent?: string;
+  ephemeralSystemInstructions?: string;
+};
+
+/** 本项目自定义要求：`string` 整段归入「本项目」；拆段则 display + 细则分块写入 system */
+export type AIProjectPromptInput = string | null | undefined | AIProjectPromptParts;
+
+function appendProjectPromptToSystemFragment(prior: string, projectPrompt: AIProjectPromptInput): string {
+  if (projectPrompt == null || projectPrompt === '') return prior;
+  if (typeof projectPrompt === 'string') {
+    const t = projectPrompt.trim();
+    return t ? `${prior}\n\n【本项目自定义要求】\n${t}` : prior;
+  }
+  const d = projectPrompt.displayContent?.trim() ?? '';
+  const e = projectPrompt.ephemeralSystemInstructions?.trim() ?? '';
+  if (!d && !e) return prior;
+  let next = prior;
+  if (d) next += `\n\n【本项目自定义要求】\n${d}`;
+  if (e) next += `\n\n【系统内部执行指令·勿向用户逐条复述】\n${e}`;
+  return next;
+}
+
 /** `handleSubmit` 选项：编程式投递勿用 Sender 内模板待发的 `pendingOutboundFulltextRef` 覆盖正文 */
 export interface AIChatHandleSubmitOptions {
   ignorePendingOutbound?: boolean;
+  /**
+   * 为 true 时不做「无 activeKey 则先 handleNewConversation」；用于首包在会话就绪后由 effect 再次调用 submit。
+   */
+  skipEnsureSession?: boolean;
+  /**
+   * 仅附加于**本轮**文本请求的 system 末尾；不写入会话气泡、不落盘为 user 消息。
+   * 用于 UI 触发的一键任务：用户侧只见 display，模型仍收到完整执行说明。
+   */
+  ephemeralSystemAppend?: string;
 }
 
 /** BottomSender / 画布预览用：与 useAIChatCore 的 onDrawerSessionSync 对齐 */
@@ -331,8 +556,21 @@ export interface AIChatCoreProps {
   allowAgentSwitch?: boolean;
   /** 模型列表（来自 ConfigContext） */
   models: AIModelConfig[] | undefined;
-  /** 项目/分镜级自定义 prompt 追加到 system */
-  projectPrompt?: string | null;
+  /**
+   * 项目/分镜级自定义要求：在 Agent basePrompt 之后写入 system。
+   * - `string`：整体作为「【本项目自定义要求】」一块；
+   * - `{ displayContent, ephemeralSystemInstructions }`：前者进本项目块，后者进「系统内部执行指令」块（与 Sender 单次 ephemeralSystemAppend 可并存）。
+   * system 拼接顺序：scenePrompt（如有）→ basePrompt → 上述本项目/内部指令块 → 本轮 ephemeralSystemAppend（如有）。
+   */
+  projectPrompt?: AIProjectPromptInput;
+  /**
+   * 场景系统提示词（方案 §4.1）
+   * 每个页面独立配置，页面加载时注入通用 Agent 系统消息。
+   * 内容包含：业务目标、操作流程、输出格式规范、能力边界。
+   * 支持 {{extra_requirements}} 模板变量。
+   * 与 skillPromptTemplate 按 §1.3(3) 规则合并。
+   */
+  scenePrompt?: string;
   /** 上下文内容（如当前概要、剧本） */
   contextBlocks?: Array<{ label: string; content: string }>;
   /** 选定的上下文 Tag（可移除） */
@@ -344,6 +582,8 @@ export interface AIChatCoreProps {
   writeBackActions?: (lastContent: string) => React.ReactNode;
   /** Sender placeholder */
   senderPlaceholder?: string;
+  /** Sender 初始正文（仅首次挂载或 agentKey / storageKeySuffix / 本字符串变化时写入，并与 composerNonce 联动 remount） */
+  senderInitialText?: string;
   /** 存储 key 后缀（不同 agent/分镜可区分） */
   storageKeySuffix?: string;
   /** Agent 切换回调（关闭专家 slot 时切到通用） */
@@ -351,12 +591,28 @@ export interface AIChatCoreProps {
   /** 画布比例（绘图师用，画布比例时使用），如 "16:9" | "9:16" */
   canvasAspectRatio?: string;
   /**
-   * 是否启用推理内容展示。
-   * 启用后，若模型返回 reasoning_content（如火山引擎 doubao-seed 等），
-   * 将以 Cursor 风格展示推理过程（流式滚动 → 折叠首行）。
+   * 是否启用推理：为 true 时（1）Provider 按开关向 API 请求思考能力；（2）气泡可展示推理块；
+   * （3）Sender Footer 显示「深度思考」开关（与开关状态联动）。为 false 时上述均关闭。
    * 见功能文档 06 § enableReasoning
    */
   enableReasoning?: boolean;
+  /**
+   * 禁止使用的 Agents 数组（方案 §4.3）
+   * 屏蔽指定 agentId，用户不可选、通用 Agent 不可调度。
+   */
+  bannedAgentIds?: string[];
+  /**
+   * 暴露的多模态独立 Agent 声明（方案 §4.6）
+   * 将多模态 Tool 暴露为独立 Skill Agent，出现在 Footer 可用 Agent 按钮组中。
+   */
+  exposedMultimodalAgents?: ExposedMultimodalAgentDecl[];
+  /**
+   * Tools 申明清单（方案 §4.5）
+   * 声明当前页面允许调用的全部原子 Tool 名称列表。未声明的 Tool 不可调用。
+   */
+  toolsDeclarationList?: string[];
+  /** A2UI 组件配置（方案 §4.6） */
+  a2uiConfig?: A2UIConfig;
   /** 追加在 Sender slotConfig 最前（预览/嵌入分镜，如测试 Function Call 槽位） */
   extraSenderSlotConfig?: SlotConfigType[];
   /**
@@ -426,12 +682,18 @@ export function useAIChatCore({
   allowAgentSwitch = true,
   models,
   projectPrompt,
+  scenePrompt,
+  bannedAgentIds,
+  exposedMultimodalAgents,
+  toolsDeclarationList,
+  a2uiConfig,
   contextBlocks,
   contextTags,
   onRemoveContextTag,
   formatContextTags,
   writeBackActions,
   senderPlaceholder = 'Shift+Enter 换行，Enter 发送',
+  senderInitialText,
   storageKeySuffix = 'default',
   onAgentChange,
   canvasAspectRatio,
@@ -454,6 +716,7 @@ export function useAIChatCore({
   suppressAgentSenderWelcome = false,
   suppressSenderAgentSkill = false,
   suppressDrawerSenderSlots = false,
+  renderToolMessageContent,
 }: AIChatCoreProps) {
   const normalizedContextBlocks = contextBlocks ?? EMPTY_CONTEXT_BLOCKS;
   const normalizedContextTags = contextTags ?? EMPTY_CONTEXT_TAGS;
@@ -492,19 +755,58 @@ export function useAIChatCore({
 
   const [effectiveContextBlocks, setEffectiveContextBlocks] = useState(() => normalizedContextBlocks);
   const [effectiveContextTags, setEffectiveContextTags] = useState(() => normalizedContextTags);
-  useEffect(() => {
-    setEffectiveContextBlocks((prev) => (prev === normalizedContextBlocks ? prev : normalizedContextBlocks));
-  }, [normalizedContextBlocks]);
-  useEffect(() => {
-    setEffectiveContextTags((prev) => (prev === normalizedContextTags ? prev : normalizedContextTags));
-  }, [normalizedContextTags]);
+  /**
+   * props 变化需「同一轮 render」立即反映：避免 useEffect 异步同步 → senderSlotConfig 晚一帧 → X Sender 的
+   * initRenderSlot 把刚 setVisible(false) 的 Tag 又重建出来（视觉上像 close 第一次没生效）。
+   * 这是 React 官方推荐的 "Adjusting state when a prop changes" 模式：render 期间用 ref 检测变化后 setState。
+   */
+  const lastPropsContextBlocksRef = useRef(normalizedContextBlocks);
+  if (lastPropsContextBlocksRef.current !== normalizedContextBlocks) {
+    lastPropsContextBlocksRef.current = normalizedContextBlocks;
+    setEffectiveContextBlocks(normalizedContextBlocks);
+  }
+  const lastPropsContextTagsRef = useRef(normalizedContextTags);
+  if (lastPropsContextTagsRef.current !== normalizedContextTags) {
+    lastPropsContextTagsRef.current = normalizedContextTags;
+    setEffectiveContextTags(normalizedContextTags);
+  }
 
   const [forcedFunctionCallNames, setForcedFunctionCallNames] = useState<string[]>([]);
   const pendingOutboundFulltextRef = useRef<string | null>(null);
   const pendingNewConversationSubmitRef = useRef<{ key: string; text: string } | null>(null);
+  /** 无会话时先建会话，待 XChat defaultMessages 完成后再发首包，避免 layout 里 setMessages([]) 冲掉 onRequest 写入 */
+  const pendingSubmitAfterSessionReadyRef = useRef<{
+    userText: string;
+    slotConfig?: SlotConfigType[];
+    skill?: unknown;
+    opts?: AIChatHandleSubmitOptions;
+  } | null>(null);
   const lastTemplateDisplayRef = useRef<string | null>(null);
   const [composerNonce, setComposerNonce] = useState(0);
-  const [composerDefaultText, setComposerDefaultText] = useState<string | undefined>(undefined);
+  const [composerDefaultText, setComposerDefaultText] = useState<string | undefined>(() =>
+    senderInitialText?.trim() ? senderInitialText.trim() : undefined
+  );
+  /** 最近一次已应用的 senderInitialText 签名；`null` 表示尚未跑过 layout 同步 */
+  const senderInitialAppliedSigRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const sig = `${agentKey}\0${storageKeySuffix}\0${senderInitialText ?? ''}`;
+    if (senderInitialAppliedSigRef.current === sig) return;
+    const hadPriorApply = senderInitialAppliedSigRef.current !== null;
+    senderInitialAppliedSigRef.current = sig;
+    const next = senderInitialText?.trim() || undefined;
+    setComposerDefaultText(next);
+    if (hadPriorApply) {
+      setComposerNonce((n) => n + 1);
+    }
+  }, [agentKey, storageKeySuffix, senderInitialText]);
+
+  const [thinkSwitchOn, setThinkSwitchOn] = useState(enableReasoning);
+  useEffect(() => {
+    setThinkSwitchOn(enableReasoning);
+  }, [enableReasoning]);
+  /** 与 enableReasoning 一致：为 true 时 Footer 显示「深度思考」开关，实际请求是否带推理由 thinkSwitchOn 决定 */
+  const allowThinkToggle = enableReasoning;
+  const reasoningEnabled = enableReasoning ? thinkSwitchOn : false;
 
   const { agent, hasValidModel, missingCapabilityLabels, mergedAgents, validModels } = useAgentModel(
     agentKey,
@@ -515,7 +817,7 @@ export function useAIChatCore({
   const chatModelPickKey = `${MODEL_PICK_PREFIX}${agentKey}:${storageKeySuffix}`;
   const [chatModelId, setChatModelId] = useState<string | null>(null);
   useEffect(() => {
-    setChatModelId(loadChatModelPickId(chatModelPickKey));
+    setChatModelId(loadChatModelPickId(chatModelPickKey) ?? loadChatModelPickId(MODEL_PICK_GLOBAL_KEY));
   }, [chatModelPickKey]);
 
   const effectiveModel = useMemo(() => {
@@ -545,6 +847,7 @@ export function useAIChatCore({
     (id: string) => {
       setChatModelId(id);
       saveChatModelPickId(chatModelPickKey, id);
+      saveChatModelPickId(MODEL_PICK_GLOBAL_KEY, id);
     },
     [chatModelPickKey]
   );
@@ -555,8 +858,8 @@ export function useAIChatCore({
   }, [extraFunctionCalls]);
   const promptsDef = agentKey ? AGENT_PROMPTS_MAP[agentKey] : null;
   const provider = React.useMemo(
-    () => buildProvider(agent?.providerType, effectiveModel, enableReasoning),
-    [agent?.providerType, effectiveModel, enableReasoning]
+    () => buildProvider(agent?.providerType, effectiveModel, reasoningEnabled),
+    [agent?.providerType, effectiveModel, reasoningEnabled]
   );
 
   /**
@@ -617,7 +920,10 @@ export function useAIChatCore({
     const simplified = toStoredMessages(messages);
     const activeConv = conversationsRef.current.find((c) => c.key === activeKey);
     if (selectingConversationKeyRef.current === activeKey) {
-      if (!persistedMessagesEqual(activeConv?.messages, simplified)) return;
+      const aligned =
+        persistedMessagesEqual(activeConv?.messages, simplified) ||
+        conversationMessagesSemanticsEqual(activeConv?.messages, simplified);
+      if (!aligned) return;
       selectingConversationKeyRef.current = null;
     }
     if (skipNextMessagesPersistRef.current) {
@@ -630,9 +936,16 @@ export function useAIChatCore({
     setConversations((prev) => {
       const cur = prev.find((c) => c.key === activeKey);
       if (persistedMessagesEqual(cur?.messages, simplified)) return prev;
-      const now = Date.now();
+      const semanticsUnchanged =
+        !!cur && conversationMessagesSemanticsEqual(cur.messages, simplified);
       return prev.map((c) =>
-        c.key === activeKey ? { ...c, messages: simplified, lastActive: now } : c
+        c.key === activeKey ?
+          {
+            ...c,
+            messages: simplified,
+            ...(semanticsUnchanged ? {} : { lastActive: Date.now() }),
+          }
+        : c
       );
     });
   }, [activeKey, messages]);
@@ -675,9 +988,10 @@ export function useAIChatCore({
       pendingDeriveConversationTitleRef.current = null;
       return;
     }
-    if (!persistedMessagesEqual(curSnap.messages, simplified)) {
-      return;
-    }
+    const snapAligned =
+      persistedMessagesEqual(curSnap.messages, simplified) ||
+      conversationMessagesSemanticsEqual(curSnap.messages, simplified);
+    if (!snapAligned) return;
 
     const raw = deriveConversationTitle(simplified)?.trim();
     pendingDeriveConversationTitleRef.current = null;
@@ -724,6 +1038,7 @@ export function useAIChatCore({
     pendingNewConversationSubmitRef.current = null;
     // 立刻清空当前 XChat store，避免 activeKey 切换到空会话前继续渲染上一条历史。
     setMessages([]);
+    pendingSubmitAfterSessionReadyRef.current = null;
     setConversations((prev) => [...prev, item]);
     setConvCounter((c) => c + 1);
     setActiveKey(key);
@@ -789,7 +1104,12 @@ export function useAIChatCore({
   }, [effectiveContextBlocks, effectiveContextTags, formatContextTags]);
 
   const composeTextChatCompletionParams = useCallback(
-    (snapshotMessages: typeof messages, appendUserOutbound: string | null, slotParsedDrawerType?: DrawerType) => {
+    (
+      snapshotMessages: typeof messages,
+      appendUserOutbound: string | null,
+      slotParsedDrawerType?: DrawerType,
+      ephemeralAppend?: string | null,
+    ) => {
       const drawerForPrompt =
         agentKey === 'drawer' ?
           slotParsedDrawerType ??
@@ -799,8 +1119,14 @@ export function useAIChatCore({
         agentKey === 'drawer'
           ? getDrawerBasePrompt(drawerForPrompt)
           : (promptsDef?.basePrompt ?? '');
-      const systemPromptForRequest =
-        basePromptForRequest + (projectPrompt?.trim() ? `\n\n【本项目自定义要求】\n${projectPrompt.trim()}` : '');
+      let systemPromptForRequest =
+        (scenePrompt?.trim() ? `${scenePrompt.trim()}\n\n` : '') +
+        basePromptForRequest;
+      systemPromptForRequest = appendProjectPromptToSystemFragment(systemPromptForRequest, projectPrompt);
+      if (ephemeralAppend?.trim()) {
+        systemPromptForRequest +=
+          `\n\n【系统内部执行指令·勿向用户逐条复述】\n${ephemeralAppend.trim()}`;
+      }
       const ctx: Array<Record<string, unknown>> = [{ role: 'system', content: systemPromptForRequest }];
       ctx.push(...buildContextMessages());
       const history = (snapshotMessages ?? [])
@@ -811,7 +1137,7 @@ export function useAIChatCore({
           if (m.message?.role === 'assistant' && isToolCardContent(c)) return false;
           return true;
         })
-        .map(mapSdkMessageRowToChatApiPayload)
+        .map((sdkRow) => mapSdkMessageRowToChatApiPayload(sdkRow, { echoReasoning: reasoningEnabled }))
         .filter((row): row is Record<string, unknown> => row != null);
       ctx.push(...history);
       if (appendUserOutbound?.trim()) {
@@ -822,7 +1148,12 @@ export function useAIChatCore({
       if (agentKey === MAIN_AGENT_KEY) {
         regDefs = mergeFunctionCallDefs(getFunctionCallsForOrchestrator(), regDefs);
       }
-      const toolDefs = mergeFunctionCallDefs(regDefs, extraFunctionCalls);
+      let toolDefs = mergeFunctionCallDefs(regDefs, extraFunctionCalls);
+      // ── 新架构 §4.5：Tools 申明清单过滤 ──
+      if (toolsDeclarationList && toolsDeclarationList.length > 0) {
+        const allowed = new Set(toolsDeclarationList);
+        toolDefs = toolDefs.filter((d) => allowed.has(d.name));
+      }
       const params: Record<string, unknown> = { messages: ctx };
       if (toolDefs.length > 0) params.tools = toOpenAITools(toolDefs);
       if (appendUserOutbound?.trim()) {
@@ -841,7 +1172,9 @@ export function useAIChatCore({
       extraFunctionCalls,
       forcedFunctionCallNames,
       projectPrompt,
+      scenePrompt,
       promptsDef?.basePrompt,
+      reasoningEnabled,
     ]
   );
 
@@ -864,17 +1197,39 @@ export function useAIChatCore({
       setComposerDefaultText(undefined);
       if (!outbound) return;
       requestCancelledRef.current = false;
+      /**
+       * 无 activeKey 时 onRequest 若与 conversationKey 切换竞态，会被 useLayoutEffect(defaultMessages) 清空。
+       * 与 `pendingNewConversationSubmitRef` 同理：先建会话，待 `!isDefaultMessagesRequesting` 后再执行 submit。
+       */
+      if (!opts?.skipEnsureSession && !activeKeyRef.current) {
+        flushSync(() => {
+          handleNewConversation();
+        });
+        pendingSubmitAfterSessionReadyRef.current = {
+          userText: outbound,
+          slotConfig,
+          skill: _skill,
+          opts: { ...opts, ignorePendingOutbound: true, skipEnsureSession: true },
+        };
+        setComposerNonce((n) => n + 1);
+        return;
+      }
       const effectiveDrawerType =
         agentKey === 'drawer' && slotConfig ? parseDrawerTypeFromSlotConfig(slotConfig) : drawerType;
       let params: Record<string, unknown>;
       const isImagesAgent = agent?.providerType === 'images';
+      const ephemeralApp = opts?.ephemeralSystemAppend?.trim();
       if (isImagesAgent) {
         const ctx: Array<{ role: string; content: string }> = [
           {
             role: 'system',
             content:
-              getDrawerBasePrompt(effectiveDrawerType) +
-              (projectPrompt?.trim() ? `\n\n【本项目自定义要求】\n${projectPrompt.trim()}` : ''),
+              appendProjectPromptToSystemFragment(
+                (scenePrompt?.trim() ? `${scenePrompt.trim()}\n\n` : '') +
+                  getDrawerBasePrompt(effectiveDrawerType),
+                projectPrompt,
+              ) +
+              (ephemeralApp ? `\n\n【系统内部执行指令·勿向用户逐条复述】\n${ephemeralApp}` : ''),
           },
         ];
         ctx.push(...buildContextMessages());
@@ -905,7 +1260,12 @@ export function useAIChatCore({
         params.attachmentImages = attachmentImages;
         params.drawerOptions = { ...drawerOptions, canvasAspectRatio };
       } else {
-        params = composeTextChatCompletionParams(messages ?? [], outbound, effectiveDrawerType);
+        params = composeTextChatCompletionParams(
+          messages ?? [],
+          outbound,
+          effectiveDrawerType,
+          ephemeralApp || undefined,
+        );
       }
       onRequest(params);
       // Sender.clear() 在部分分镜下不能清空输入；提交成功后 remount 以可靠清空（见预览 BottomSender）
@@ -922,8 +1282,10 @@ export function useAIChatCore({
       drawerOptions,
       canvasAspectRatio,
       drawerType,
+      handleNewConversation,
       parseDrawerTypeFromSlotConfig,
       projectPrompt,
+      scenePrompt,
     ]
   );
 
@@ -931,6 +1293,7 @@ export function useAIChatCore({
     (text: string) => {
       const visible = (text ?? '').trim();
       if (!visible) return;
+      pendingSubmitAfterSessionReadyRef.current = null;
       const now = Date.now();
       const key = `conv_${now}_${Math.random().toString(36).slice(2, 7)}`;
       const item: ConversationItem = {
@@ -954,6 +1317,13 @@ export function useAIChatCore({
     if (!pending || pending.key !== activeKey || isDefaultMessagesRequesting) return;
     pendingNewConversationSubmitRef.current = null;
     handleSubmit(pending.text, undefined, undefined, { ignorePendingOutbound: true });
+  }, [activeKey, handleSubmit, isDefaultMessagesRequesting]);
+
+  useEffect(() => {
+    const pending = pendingSubmitAfterSessionReadyRef.current;
+    if (!pending || !activeKey || isDefaultMessagesRequesting) return;
+    pendingSubmitAfterSessionReadyRef.current = null;
+    void handleSubmit(pending.userText, pending.slotConfig, pending.skill, pending.opts);
   }, [activeKey, handleSubmit, isDefaultMessagesRequesting]);
 
   const userTurnIndices = (messages ?? [])
@@ -1013,16 +1383,74 @@ export function useAIChatCore({
   const lastContent = stringifyMessageContent(lastAssistantContent);
 
   const sdkList = messages ?? [];
-  const bubbleItems = sdkList.map((m, i) => {
+  const answeredToolCallIds = new Set<string>();
+  for (const row of sdkList) {
+    if (row.message?.role !== 'tool') continue;
+    const tid = String((row.message as { toolCallId?: string }).toolCallId ?? '').trim();
+    if (tid) answeredToolCallIds.add(tid);
+  }
+
+  /**
+   * 拥有独立 tool 气泡的 Tool 名称（方案 §6 多模态结果）。
+   * 未列名且无自定义 renderToolMessageContent 时隐藏 tool 行，避免把 update_data 等原始 JSON 泡给用户；
+   * 不传 renderToolMessageContent 时仍可展示 generate_* 的图片/视频卡片（见 SidePanel）。
+   */
+  const VISIBLE_TOOL_NAMES = new Set<string>(['generate_video']);
+  const hasCustomToolRender = typeof renderToolMessageContent === 'function';
+  const bubbleItems = sdkList
+    .filter((m) => {
+      if (m.message?.role !== 'tool') return true;
+      if (hasCustomToolRender) return true;
+      const tid = String((m.message as { toolCallId?: string }).toolCallId ?? '').trim();
+      const name = tid ? resolveToolCallNameForMessageRow(sdkList, tid) : undefined;
+      return !!name && VISIBLE_TOOL_NAMES.has(name);
+    })
+    .map((m, i) => {
     const reasoningContent =
       (m.message as { reasoningContent?: string })?.reasoningContent ?? '';
-    const toolCalls = (m.message as { toolCalls?: Array<{ name?: string }> })?.toolCalls ?? [];
+    const toolCallsRaw =
+      (m.message as {
+        toolCalls?: Array<{ id?: string; name?: string; arguments?: string }>;
+      })?.toolCalls ?? [];
+    const toolCalls = toolCallsRaw as Array<{ name?: string }>;
+
     const isStreaming = m.status === 'loading' || m.status === 'updating';
     const role = (m.message?.role === 'system' ? 'system' : m.message?.role) || 'assistant';
+
+    const pendingGen = computePendingGenerateImagesBubbleExtra({
+      role,
+      toolCallsRaw,
+      answeredToolCallIds,
+    });
+    const pendingVid = computePendingGenerateVideoBubbleExtra({
+      role,
+      toolCallsRaw,
+      answeredToolCallIds,
+    });
+
     const toolCallId =
       role === 'tool' ? String((m.message as { toolCallId?: string }).toolCallId ?? '').trim() : '';
     const toolCallName =
       toolCallId ? resolveToolCallNameForMessageRow(sdkList, toolCallId) : undefined;
+
+    // 当 role 为 assistant 且不包含 tool_calls 时，检查是否有上游 tool 结果中的图片需要展示
+    const toolResultImages =
+      role === 'assistant' && !toolCalls.length && m.status === 'success'
+        ? extractToolResultImages(sdkList, m.id)
+        : undefined;
+
+    const toolResultVideoUrl =
+      role === 'assistant' && !toolCalls.length && m.status === 'success'
+        ? extractToolResultVideoUrl(sdkList, m.id)
+        : undefined;
+
+    const toolChainResultContents =
+      role === 'assistant' && toolCallsRaw.length > 0
+        ? extractToolChainResultContentsAfterAssistant(sdkList, m.id)
+        : [];
+    const toolChainResultContentsExtra =
+      toolChainResultContents.length > 0 ? toolChainResultContents : undefined;
+
     return {
       key: m.id,
       role,
@@ -1035,6 +1463,17 @@ export function useAIChatCore({
         isStreaming,
         messageId: m.id,
         toolCallNames: toolCalls.map((x) => x.name).filter(Boolean),
+        ...(toolChainResultContentsExtra ? { toolChainResultContents: toolChainResultContentsExtra } : {}),
+        ...(toolResultImages?.length ? { toolResultImages } : {}),
+        ...(toolResultVideoUrl ? { toolResultVideoUrl } : {}),
+        ...(pendingGen.pendingGenerateImagesCount != null
+          ? {
+              pendingGenerateImagesCount: pendingGen.pendingGenerateImagesCount,
+              pendingGenerateImagesAspect:
+                pendingGen.pendingGenerateImagesAspect ?? '1:1',
+            }
+          : {}),
+        ...(pendingVid.pendingGenerateVideo ? { pendingGenerateVideo: true } : {}),
         ...(toolCallName ? { toolCallName } : {}),
       },
     };
@@ -1217,7 +1656,7 @@ export function useAIChatCore({
       visibleConversations.map((c) => ({
         key: c.key,
         label: c.label,
-        lastActive: c.lastActive ?? 0,
+        lastActive: coerceConversationLastActive(c.lastActive, c.key),
         pinned: !!c.pinned,
         titleUserLocked: !!c.titleUserLocked,
       })),
@@ -1542,8 +1981,23 @@ export function useAIChatCore({
           key: ctx.id,
           props: {},
           formatResult: () => '',
-          customRender: (_val, _onChange, _props, item) => (
-            <Tag closable onClose={() => item.key && removeCb(item.key)} style={{ margin: 0, fontSize: 12 }}>
+          customRender: () => (
+            <Tag
+              closable
+              style={{ margin: 0, fontSize: 12 }}
+              /** mousedown 阻冒泡：X Sender 用 contenteditable，首次点击不会让外层抢焦点 */
+              onMouseDown={(e) => e.stopPropagation()}
+              onClose={(e) => {
+                /**
+                 * 阻 antd Tag 内部 `setVisible(false)`：让「是否显示」完全由 React state 决定。
+                 * 否则首次点击 Tag 自己变 hidden，紧接着 X Sender 的 initRenderSlot 用旧 slotConfig
+                 * 又把它重建为 visible=true，视觉上等于「没关掉，要再点一次」。
+                 */
+                e.preventDefault();
+                e.stopPropagation();
+                removeCb(ctx.id);
+              }}
+            >
               {ctx.description}
             </Tag>
           ),
@@ -1558,13 +2012,13 @@ export function useAIChatCore({
       }
     }
     if (agent && agent.key !== MAIN_AGENT_KEY) {
-      const hasDrawerSlot =
-        agent.key === 'drawer' && agent.welcomeSlot?.type === 'select' && !suppressDrawerSenderSlots;
-      if (hasDrawerSlot) {
-        slots.push(...getDrawerSlotConfig());
-      } else if (agent.welcomeMessage && !suppressAgentSenderWelcome) {
-        slots.push({ type: 'text', value: `：${agent.welcomeMessage}` });
-      }
+      // const hasDrawerSlot =
+      //   agent.key === 'drawer' && agent.welcomeSlot?.type === 'select' && !suppressDrawerSenderSlots;
+      // if (hasDrawerSlot) {
+      //   slots.push(...getDrawerSlotConfig());
+      // } else if (agent.welcomeMessage && !suppressAgentSenderWelcome) {
+      //   slots.push({ type: 'text', value: `：${agent.welcomeMessage}` });
+      // }
     }
     return slots;
   }, [
@@ -1709,6 +2163,9 @@ export function useAIChatCore({
     attachments,
     DRAWER_ASPECT_OPTIONS,
     enableReasoning,
+    reasoningEnabled,
+    allowThinkToggle,
+    setReasoningEnabled: setThinkSwitchOn,
     attachDrawerImageFromSrc,
     clearDrawerAttachments,
     updateGlobalContext,

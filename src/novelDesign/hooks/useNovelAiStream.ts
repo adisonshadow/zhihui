@@ -37,6 +37,15 @@ const TOOL_EDIT_NAMES = new Set([
   'novel_update_outline',
 ]);
 
+function isNovelScriptOrEditTool(name: string): boolean {
+  if (TOOL_EDIT_NAMES.has(name)) return true;
+  return name.startsWith('novel_script_');
+}
+
+function isNovelAudiobookOrEditTool(name: string): boolean {
+  return name.startsWith('novel_audiobook_');
+}
+
 interface AssistStreamPayload {
   isRequesting: boolean;
   lastAssistantPlain: string;
@@ -120,8 +129,14 @@ export function useNovelAiStream(options: {
   updateWorkspace: (snap: NovelWorkspaceSnapshot | ((prev: NovelWorkspaceSnapshot | null) => NovelWorkspaceSnapshot | null)) => void;
   message: { warning: (msg: string) => void; info: (msg: string) => void; success: (msg: string) => void };
   novelId: string;
+  /**
+   * 为 false 时不应把 novel-body-json 流写入 contentMarkdown。
+   * 例：「转剧本」专家下用户话里含「正文/生成」等也会被 hasNovelBodyWriteIntent 命中，但只应写 episodeScript（novel_script_*）。
+   */
+  shouldApplyNovelBodyStream?: () => boolean;
 }) {
-  const { workspaceRef, updateWorkspace, message } = options;
+  const { workspaceRef, updateWorkspace, message, shouldApplyNovelBodyStream } = options;
+  const allowNovelBodyStream = shouldApplyNovelBodyStream ?? (() => true);
 
   /* ---- 状态机 ---- */
   const [phase, setPhase] = useState<AiWritePhase>('idle');
@@ -158,7 +173,9 @@ export function useNovelAiStream(options: {
       prevRequestingRef.current = payload.isRequesting;
 
       const hasCreateEpisodeToolInTurn = payload.toolCallNamesAfterLastUser.includes(NOVEL_CREATE_EPISODE_TOOL_NAME);
-      const hasWriteToolsInTurn = payload.toolCallNamesAfterLastUser.some((name) => TOOL_EDIT_NAMES.has(name));
+      const hasWriteToolsInTurn = payload.toolCallNamesAfterLastUser.some(
+        (name) => isNovelScriptOrEditTool(name) || isNovelAudiobookOrEditTool(name),
+      );
       const user = payload.lastUserPlain.trim();
       const userTurnKey = payload.lastUserMessageId != null ? String(payload.lastUserMessageId) : user;
 
@@ -180,6 +197,11 @@ export function useNovelAiStream(options: {
 
       /* ----- 每轮首次：检测写意图，建立 pending ----- */
       if (payload.isRequesting && !aiPendingRef.current) {
+        if (!allowNovelBodyStream()) {
+          setPhase('idle');
+          setStreamPreviewMd('');
+          return;
+        }
         if (turnTouchedWriteToolRef.current) {
           setPhase('idle');
           setStreamPreviewMd('');
@@ -266,6 +288,8 @@ export function useNovelAiStream(options: {
         setPhase('idle');
         setStreamPreviewMd('');
 
+        if (!allowNovelBodyStream()) return;
+
         if (turnTouchedWriteToolRef.current) return;
         if (payload.toolCallsPending || hasWriteToolsInTurn) return;
 
@@ -299,7 +323,7 @@ export function useNovelAiStream(options: {
         updateWorkspace(result.snapshot);
       }
     },
-    [workspaceRef, updateWorkspace, message]
+    [workspaceRef, updateWorkspace, message, allowNovelBodyStream]
   );
 
   return {

@@ -39,6 +39,8 @@ export function initNovelDb(): void {
       title TEXT NOT NULL,
       episode INTEGER,
       content_markdown TEXT NOT NULL DEFAULT '',
+      script_markdown TEXT NOT NULL DEFAULT '',
+      script_json TEXT NOT NULL DEFAULT '',
       "order" INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (novel_id, id),
@@ -51,6 +53,8 @@ export function initNovelDb(): void {
       title TEXT NOT NULL DEFAULT '',
       active_episode_id TEXT NOT NULL DEFAULT '',
       remount_versions TEXT NOT NULL DEFAULT '{}',
+      novel_script_json TEXT NOT NULL DEFAULT '',
+      audiobook_outline_voice_json TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL,
       FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
     );
@@ -82,6 +86,84 @@ export function initNovelDb(): void {
   `);
 
   migrateNovelEpisodesToCompositePrimaryKey();
+  migrateNovelEpisodesAddScriptMarkdownColumn();
+  migrateNovelEpisodesScriptJsonColumn();
+  migrateNovelWorkspaceMetaScriptJsonColumn();
+  migrateNovelWorkspaceMetaAudiobookOutlineVoiceJsonColumn();
+  migrateCopyMarkdownToScriptJsonWhenJson();
+  migrateNovelsAudiobookEnabledColumn();
+  migrateNovelEpisodesAudiobookJsonColumn();
+  migrateNovelEpisodesTtsModelJsonColumn();
+  migrateWorkspaceMetaInnerMonologueColumn();
+  migrateWorkspaceMetaVoiceEffectsJsonColumn();
+}
+
+function migrateNovelsAudiobookEnabledColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novels)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'audiobook_enabled')) return;
+  database.exec(`ALTER TABLE novels ADD COLUMN audiobook_enabled INTEGER NOT NULL DEFAULT 0;`);
+}
+
+function migrateNovelEpisodesTtsModelJsonColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_episodes)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'tts_model_json')) return;
+  database.exec(`ALTER TABLE novel_episodes ADD COLUMN tts_model_json TEXT NOT NULL DEFAULT '{}';`);
+}
+
+function migrateWorkspaceMetaInnerMonologueColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_workspace_meta)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'inner_monologue_enabled')) return;
+  database.exec(`ALTER TABLE novel_workspace_meta ADD COLUMN inner_monologue_enabled INTEGER NOT NULL DEFAULT 0;`);
+}
+
+function migrateWorkspaceMetaVoiceEffectsJsonColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_workspace_meta)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'voice_effects_json')) return;
+  database.exec(`ALTER TABLE novel_workspace_meta ADD COLUMN voice_effects_json TEXT NOT NULL DEFAULT '{}';`);
+}
+
+function migrateNovelEpisodesAudiobookJsonColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_episodes)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'audiobook_json')) return;
+  database.exec(`ALTER TABLE novel_episodes ADD COLUMN audiobook_json TEXT NOT NULL DEFAULT '';`);
+}
+
+function migrateNovelWorkspaceMetaAudiobookOutlineVoiceJsonColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_workspace_meta)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'audiobook_outline_voice_json')) return;
+  database.exec(`ALTER TABLE novel_workspace_meta ADD COLUMN audiobook_outline_voice_json TEXT NOT NULL DEFAULT '';`);
+}
+
+function migrateNovelWorkspaceMetaScriptJsonColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_workspace_meta)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'novel_script_json')) return;
+  database.exec(`ALTER TABLE novel_workspace_meta ADD COLUMN novel_script_json TEXT NOT NULL DEFAULT '';`);
+}
+
+function migrateNovelEpisodesScriptJsonColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_episodes)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'script_json')) return;
+  database.exec(`ALTER TABLE novel_episodes ADD COLUMN script_json TEXT NOT NULL DEFAULT '';`);
+}
+
+/** 历史数据：script_markdown 若为大 JSON，迁入 script_json */
+function migrateCopyMarkdownToScriptJsonWhenJson(): void {
+  const database = getDb();
+  database.exec(`
+    UPDATE novel_episodes
+    SET script_json = script_markdown
+    WHERE (script_json IS NULL OR script_json = '')
+      AND script_markdown != ''
+      AND TRIM(script_markdown) LIKE '{%'
+  `);
 }
 
 /**
@@ -104,18 +186,27 @@ function migrateNovelEpisodesToCompositePrimaryKey(): void {
       title TEXT NOT NULL,
       episode INTEGER,
       content_markdown TEXT NOT NULL DEFAULT '',
+      script_markdown TEXT NOT NULL DEFAULT '',
+      script_json TEXT NOT NULL DEFAULT '',
       "order" INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (novel_id, id),
       FOREIGN KEY (novel_id) REFERENCES novels(id) ON DELETE CASCADE
     );
-    INSERT INTO novel_episodes_migrated (novel_id, id, title, episode, content_markdown, "order", updated_at)
-      SELECT novel_id, id, title, episode, content_markdown, "order", updated_at FROM novel_episodes;
+    INSERT INTO novel_episodes_migrated (novel_id, id, title, episode, content_markdown, script_markdown, script_json, "order", updated_at)
+      SELECT novel_id, id, title, episode, content_markdown, COALESCE(script_markdown, ''), '', "order", updated_at FROM novel_episodes;
     DROP TABLE novel_episodes;
     ALTER TABLE novel_episodes_migrated RENAME TO novel_episodes;
     CREATE INDEX IF NOT EXISTS idx_novel_episodes_novel ON novel_episodes(novel_id);
     COMMIT;
   `);
+}
+
+function migrateNovelEpisodesAddScriptMarkdownColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_episodes)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'script_markdown')) return;
+  database.exec(`ALTER TABLE novel_episodes ADD COLUMN script_markdown TEXT NOT NULL DEFAULT '';`);
 }
 
 function getDb(): Database.Database {
@@ -145,6 +236,7 @@ export interface NovelRow {
   genres: string; // JSON array string
   cover_data_url: string | null;
   electron_project_id: string | null;
+  audiobook_enabled: number;
   created_at: string;
   updated_at: string;
 }
@@ -159,6 +251,7 @@ export function upsertNovel(item: {
   genres: string[];
   coverDataUrl?: string | null;
   electronProjectId?: string | null;
+  audiobookEnabled?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }): NovelRow {
@@ -166,26 +259,28 @@ export function upsertNovel(item: {
   const existing = getDb().prepare('SELECT id FROM novels WHERE id = ?').get(item.id) as { id: string } | undefined;
   if (existing) {
     getDb().prepare(`
-      UPDATE novels SET title=?, genres=?, cover_data_url=?, electron_project_id=?, updated_at=?
+      UPDATE novels SET title=?, genres=?, cover_data_url=?, electron_project_id=?, audiobook_enabled=?, updated_at=?
       WHERE id=?
     `).run(
       item.title,
       JSON.stringify(item.genres ?? []),
       item.coverDataUrl ?? null,
       item.electronProjectId ?? null,
+      item.audiobookEnabled ? 1 : 0,
       item.updatedAt ?? now,
       item.id
     );
   } else {
     getDb().prepare(`
-      INSERT INTO novels (id, title, genres, cover_data_url, electron_project_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO novels (id, title, genres, cover_data_url, electron_project_id, audiobook_enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       item.id,
       item.title,
       JSON.stringify(item.genres ?? []),
       item.coverDataUrl ?? null,
       item.electronProjectId ?? null,
+      item.audiobookEnabled ? 1 : 0,
       item.createdAt ?? now,
       item.updatedAt ?? now
     );
@@ -206,6 +301,10 @@ export interface EpisodeRow {
   title: string;
   episode: number | null;
   content_markdown: string;
+  script_markdown: string;
+  script_json: string;
+  audiobook_json: string;
+  tts_model_json: string;
   order: number;
   updated_at: string;
 }
@@ -215,6 +314,10 @@ export interface WorkspaceMetaRow {
   title: string;
   active_episode_id: string;
   remount_versions: string;
+  novel_script_json: string;
+  audiobook_outline_voice_json: string;
+  inner_monologue_enabled: number;
+  voice_effects_json: string;
   updated_at: string;
 }
 
@@ -232,6 +335,9 @@ export function upsertEpisode(ep: {
   title: string;
   episode?: number | null;
   contentMarkdown?: string;
+  scriptJson?: string;
+  audiobookJson?: string;
+  ttsModelJson?: string;
   order: number;
   updatedAt: string;
 }): void {
@@ -239,16 +345,19 @@ export function upsertEpisode(ep: {
   const existing = getDb()
     .prepare('SELECT 1 FROM novel_episodes WHERE novel_id = ? AND id = ?')
     .get(ep.novelId, ep.id) as { 1: number } | undefined;
+  const scriptJson = ep.scriptJson ?? '';
+  const audiobookJson = ep.audiobookJson ?? '';
+  const ttsModelJson = ep.ttsModelJson ?? '{}';
   if (existing) {
     getDb().prepare(`
-      UPDATE novel_episodes SET title=?, episode=?, content_markdown=?, "order"=?, updated_at=?
+      UPDATE novel_episodes SET title=?, episode=?, content_markdown=?, script_markdown=?, script_json=?, audiobook_json=?, tts_model_json=?, "order"=?, updated_at=?
       WHERE novel_id=? AND id=?
-    `).run(ep.title, ep.episode ?? null, ep.contentMarkdown ?? '', ep.order, ep.updatedAt, ep.novelId, ep.id);
+    `).run(ep.title, ep.episode ?? null, ep.contentMarkdown ?? '', '', scriptJson, audiobookJson, ttsModelJson, ep.order, ep.updatedAt, ep.novelId, ep.id);
   } else {
     getDb().prepare(`
-      INSERT INTO novel_episodes (novel_id, id, title, episode, content_markdown, "order", updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(ep.novelId, ep.id, ep.title, ep.episode ?? null, ep.contentMarkdown ?? '', ep.order, ep.updatedAt);
+      INSERT INTO novel_episodes (novel_id, id, title, episode, content_markdown, script_markdown, script_json, audiobook_json, tts_model_json, "order", updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(ep.novelId, ep.id, ep.title, ep.episode ?? null, ep.contentMarkdown ?? '', '', scriptJson, audiobookJson, ttsModelJson, ep.order, ep.updatedAt);
   }
 }
 
@@ -256,26 +365,53 @@ export function deleteEpisode(novelId: string, episodeId: string): void {
   getDb().prepare('DELETE FROM novel_episodes WHERE novel_id = ? AND id = ?').run(novelId, episodeId);
 }
 
+export function saveEpisodeTtsModelJson(novelId: string, episodeId: string, ttsModelJson: string): void {
+  try {
+    getDb().prepare(`
+      UPDATE novel_episodes SET tts_model_json=?, updated_at=? WHERE novel_id=? AND id=?
+    `).run(ttsModelJson, new Date().toISOString(), novelId, episodeId);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getEpisodeTtsModelJson(novelId: string, episodeId: string): string {
+  try {
+    const row = getDb().prepare('SELECT tts_model_json FROM novel_episodes WHERE novel_id = ? AND id = ?').get(novelId, episodeId) as { tts_model_json: string } | undefined;
+    return row?.tts_model_json ?? '{}';
+  } catch {
+    return '{}';
+  }
+}
+
 export function saveWorkspaceMeta(meta: {
   novelId: string;
   title?: string;
   activeEpisodeId: string;
   remountVersions: Record<string, number>;
+  novelScriptJson?: string;
+  audiobookOutlineVoiceJson?: string;
+  innerMonologueEnabled?: boolean;
+  voiceEffectsJson?: string;
   updatedAt: string;
 }): void {
   ensureNovelRowExists(meta.novelId, meta.title ?? '未命名小说');
   const existing = getDb().prepare('SELECT novel_id FROM novel_workspace_meta WHERE novel_id = ?').get(meta.novelId);
   const remountJson = JSON.stringify(meta.remountVersions ?? {});
+  const scriptJson = meta.novelScriptJson ?? '';
+  const audiobookVoiceJson = meta.audiobookOutlineVoiceJson ?? '';
+  const monologueVal = meta.innerMonologueEnabled === true ? 1 : 0;
+  const effectsJson = meta.voiceEffectsJson ?? '';
   if (existing) {
     getDb().prepare(`
-      UPDATE novel_workspace_meta SET title=?, active_episode_id=?, remount_versions=?, updated_at=?
+      UPDATE novel_workspace_meta SET title=?, active_episode_id=?, remount_versions=?, novel_script_json=?, audiobook_outline_voice_json=?, inner_monologue_enabled=?, voice_effects_json=?, updated_at=?
       WHERE novel_id=?
-    `).run(meta.title ?? '', meta.activeEpisodeId, remountJson, meta.updatedAt, meta.novelId);
+    `).run(meta.title ?? '', meta.activeEpisodeId, remountJson, scriptJson, audiobookVoiceJson, monologueVal, effectsJson, meta.updatedAt, meta.novelId);
   } else {
     getDb().prepare(`
-      INSERT INTO novel_workspace_meta (novel_id, title, active_episode_id, remount_versions, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(meta.novelId, meta.title ?? '', meta.activeEpisodeId, remountJson, meta.updatedAt);
+      INSERT INTO novel_workspace_meta (novel_id, title, active_episode_id, remount_versions, novel_script_json, audiobook_outline_voice_json, inner_monologue_enabled, voice_effects_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(meta.novelId, meta.title ?? '', meta.activeEpisodeId, remountJson, scriptJson, audiobookVoiceJson, monologueVal, effectsJson, meta.updatedAt);
   }
 }
 
@@ -285,10 +421,28 @@ export function replaceAllEpisodes(novelId: string, episodes: Array<{
   title: string;
   episode?: number | null;
   contentMarkdown: string;
+  scriptJson?: string;
+  audiobookJson?: string;
+  ttsModelJson?: string;
   order: number;
   updatedAt: string;
 }>): void {
   ensureNovelRowExists(novelId, episodes[0]?.title ?? '未命名小说');
+
+  // 先读取现有 tts_model_json，避免 workspace sync 覆盖
+  const existingModels = new Map<string, string>();
+  try {
+    const rows = getDb().prepare('SELECT id, tts_model_json FROM novel_episodes WHERE novel_id = ?').all(novelId) as Array<{ id: string; tts_model_json: string }>;
+    for (const r of rows) {
+      if (r.tts_model_json && r.tts_model_json !== '{}') {
+        existingModels.set(r.id, r.tts_model_json);
+      }
+    }
+    if (existingModels.size > 0) {
+      console.log('[replaceAllEpisodes] 保留了', existingModels.size, '个集的 tts_model_json');
+    }
+  } catch { /* ignore */ }
+
   const byId = new Map<string, (typeof episodes)[0]>();
   for (const ep of episodes) {
     byId.set(ep.id, { ...ep, novelId });
@@ -297,13 +451,27 @@ export function replaceAllEpisodes(novelId: string, episodes: Array<{
 
   const del = getDb().prepare('DELETE FROM novel_episodes WHERE novel_id = ?');
   const ins = getDb().prepare(`
-    INSERT INTO novel_episodes (novel_id, id, title, episode, content_markdown, "order", updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO novel_episodes (novel_id, id, title, episode, content_markdown, script_markdown, script_json, audiobook_json, tts_model_json, "order", updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const txn = getDb().transaction(() => {
     del.run(novelId);
     for (const ep of unique) {
-      ins.run(novelId, ep.id, ep.title, ep.episode ?? null, ep.contentMarkdown, ep.order, ep.updatedAt);
+      // 优先用传入的 ttsModelJson，若为空则保留 DB 中已有的
+      const ttm = ep.ttsModelJson?.trim() ? ep.ttsModelJson : (existingModels.get(ep.id) ?? '{}');
+      ins.run(
+        novelId,
+        ep.id,
+        ep.title,
+        ep.episode ?? null,
+        ep.contentMarkdown,
+        '',
+        ep.scriptJson ?? '',
+        ep.audiobookJson ?? '',
+        ttm,
+        ep.order,
+        ep.updatedAt
+      );
     }
   });
   txn();

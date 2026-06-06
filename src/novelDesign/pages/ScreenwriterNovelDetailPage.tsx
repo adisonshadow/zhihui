@@ -15,8 +15,9 @@ import {
   Space,
   Modal,
   Tooltip,
+  Radio,
 } from 'antd';
-import { MenuUnfoldOutlined, CommentOutlined, OrderedListOutlined, AlignLeftOutlined } from '@ant-design/icons';
+import { MenuUnfoldOutlined, CommentOutlined, OrderedListOutlined, AlignLeftOutlined, PlusOutlined } from '@ant-design/icons';
 
 import { AIChat, applyRefIndicatorUserChoicePrefix } from '@/components/AIChat';
 import type { SidePanelAssistantContentRenderArgs } from '@/components/AIChat/AIChatSidePanel';
@@ -26,6 +27,9 @@ import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import { NovelCrepeEditor, type NovelCrepeEditorHandle } from '@/novelDesign/components/NovelCrepeEditor';
 import { ScreenwriterAssistantMarkdown } from '@/novelDesign/components/ScreenwriterAssistantMarkdown';
 import { buildNovelEditorFunctionCalls } from '@/novelDesign/AITools/novelEditorFunctionCalls';
+import { buildNovelScriptFunctionCalls } from '@/novelDesign/AITools/novelScriptFunctionCalls';
+import { NovelScriptMetaPanel } from '@/novelDesign/components/script/NovelScriptMetaPanel';
+import { NovelEpisodeScriptPanel } from '@/novelDesign/components/script/NovelEpisodeScriptPanel';
 import { NovelEditorThoughtChain } from '@/novelDesign/components/NovelEditorThoughtChain';
 import { NextSuggestionButtons } from '@/novelDesign/components/NextSuggestionButtons';
 import { extractNextSuggestions } from '@/novelDesign/parsers/nextSuggestionJsonParser';
@@ -37,16 +41,23 @@ import {
   renameWorkspaceTitle,
   setActiveEpisode,
   updateEpisodeMarkdown,
+  updateEpisodeScript,
+  setNovelScript,
   upsertEpisode,
 } from '@/novelDesign/storage/novelWorkspaceStorage';
+import { createEmptyNovelScript } from '@/novelDesign/utils/novelScriptModel';
+import { mergeFunctionCallDefs } from '@/components/AIChat/utils/functionRegistry';
 import { loadNovelList, upsertNovel } from '@/novelDesign/storage/novelListStorage';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
 import { extractNovelWritePayload } from '@/novelDesign/parsers/novelBodyJsonParser';
 import { useNovelAiStream } from '@/novelDesign/hooks/useNovelAiStream';
 import { useWorkspaceSync } from '@/novelDesign/hooks/useWorkspaceSync';
 import { NovelCoverAiPopover } from '@/novelDesign/components/NovelCoverAiPopover';
+import { CreateAudiobookProjectButton } from '@/audiobook/components/CreateAudiobookProjectButton';
 import '@ant-design/x-markdown/themes/dark.css';
 import './ScreenwriterNovelDetailPage.css';
+
+type MiddleViewMode = 'novel' | 'both' | 'script';
 
 const { Text } = Typography;
 
@@ -70,6 +81,12 @@ export default function ScreenwriterNovelDetailPage() {
 
   const { workspace, workspaceRef, updateWorkspace, setSnapshot: setWorkspace } = useWorkspaceSync();
 
+  const [chatAgentKey, setChatAgentKey] = useState('novel');
+  const chatAgentKeyRef = useRef(chatAgentKey);
+  chatAgentKeyRef.current = chatAgentKey;
+  const [middleViewMode, setMiddleViewMode] = useState<MiddleViewMode>('novel');
+  const genScriptInstructionRef = useRef<string | null>(null);
+
   const {
     onAssistStream,
     aiStreamOverlay,
@@ -81,6 +98,7 @@ export default function ScreenwriterNovelDetailPage() {
     updateWorkspace,
     message,
     novelId: novelId ?? '',
+    shouldApplyNovelBodyStream: () => chatAgentKeyRef.current === 'novel',
   });
 
   const lastUserMsgIdRef = useRef<string | number>('');
@@ -120,6 +138,12 @@ export default function ScreenwriterNovelDetailPage() {
     setNovelTitleDraft(listItem?.title ?? '');
   }, [novelId, updateWorkspace]);
 
+  /** AI 调用 novel_rename_novel 等只更新 workspace / 列表时，顶栏 Input 须与 workspace.title 对齐 */
+  useEffect(() => {
+    if (!novelId || !workspace || workspace.novelId !== novelId) return;
+    setNovelTitleDraft(workspace.title);
+  }, [workspace?.title, workspace?.novelId, novelId]);
+
   const activeEpisode = useMemo(() => {
     if (!workspace) return null;
     return workspace.episodes.find((e) => e.id === workspace.activeEpisodeId) ?? null;
@@ -133,9 +157,9 @@ export default function ScreenwriterNovelDetailPage() {
 
   const remountKey = useMemo(() => {
     if (!workspace || !activeEpisode) return '0';
-    return activeEpisode.id;
+    const v = workspace.remountVersionByEpisode?.[activeEpisode.id] ?? 0;
+    return `${activeEpisode.id}:${v}`;
   }, [workspace, activeEpisode]);
-
 
   const commitNovelTitle = useCallback(() => {
     if (!novelId || !workspace) return;
@@ -184,6 +208,49 @@ export default function ScreenwriterNovelDetailPage() {
     },
     [activeEpisode]
   );
+
+  const onEpisodeScriptChange = useCallback(
+    (script: import('@/novelDesign/storage/novelWorkspaceStorage').NovelEpisodeScript) => {
+      if (!activeEpisode) return;
+      setWorkspace((w) => {
+        if (!w) return w;
+        return updateEpisodeScript(w, activeEpisode.id, script, false);
+      });
+    },
+    [activeEpisode, setWorkspace]
+  );
+
+  const onNovelScriptChange = useCallback(
+    (script: import('@/constants/Script').Script) => {
+      setWorkspace((w) => (w ? setNovelScript(w, script) : w));
+    },
+    [setWorkspace]
+  );
+
+  useEffect(() => {
+    if (chatAgentKey !== 'novel-to-script') return;
+    const msg = genScriptInstructionRef.current;
+    if (!msg) return;
+    genScriptInstructionRef.current = null;
+    const t = window.setTimeout(() => {
+      chatRef.current?.emitUserMessage(msg);
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [chatAgentKey]);
+
+  const onGenerateScriptClick = useCallback(() => {
+    if (!workspace || !activeEpisode || activeEpisode.id === NOVEL_OUTLINE_EPISODE_ID) return;
+    const nav = formatNovelEpisodeNavLabel(activeEpisode);
+    const novelTitle = workspace.title.trim() || '本书';
+    genScriptInstructionRef.current = [
+      `请根据小说《${novelTitle}》将当前集正文改编为漫剧/短剧结构化剧本（每场 1 个镜头，用 novel_script_* 工具写入，勿改小说正文）。`,
+      `目标集：${nav}，episode_id="${activeEpisode.id}"。`,
+      `请先 novel_script_set_middle_view({ mode: "script" })，再基于上下文正文分场：每场 novel_script_add_scene 须含 heading、staging、description（仅画面动作）、dialogues（把小说对白逐条写入，格式 [{ "speaker":"角色名","text":"台词" }] 或 character_id+text，禁止只写在 description）、sound；或 novel_script_replace_episode。`,
+      `不要输出 novel-body-json，不要修改 contentMarkdown。`,
+    ].join('\n');
+    setChatAgentKey('novel-to-script');
+    setAiOpen(true);
+  }, [workspace, activeEpisode]);
 
   const onSelectionPlain = useCallback((text: string) => {
     const next = text.trim();
@@ -287,7 +354,8 @@ export default function ScreenwriterNovelDetailPage() {
       return (
         nav.includes(q) ||
         e.title.toLowerCase().includes(q) ||
-        e.contentMarkdown.toLowerCase().includes(q)
+        e.contentMarkdown.toLowerCase().includes(q) ||
+        JSON.stringify(e.episodeScript ?? {}).toLowerCase().includes(q)
       );
     });
   }, [workspace, navQuery]);
@@ -347,13 +415,20 @@ export default function ScreenwriterNovelDetailPage() {
 
   const novelEditorExtraFunctionCalls = useMemo(() => {
     if (!novelId) return [];
-    return buildNovelEditorFunctionCalls({
+    const editor = buildNovelEditorFunctionCalls({
       getSnapshot: () => workspaceRef.current,
       setSnapshot: setWorkspace,
       novelId,
       requestDeleteEpisodeConfirm,
       requestDeleteEpisodesConfirm,
     });
+    const script = buildNovelScriptFunctionCalls({
+      getSnapshot: () => workspaceRef.current,
+      setSnapshot: setWorkspace,
+      novelId,
+      setMiddleViewMode,
+    });
+    return mergeFunctionCallDefs(editor, script);
   }, [novelId, requestDeleteEpisodeConfirm, requestDeleteEpisodesConfirm, setWorkspace]);
 
   const novelProjectPrompt = useMemo(() => {
@@ -371,6 +446,22 @@ export default function ScreenwriterNovelDetailPage() {
     return getNovelEditorProjectPrompt(eps);
   }, [workspace]);
 
+  const novelChatProjectPrompt = useMemo(() => {
+    const base = novelProjectPrompt;
+    if (chatAgentKey !== 'novel-to-script') return base;
+    const ws = workspace;
+    const ep = ws?.episodes.find((e) => e.id === ws.activeEpisodeId);
+    const isBody = ep && ep.id !== NOVEL_OUTLINE_EPISODE_ID;
+    const tail = [
+      '',
+      '【剧本区】你当前为「小说→剧本」改编专家。必须用 novel_script_add_scene（含场景要素 staging 与 sound）/ novel_script_set_shot / novel_script_upsert_dialogue 等写入；不得用 novel-body-json 或修改小说正文。',
+      isBody && ep ?
+        `当前选中正文集：${formatNovelEpisodeNavLabel(ep)}，episode_id=${ep.id}。`
+      : '请确认用户已在侧栏选中一集正文后再改编。',
+    ].join('\n');
+    return `${base}${tail}`;
+  }, [novelProjectPrompt, chatAgentKey, workspace]);
+
   const suggestionMessages: Record<string, string> = useMemo(() => ({
     '新增一集': '根据故事大纲和当前剧情，新增一集小说。先查看最后一集是否已完成，未完成则继续完成，已完成则创建新集',
     '续写当前内容': '从当前章节末尾自然续写，保持人称、时态与原有文风，追加到当前集',
@@ -386,11 +477,13 @@ export default function ScreenwriterNovelDetailPage() {
     <AIChat
       ref={chatRef}
       mode="SidePanel"
-      agentKey="novel"
-      allowAgentSwitch={false}
+      agentKey={chatAgentKey}
+      onAgentChange={setChatAgentKey}
+      allowAgentSwitch
       disableAttachmentsHeader
       models={models}
-      projectPrompt={novelProjectPrompt}
+      enableReasoning={true}
+      projectPrompt={novelChatProjectPrompt}
       extraFunctionCalls={novelEditorExtraFunctionCalls}
       storageKeySuffix={`novel-workspace:${novelId ?? 'unknown'}`}
       senderPlaceholder="输入改写、续写、生成等需求；可按 Shift+Enter 换行"
@@ -399,7 +492,6 @@ export default function ScreenwriterNovelDetailPage() {
       formatContextTags={formatNovelContextTags}
       onSubmit={novelAiOnSubmit}
       onAssistStream={wrappedOnAssistStream}
-      renderToolMessageContent={() => null}
       sidePanelAssistantContentRender={({
         toolCallNames,
         status,
@@ -407,11 +499,14 @@ export default function ScreenwriterNovelDetailPage() {
         conversationBubbleSnapshot,
         content,
         defaultNode,
+        toolChainResultContents,
       }: SidePanelAssistantContentRenderArgs) => {
         const isStreaming = status === 'loading' || status === 'updating';
 
-        const bubbleToolResults: string[] = [];
+        const bubbleToolResults: string[] =
+          toolChainResultContents?.length ? [...toolChainResultContents] : [];
         if (
+          bubbleToolResults.length === 0 &&
           conversationBubbleSnapshot?.length &&
           typeof bubbleMessageIndex === 'number' &&
           (toolCallNames?.length ?? 0) > 0
@@ -424,6 +519,17 @@ export default function ScreenwriterNovelDetailPage() {
               break;
             }
           }
+          // 续流后的 assistant 在 tool 之后：向前扫不到 tool，须向上扫（否则 ThoughtChain 一直「处理中…」）
+          if (bubbleToolResults.length === 0) {
+            for (let i = bubbleMessageIndex - 1; i >= 0; i--) {
+              const row = conversationBubbleSnapshot[i];
+              if (row?.role === 'tool') {
+                bubbleToolResults.unshift(row.content);
+              } else {
+                break;
+              }
+            }
+          }
         }
 
         const toolChainNodes =
@@ -433,7 +539,6 @@ export default function ScreenwriterNovelDetailPage() {
                   key={`${name}_${bubbleMessageIndex}_${i}`}
                   toolCallNames={[name]}
                   toolResultContents={[bubbleToolResults[i] ?? '']}
-                  streaming={isStreaming}
                 />
               ))
             : null;
@@ -523,6 +628,43 @@ export default function ScreenwriterNovelDetailPage() {
     />
   );
 
+  const renderNovelEditorPane = () => {
+    if (!activeEpisode) return <Empty description="未选择正文" />;
+    return (
+      <div
+        ref={novelEditorMountRef}
+        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      >
+        <NovelCrepeEditor
+          ref={novelCrepeRef}
+          providerKey={remountKey}
+          initialMarkdown={activeEpisode.contentMarkdown}
+          readOnly={editorExternallyBusy}
+          onMarkdownChange={onEditorMarkdownChange}
+          onSelectionPlain={onSelectionPlain}
+        />
+      </div>
+    );
+  };
+
+  const renderScriptEditorPane = () => {
+    if (!activeEpisode || !workspace) return <Empty description="未选择集" />;
+    if (activeEpisode.id === NOVEL_OUTLINE_EPISODE_ID) {
+      const novelScript =
+        workspace.novelScript ?? createEmptyNovelScript(workspace.novelId, workspace.title);
+      return <NovelScriptMetaPanel novelScript={novelScript} onChange={onNovelScriptChange} />;
+    }
+    return (
+      <NovelEpisodeScriptPanel
+        episodeScript={activeEpisode.episodeScript}
+        characters={workspace.novelScript?.characters ?? []}
+        episodeTitle={formatNovelEpisodeNavLabel(activeEpisode)}
+        onEpisodeScriptChange={onEpisodeScriptChange}
+        onGenerateScript={onGenerateScriptClick}
+      />
+    );
+  };
+
   const renderEditorColumn = () => (
     <Flex vertical style={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
       {aiStreamOverlay && (streamPreviewMd || editorExternallyBusy) ?
@@ -532,21 +674,24 @@ export default function ScreenwriterNovelDetailPage() {
             <ScreenwriterAssistantMarkdown content={streamPreviewMd} streaming />
           </div>
         </div>
-      : activeEpisode ?
-        <div
-          ref={novelEditorMountRef}
-          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-        >
-          <NovelCrepeEditor
-            ref={novelCrepeRef}
-            providerKey={remountKey}
-            initialMarkdown={activeEpisode.contentMarkdown}
-            readOnly={editorExternallyBusy}
-            onMarkdownChange={onEditorMarkdownChange}
-            onSelectionPlain={onSelectionPlain}
-          />
-        </div>
-      : <Empty description="未选择正文" />}
+      : middleViewMode === 'both' ?
+        <Splitter style={{ flex: 1, minHeight: 0, height: '100%' }} orientation="horizontal">
+          <Splitter.Panel defaultSize="50%" min="32%">
+            <Flex vertical style={{ height: '100%', minHeight: 0 }}>
+              {renderNovelEditorPane()}
+            </Flex>
+          </Splitter.Panel>
+          <Splitter.Panel defaultSize="50%" min="32%">
+            <Flex vertical style={{ height: '100%', minHeight: 0 }}>
+              {renderScriptEditorPane()}
+            </Flex>
+          </Splitter.Panel>
+        </Splitter>
+      : middleViewMode === 'script' ?
+        <Flex vertical style={{ flex: 1, minHeight: 0 }}>
+          {renderScriptEditorPane()}
+        </Flex>
+      : <Flex vertical style={{ flex: 1, minHeight: 0 }}>{renderNovelEditorPane()}</Flex>}
     </Flex>
   );
 
@@ -562,7 +707,7 @@ export default function ScreenwriterNovelDetailPage() {
     <div className="screenwriter-novel-workbench">
       <header className="screenwriter-novel-topbar">
         <Space orientation="horizontal" size={14} wrap>
-          <Tooltip title="返回列表">
+          <Tooltip title="返回小说列表">
             <Button type="text" icon={<i className="iconfont">&#xe930;</i>} onClick={() => navigate('/screenwriter')}>
               <i className="iconfont">&#xe647;</i>
             </Button>
@@ -590,6 +735,19 @@ export default function ScreenwriterNovelDetailPage() {
             />
           </Tooltip>
           <Flex align="center" gap={8}>
+            <Radio.Group
+              size="small"
+              optionType="button"
+              value={middleViewMode}
+              onChange={(e) => setMiddleViewMode(e.target.value as MiddleViewMode)}
+              options={[
+                { label: '小说', value: 'novel' },
+                { label: '小说/剧本', value: 'both' },
+                { label: '剧本', value: 'script' },
+              ]}
+            />
+          </Flex>
+          <Flex align="center" gap={8}>
             <MenuUnfoldOutlined style={{ opacity: episodeNavOpen ? 1 : 0.55 }} />
             <Text style={{ whiteSpace: 'nowrap' }}>集导航</Text>
             <Switch checked={episodeNavOpen} size="small" onChange={(c) => setEpisodeNavOpen(c)} />
@@ -599,6 +757,11 @@ export default function ScreenwriterNovelDetailPage() {
             <Text style={{ whiteSpace: 'nowrap' }}>AI 对话</Text>
             <Switch checked={aiOpen} size="small" onChange={(c) => setAiOpen(c)} />
           </Flex>
+          <CreateAudiobookProjectButton
+            novelId={novelId ?? ''}
+            workspace={workspace}
+            onWorkspaceChange={setWorkspace}
+          />
         </Space>
       </header>
 
@@ -607,15 +770,15 @@ export default function ScreenwriterNovelDetailPage() {
           <Splitter style={{ flex: 1, minHeight: 0, height: '100%' }} orientation="horizontal">
             <Splitter.Panel defaultSize={240} min={180} max={420} className="novel-episode-pane">
               <Flex vertical gap={10} style={{ height: '100%', padding: 12, overflow: 'hidden', minHeight: 0 }}>
-                <Input.Search
-                  allowClear
-                  placeholder="搜索集或大纲内容…"
-                  value={navQuery}
-                  onChange={(e) => setNavQuery(e.target.value)}
-                />
-                <Button type="primary" block onClick={openAddEpisode}>
-                  添加集
-                </Button>
+                <Flex align="center" gap={8}>
+                  <Input.Search
+                    allowClear
+                    placeholder="搜索集或大纲内容…"
+                    value={navQuery}
+                    onChange={(e) => setNavQuery(e.target.value)}
+                  />
+                  <Button type="primary" shape="circle" icon={<PlusOutlined />} onClick={openAddEpisode} />
+                </Flex>
                 <div className="novel-episode-scroll">
                   {filteredEpisodes.map((ep) => {
                     const on = workspace.activeEpisodeId === ep.id;

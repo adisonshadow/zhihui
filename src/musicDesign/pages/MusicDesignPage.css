@@ -1,0 +1,29 @@
+/* 与小说工作台类似的暗色全屏布局 */
+.music-design-workbench {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  background: #141414;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.music-design-topbar {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #1f1f1f;
+}
+
+.music-design-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.music-design-ai-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}

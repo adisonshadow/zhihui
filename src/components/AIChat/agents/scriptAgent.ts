@@ -1,7 +1,10 @@
 /**
  * 剧本 Agent 提示词模版（见功能文档 4.1、docs/短漫剧剧本元素说明.md）
+ *
+ * 新架构：同时注册为标准化 SkillAgentDefinition
  */
 import type { AgentPrompts } from '../types';
+import { registerSkillAgent } from '../registryTypes';
 
 export const scriptAgentPrompts: AgentPrompts = {
   agentKey: 'script',
@@ -18,3 +21,16 @@ export const scriptAgentPrompts: AgentPrompts = {
     { key: 'suggest-scenes', label: '建议分镜', message: '请根据当前剧情建议可增加的分镜' },
   ],
 };
+
+// ── 新架构：标准化 Skill Agent 注册 ──
+registerSkillAgent({
+  agentId: 'script_writer',
+  agentName: '剧本作家',
+  agentType: 'skill',
+  description: '精通剧本创作规范，将小说内容转化为包含场景、人物动作、台词、镜头描述的剧本，适配有声书、漫剧等不同场景需求',
+  skillPromptTemplate: `${scriptAgentPrompts.basePrompt}\n\n【额外需求】\n{{extra_requirements}}`,
+  supportedModels: ['script', 'action_script'],
+  allowedTools: ['generate_text', 'update_data'],
+  inputType: 'text',
+  outputType: 'text',
+});

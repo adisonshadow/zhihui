@@ -84,7 +84,10 @@ export interface RefIndicatorType {
   key: string;
   description: string;
   icon?: ReactNode;
+  /** 界面 Tag 展示文案（用户可见，勿含 episode_id 等技术字段） */
   content: ReactNode;
+  /** 发给 AI 时填入 description 的 %f（省略则用 content） */
+  aiSummary?: string;
 }
 
 /** `AIChatSidePanel` 扩展 `onSubmit` 的返回值：可覆盖随后交给 `handleSubmit` 的参数（与 Sender `onSubmit` 前三项对齐） */
@@ -92,6 +95,8 @@ export interface AIChatSidePanelOnSubmitReturn {
   message?: string;
   slotConfig?: SlotConfigType[];
   skill?: SkillType;
+  /** 并入本轮 system 的临时指令（与 emitUserMessage.ephemeralSystemInstructions 同效） */
+  ephemeralSystemAppend?: string;
 }
 
 export type AIChatSidePanelOnSubmit = (

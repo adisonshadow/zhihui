@@ -1,0 +1,130 @@
+.strudel-player {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  min-height: 44px;
+}
+
+.strudel-player__play-btn {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(22, 119, 255, 0.85);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.strudel-player__play-btn:hover:not(:disabled) {
+  background: rgba(22, 119, 255, 1);
+}
+
+.strudel-player__play-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.strudel-player__time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.65);
+  min-width: 72px;
+  white-space: nowrap;
+}
+
+.strudel-player__slider {
+  flex: 1;
+  min-width: 80px;
+  margin: 0 4px;
+}
+
+.strudel-player__slider .ant-slider-rail {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.strudel-player__slider .ant-slider-track {
+  background: rgba(22, 119, 255, 0.75);
+}
+
+.strudel-player__volume-btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(200, 200, 254, 0.75);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.strudel-player__volume-btn:hover:not(:disabled) {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.strudel-player__volume-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.strudel-player__volume-popover {
+  width: 160px;
+}
+
+.strudel-player__menu-btn {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.strudel-player__menu-btn:hover {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.strudel-player__more-panel {
+  min-width: 220px;
+}
+
+.strudel-player__more-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.strudel-player__menu-section {
+  min-width: 220px;
+}
+
+.strudel-player__menu-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.strudel-player__status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.strudel-player__status--error {
+  color: #ff7875;
+}

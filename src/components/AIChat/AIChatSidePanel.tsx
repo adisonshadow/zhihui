@@ -7,6 +7,8 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -14,21 +16,35 @@ import {
 } from 'react';
 import type { SlotConfigType, SkillType } from '@ant-design/x/lib/sender/interface';
 import { Button, Space, Divider, Flex, Select, Layout, Dropdown, InputNumber, Tooltip } from 'antd';
-import { PlusOutlined, LinkOutlined, RollbackOutlined, MessageOutlined, CloseOutlined } from '@ant-design/icons';
+import type { MenuProps } from 'antd';
+import { LinkOutlined, RollbackOutlined, CloseOutlined } from '@ant-design/icons';
 import { useAIChatCore } from './AIChatCore';
 import type { AIChatCoreProps } from './AIChatCore';
-import type { AIChatSidePanelHandle } from './aiChatPanelHandles';
-import type { AIModelConfig } from '@/types/settings';
-import { resolveRequestModelId } from '@/utils/aiModelRequestId';
+import type { AIChatSidePanelHandle, AIChatEmitUserMessagePayload } from './aiChatPanelHandles';
+import {
+  getAllSkillAgents,
+  buildExposedMultimodalAgents,
+  expertKeyFromSkillAgentId,
+  skillAgentIdFromExpertKey,
+  getSkillAgent,
+} from './registryTypes';
+import { MAIN_AGENT_KEY } from './experts';
+import type {
+  SkillAgentDefinition,
+  AgentUIConfigField,
+} from './registryTypes';
+import { formatModelSelectLabel } from '@/utils/presetModelInstances';
 import { getToolCardIdFromContent, isToolCardContent } from './utils/toolCardMarkers';
 import { PrepareGenStoriesCard } from './tools/PrepareGenStoriesCard';
 import { DrawerBubbleContent } from './utils/drawerContentRender';
-import type { AIChatSidePanelOnSubmit, RefIndicatorType } from './types';
+import { UnifiedStyleProvider } from './utils/unifiedStyle';
+import { GenerateImagesToolResult } from './tools/builtInTools/generate_images/generateImagesChatUi';
+import { GenerateVideoToolResult } from './tools/builtInTools/generate_video/generateVideoChatUi';
 import './AIChatSidePanel.css';
-
-function modelSelectLabel(m: AIModelConfig): string {
-  return m.name?.trim() || resolveRequestModelId(m) || m.id;
-}
+import type { AIChatSidePanelOnSubmit, RefIndicatorType } from './types';
+import { resolveAspectRatio, type DrawerAspectRatio } from './types/drawerOptions';
+import { IconButton } from '@/components/antd-plus/IconButton';
+import { SidePanelConversationControls } from './SidePanelConversationControls';
 
 const { Header, Content, Footer } = Layout;
 
@@ -72,6 +88,8 @@ export interface SidePanelAssistantContentRenderArgs {
   status?: string;
   messageId?: string | number;
   toolCallNames?: string[];
+  /** 本条 assistant 在完整会话里紧随其后的 tool 回包（Bubble 快照里可能已过滤掉 tool 行） */
+  toolChainResultContents?: string[];
   /** 对应 Bubble.List items 中下标，与普通泡顺序一致（含占位条；与 conversationBubbleSnapshot 对齐） */
   bubbleMessageIndex?: number;
   /** 当前会话本条消息所在列表的快照：`role` + `content`，与 bubble 顺序一致 */
@@ -93,6 +111,12 @@ export interface AIChatSidePanelProps extends AIChatCoreProps {
   sidePanelExternalConversationControl?: boolean;
   /** 顶栏右侧显示关闭按钮，点击时回调（抽卡页等全屏模式使用） */
   sidePanelOnClose?: () => void;
+  /**
+   * true：不渲染 SidePanel 内置顶栏，会话控件通过 onHeaderTrailingChange 交给外层 Shell（FloatingBottom / Popover）
+   */
+  sidePanelSuppressBuiltInHeader?: boolean;
+  /** 与 sidePanelSuppressBuiltInHeader 配合：向父级 Shell 顶栏右侧注入「新建对话 / 对话历史」 */
+  onHeaderTrailingChange?: (node: ReactNode) => void;
   /** 自定义 assistant 消息渲染（抽卡页用于给每个小说雏形注入工具面板） */
   sidePanelAssistantContentRender?: (args: SidePanelAssistantContentRenderArgs) => ReactNode;
   /**
@@ -112,20 +136,62 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
     sidePanelEmptyExtras,
     sidePanelExternalConversationControl = false,
     sidePanelOnClose,
+    sidePanelSuppressBuiltInHeader = false,
+    onHeaderTrailingChange,
     sidePanelAssistantContentRender,
     onSubmit: sidePanelOnSubmit,
     renderToolMessageContent,
     suppressEmptyConversationPrompts = false,
     suppressDrawerSenderSlots = false,
+    allowAgentSwitch = true,
+    suppressSenderAgentSkill: suppressSenderAgentSkillProp,
     ...coreProps
   } = props;
 
   const PrepCardResolved = prepareGenStoriesCardComponent ?? PrepareGenStoriesCard;
 
-  const core = useAIChatCore({ ...coreProps, agentKey, onAgentChange, enableReasoning, suppressDrawerSenderSlots });
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const core = useAIChatCore({
+    ...coreProps,
+    agentKey,
+    onAgentChange,
+    enableReasoning,
+    suppressDrawerSenderSlots,
+    allowAgentSwitch,
+    suppressSenderAgentSkill:
+      suppressSenderAgentSkillProp ?? (allowAgentSwitch && !!onAgentChange),
+  });
   const [refIndicatorItems, setRefIndicatorItems] = useState<RefIndicatorType[]>([]);
   const refIndicatorRef = useRef<RefIndicatorType[]>([]);
+
+  /** 可用 Agent 按钮组：合并注册表 + 暴露的多模态；排除禁止列表；仅保留当前页 mergedAgents 中存在的专家 */
+  const availableSkillAgents: SkillAgentDefinition[] = useMemo(() => {
+    const { exposedMultimodalAgents: exposedDecls } = coreProps;
+    const banned = new Set(coreProps.bannedAgentIds ?? []);
+    const registered = getAllSkillAgents();
+    const exposed = exposedDecls ? buildExposedMultimodalAgents(exposedDecls) : [];
+    const map = new Map<string, SkillAgentDefinition>();
+    for (const a of registered) map.set(a.agentId, a);
+    for (const a of exposed) map.set(a.agentId, a);
+    return Array.from(map.values()).filter((a) => !banned.has(a.agentId));
+  }, [coreProps.exposedMultimodalAgents, coreProps.bannedAgentIds]);
+
+  const handleCloseSkillAgent = useCallback(() => {
+    onAgentChange?.(MAIN_AGENT_KEY);
+  }, [onAgentChange]);
+
+  const handleSelectSkillAgent = useCallback(
+    (agentId: string) => {
+      const key = expertKeyFromSkillAgentId(agentId);
+      if (key) onAgentChange?.(key);
+    },
+    [onAgentChange]
+  );
+
+  /** 配置区字段值 */
+  const [configValues, setConfigValues] = useState<Record<string, string | number | boolean>>({});
+  const handleConfigChange = useCallback((name: string, value: string | number | boolean) => {
+    setConfigValues((prev) => ({ ...prev, [name]: value }));
+  }, []);
   useEffect(() => {
     refIndicatorRef.current = refIndicatorItems;
   }, [refIndicatorItems]);
@@ -141,7 +207,6 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
     senderHeader,
     missingHint,
     hasValidModel,
-    allowAgentSwitch,
     mergedAgents,
     composerNonce,
     composerDefaultText,
@@ -168,7 +233,51 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
     validModels,
     selectedChatModelId,
     onChatModelChange,
+    reasoningEnabled,
+    allowThinkToggle,
+    setReasoningEnabled,
   } = core;
+
+  const mergedAgentKeySet = useMemo(() => new Set(mergedAgents.map((a) => a.key)), [mergedAgents]);
+
+  const availableSkillAgentsFiltered = useMemo(
+    () =>
+      availableSkillAgents.filter((a) => {
+        const k = expertKeyFromSkillAgentId(a.agentId);
+        return k ? mergedAgentKeySet.has(k) : false;
+      }),
+    [availableSkillAgents, mergedAgentKeySet]
+  );
+
+  const selectedSkillAgent: SkillAgentDefinition | undefined = useMemo(() => {
+    if (agentKey === MAIN_AGENT_KEY) return undefined;
+    const sid = skillAgentIdFromExpertKey(agentKey);
+    return sid ? getSkillAgent(sid) : undefined;
+  }, [agentKey]);
+
+  const activeNonMainLabel =
+    agentKey !== MAIN_AGENT_KEY ? mergedAgents.find((m) => m.key === agentKey)?.label ?? agentKey : '';
+
+  const footerSkillBarEnabled = allowAgentSwitch && !!onAgentChange && availableSkillAgentsFiltered.length > 0;
+
+  /** draw_tool 的 uiConfig 已含出图数量/比例，写入 core.drawerOptions 供图片请求使用 */
+  useEffect(() => {
+    if (agentKey !== 'drawer') return;
+    if (!selectedSkillAgent?.uiConfig?.showPanel) return;
+    const n = configValues.imageCount;
+    const ar = configValues.aspectRatio;
+    setDrawerOptions((prev) => ({
+      ...prev,
+      ...(typeof n === 'number' ? { imageCount: n } : {}),
+      ...(typeof ar === 'string' && ar ? { aspectRatio: ar as DrawerAspectRatio } : {}),
+    }));
+  }, [
+    agentKey,
+    selectedSkillAgent?.uiConfig?.showPanel,
+    configValues.imageCount,
+    configValues.aspectRatio,
+    setDrawerOptions,
+  ]);
 
   /** Sender、emitUserMessage、Prompts：统一走注册的 `onSubmit`（含 refIndicator）；后两者忽略模板 pending */
   const commitOutboundSubmit = useCallback(
@@ -185,7 +294,11 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
       const finalMessage = typeof ret?.message === 'string' && ret.message.trim() ? ret.message.trim() : trimmed;
       const finalSlots = ret?.slotConfig ?? slotConfig;
       const finalSkill = ret?.skill ?? skill;
-      handleSubmit(finalMessage, finalSlots, finalSkill, { ignorePendingOutbound });
+      const ephem = (ret?.ephemeralSystemAppend ?? '').trim();
+      handleSubmit(finalMessage, finalSlots, finalSkill, {
+        ignorePendingOutbound,
+        ephemeralSystemAppend: ephem || undefined,
+      });
       senderRef.current?.clear?.();
     },
     [sidePanelOnSubmit, handleSubmit, senderRef]
@@ -205,7 +318,24 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
         setRefIndicatorItems(Array.isArray(items) ? items : []);
       },
       updateGlobalContext: core.updateGlobalContext,
-      emitUserMessage: (text: string) => commitOutboundSubmit(text, undefined, undefined, true),
+      emitUserMessage: (textOrPayload: string | AIChatEmitUserMessagePayload) => {
+        if (typeof textOrPayload === 'string') {
+          commitOutboundSubmit(textOrPayload, undefined, undefined, true);
+          return;
+        }
+        const trimmed = (textOrPayload.displayContent ?? '').trim();
+        if (!trimmed) return;
+        const ephem = (textOrPayload.ephemeralSystemInstructions ?? '').trim();
+        const refs = refIndicatorRef.current;
+        const ret = sidePanelOnSubmit?.(trimmed, undefined, undefined, refs);
+        const finalMessage =
+          typeof ret?.message === 'string' && ret.message.trim() ? ret.message.trim() : trimmed;
+        void handleSubmit(finalMessage, undefined, undefined, {
+          ignorePendingOutbound: true,
+          ephemeralSystemAppend: ephem || undefined,
+        });
+        senderRef.current?.clear?.();
+      },
       emitUserMessageInNewConversation: (text: string) => {
         const trimmed = (text ?? '').trim();
         if (!trimmed) return;
@@ -244,9 +374,38 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
       core.convItems,
       onAgentChange,
       commitOutboundSubmit,
+      handleSubmit,
       sidePanelOnSubmit,
     ]
   );
+
+  const conversationControls = useMemo(
+    () =>
+      !sidePanelExternalConversationControl ? (
+        <SidePanelConversationControls
+          convItems={convItems}
+          activeKey={activeKey}
+          onNewConversation={handleNewConversation}
+          onConversationChange={handleConversationChange}
+        />
+      ) : null,
+    [
+      sidePanelExternalConversationControl,
+      convItems,
+      activeKey,
+      handleNewConversation,
+      handleConversationChange,
+    ],
+  );
+
+  useLayoutEffect(() => {
+    if (!sidePanelSuppressBuiltInHeader || !onHeaderTrailingChange) return;
+    onHeaderTrailingChange(conversationControls);
+    return () => onHeaderTrailingChange(null);
+  }, [sidePanelSuppressBuiltInHeader, onHeaderTrailingChange, conversationControls]);
+
+  const showBuiltInHeader =
+    !sidePanelSuppressBuiltInHeader && (!sidePanelExternalConversationControl || sidePanelOnClose);
 
   return (
     <Layout
@@ -261,129 +420,11 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
         flexDirection: 'column',
       }}
     >
+      {showBuiltInHeader && (
       <Header style={{ padding: '0 16px', height: 40, flexShrink: 0, background: 'transparent', borderBottom: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Flex align="center" gap={8}>
-          {allowAgentSwitch && onAgentChange && (
-            <Select
-              size="small"
-              value={agentKey}
-              onChange={onAgentChange}
-              options={mergedAgents.map((e) => ({ value: e.key, label: e.label }))}
-              style={{ width: 120 }}
-              variant="borderless"
-            />
-          )}
-          {validModels.length > 1 && selectedChatModelId && onChatModelChange && (
-            <Select
-              size="small"
-              value={selectedChatModelId}
-              onChange={onChatModelChange}
-              options={validModels.map((m) => ({ value: m.id, label: modelSelectLabel(m) }))}
-              style={{ minWidth: 100, maxWidth: 200 }}
-              variant="borderless"
-              showSearch
-              optionFilterProp="label"
-            />
-          )}
-        </Flex>
+        <Flex align="center" gap={8} />
         <Flex align="center" gap={4}>
-          {!sidePanelExternalConversationControl && (
-            <>
-              <Button type="text" size="small" icon={<PlusOutlined />} onClick={handleNewConversation} title="新建对话" />
-
-              <Dropdown
-                open={historyOpen}
-                onOpenChange={setHistoryOpen}
-                trigger={['click']}
-                popupRender={() => {
-                  const now = Date.now();
-                  const todayStart = new Date(now).setHours(0, 0, 0, 0);
-                  const yesterdayStart = todayStart - 86400000;
-                  const todayItems = convItems.filter((c) => c.lastActive >= todayStart);
-                  const yesterdayItems = convItems.filter((c) => c.lastActive >= yesterdayStart && c.lastActive < todayStart);
-                  const olderItems = convItems.filter((c) => c.lastActive < yesterdayStart);
-                  return (
-                    <div
-                      style={{
-                        background: 'var(--ant-color-bg-elevated)',
-                        borderRadius: 8,
-                        boxShadow: 'var(--ant-box-shadow)',
-                        padding: '8px 0',
-                        minWidth: 220,
-                        maxHeight: 320,
-                        overflow: 'auto',
-                      }}
-                    >
-                      {todayItems.length > 0 && (
-                        <>
-                          <div style={{ padding: '4px 12px', fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>今天</div>
-                          {todayItems.map((c) => (
-                            <div
-                              key={c.key}
-                              onClick={() => { handleConversationChange(c.key); setHistoryOpen(false); }}
-                              style={{
-                                padding: '8px 12px',
-                                cursor: 'pointer',
-                                fontSize: 13,
-                                background: activeKey === c.key ? 'rgba(255,255,255,0.08)' : 'transparent',
-                              }}
-                            >
-                              {activeKey === c.key ? '[当前] ' : ''}{c.label}
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {yesterdayItems.length > 0 && (
-                        <>
-                          <div style={{ padding: '4px 12px', fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 8 }}>昨天</div>
-                          {yesterdayItems.map((c) => (
-                            <div
-                              key={c.key}
-                              onClick={() => { handleConversationChange(c.key); setHistoryOpen(false); }}
-                              style={{
-                                padding: '8px 12px',
-                                cursor: 'pointer',
-                                fontSize: 13,
-                                background: activeKey === c.key ? 'rgba(255,255,255,0.08)' : 'transparent',
-                              }}
-                            >
-                              {activeKey === c.key ? '[当前] ' : ''}{c.label}
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {olderItems.length > 0 && (
-                        <>
-                          <div style={{ padding: '4px 12px', fontSize: 12, color: 'rgba(255,255,255,0.45)', marginTop: 8 }}>更早</div>
-                          {olderItems.map((c) => (
-                            <div
-                              key={c.key}
-                              onClick={() => { handleConversationChange(c.key); setHistoryOpen(false); }}
-                              style={{
-                                padding: '8px 12px',
-                                cursor: 'pointer',
-                                fontSize: 13,
-                                background: activeKey === c.key ? 'rgba(255,255,255,0.08)' : 'transparent',
-                              }}
-                            >
-                              {activeKey === c.key ? '[当前] ' : ''}{c.label}
-                            </div>
-                          ))}
-                        </>
-                      )}
-                      {convItems.length === 0 && (
-                        <div style={{ padding: 16, fontSize: 13, color: 'rgba(255,255,255,0.45)', textAlign: 'center' }}>
-                          暂无对话记录
-                        </div>
-                      )}
-                    </div>
-                  );
-                }}
-              >
-                <Button type="text" size="small" icon={<MessageOutlined />} title="对话历史" />
-              </Dropdown>
-            </>
-          )}
+          {conversationControls}
           {sidePanelOnClose && (
             <Button
               type="text"
@@ -395,6 +436,7 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
           )}
         </Flex>
       </Header>
+      )}
 
       <Content style={{ flex: 1, minHeight: 0, minWidth: 0, overflow: 'auto', padding: '8px 16px' }}>
         {!hasMessages ? (
@@ -426,9 +468,11 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
           ) : null}
           </>
         ) : (
+          <UnifiedStyleProvider value={coreProps.a2uiConfig?.unifiedStyleSchema}>
           <Bubble.List
             items={bubbleItems}
-              role={{
+            className="yiman-bubble-list"
+            role={{
               assistant: {
                 placement: 'start',
                 variant: 'borderless',
@@ -439,6 +483,12 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
                       messageId?: string | number;
                       index?: number;
                       toolCallNames?: string[];
+                      toolChainResultContents?: string[];
+                      pendingGenerateImagesCount?: number;
+                      pendingGenerateImagesAspect?: string;
+                      pendingGenerateVideo?: boolean;
+                      toolResultImages?: string[];
+                      toolResultVideoUrl?: string;
                     };
                     status?: string;
                   })?.extraInfo;
@@ -466,17 +516,29 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
                     <DrawerBubbleContent
                       content={content}
                       isDrawerAgent={agentKey === 'drawer'}
-                      reasoningContent={enableReasoning ? (ex?.reasoningContent || '') : undefined}
+                      reasoningContent={reasoningEnabled ? (ex?.reasoningContent || '') : undefined}
                       status={status}
+                      pendingGenerateImagesCount={ex?.pendingGenerateImagesCount}
+                      pendingGenerateImagesAspect={ex?.pendingGenerateImagesAspect}
+                      pendingGenerateVideo={ex?.pendingGenerateVideo}
+                      toolResultImages={ex?.toolResultImages}
+                      toolResultVideoUrl={ex?.toolResultVideoUrl}
+                      drawerConfiguredImageCount={agentKey === 'drawer' ? drawerOptions.imageCount : undefined}
+                      drawerPlaceholderAspectRatio={
+                        agentKey === 'drawer'
+                          ? resolveAspectRatio(drawerOptions.aspectRatio, coreProps.canvasAspectRatio)
+                          : undefined
+                      }
                     />
                   );
                   if (sidePanelAssistantContentRender) {
                     return sidePanelAssistantContentRender({
                       content,
-                      reasoningContent: enableReasoning ? (ex?.reasoningContent || '') : undefined,
+                      reasoningContent: reasoningEnabled ? (ex?.reasoningContent || '') : undefined,
                       status,
                       messageId,
                       toolCallNames: ex?.toolCallNames,
+                      toolChainResultContents: ex?.toolChainResultContents,
                       bubbleMessageIndex,
                       conversationBubbleSnapshot,
                       defaultNode,
@@ -528,9 +590,16 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
                 contentRender: (content: string, info?: unknown) => {
                   const toolName = (info as { extraInfo?: { toolCallName?: string } })?.extraInfo
                     ?.toolCallName;
-                  return typeof renderToolMessageContent === 'function' ?
-                      renderToolMessageContent(content, { toolName })
-                    : <pre style={{ margin: 0, fontSize: 12 }}>{content}</pre>;
+                  if (typeof renderToolMessageContent === 'function') {
+                    return renderToolMessageContent(content, { toolName });
+                  }
+                  if (toolName === 'generate_images') {
+                    return <GenerateImagesToolResult content={content} />;
+                  }
+                  if (toolName === 'generate_video') {
+                    return <GenerateVideoToolResult content={content} />;
+                  }
+                  return null;
                 },
               },
               system: { placement: 'start', variant: 'borderless' },
@@ -538,6 +607,7 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
             autoScroll
             style={{ height: '100%' }}
           />
+          </UnifiedStyleProvider>
         )}
       </Content>
 
@@ -545,6 +615,7 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
         {missingHint && (
           <div style={{ fontSize: 12, color: 'rgba(255,100,100,0.9)', marginBottom: 4 }}>{missingHint}</div>
         )}
+
         {/* 与 docs/AI-demo/demo.tsx chatSender 一致：纵向留白，输入区独立成块 */}
         <Flex vertical gap={6} className="aichat-sender-wrap" style={{ width: '100%', minWidth: 1, overflow: 'hidden' }}>
         {refIndicatorItems.length > 0 ? (
@@ -557,7 +628,11 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
           key={`${agentKey}-${composerNonce}`}
           ref={senderRef}
           {...(composerDefaultText != null ? { defaultValue: composerDefaultText } : {})}
-          slotConfig={senderSlotConfig as readonly SlotConfigType[]}
+          slotConfig={
+            senderSkill || (senderSlotConfig?.length ?? 0) > 0
+              ? (senderSlotConfig as readonly SlotConfigType[])
+              : undefined
+          }
           skill={senderSkill}
           header={senderHeader}
           loading={isRequesting}
@@ -575,40 +650,122 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
             const SendButton = comps?.SendButton;
             const LoadingButton = comps?.LoadingButton;
             const isDrawer = core.agentKey === 'drawer';
+
+            /** 业务方案 §5：上传 → 模型 → 深度思考 → 可用 Agent；选中专家时名称/配置区占位；发送独立靠右 */
+            const skillMiddle =
+              footerSkillBarEnabled ?
+                agentKey !== MAIN_AGENT_KEY ?
+                  <>
+                    
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<CloseOutlined />}
+                      iconPlacement="end"
+                      onClick={handleCloseSkillAgent}
+                      aria-label="关闭专家模式"
+                    >
+                      {selectedSkillAgent?.agentName ?? activeNonMainLabel}
+                    </Button>
+
+                    {selectedSkillAgent?.uiConfig?.showPanel &&
+                      selectedSkillAgent.uiConfig.fields.map((field) => (
+                        <AgentConfigFieldInput
+                          key={field.name}
+                          field={field}
+                          value={configValues[field.name] ?? field.defaultValue}
+                          onChange={(v) => handleConfigChange(field.name, v)}
+                        />
+                      ))}
+                    {isDrawer && drawerOptions && !selectedSkillAgent?.uiConfig?.showPanel ?
+                      <>
+                        <Flex align="center" gap={4}>
+                          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>出图数量：</span>
+                          <InputNumber
+                            min={1}
+                            max={4}
+                            value={drawerOptions.imageCount}
+                            onChange={(v) => setDrawerOptions((p) => ({ ...p, imageCount: v ?? 1 }))}
+                            size="small"
+                            style={{ width: 64 }}
+                          />
+                        </Flex>
+                        <Flex align="center" gap={4}>
+                          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>图比例：</span>
+                          <Select
+                            size="small"
+                            value={drawerOptions.aspectRatio}
+                            onChange={(v) => setDrawerOptions((p) => ({ ...p, aspectRatio: v }))}
+                            options={DRAWER_ASPECT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                            style={{ width: 100 }}
+                          />
+                        </Flex>
+                      </>
+                    : null}
+                  </>
+                : (
+                  renderAgentButtonGroup(
+                    availableSkillAgentsFiltered,
+                    handleSelectSkillAgent,
+                    agentKey
+                  )
+                )
+              : null;
+
             return (
-              <Flex justify="space-between" align="center">
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<LinkOutlined />}
-                  onClick={() => core.setAttachmentsOpen(!core.attachmentsOpen)}
-                />
-                <Flex align="center" gap={16}>
-                  {isDrawer && drawerOptions && setDrawerOptions && (
-                    <>
-                      <Flex align="center" gap={4}>
-                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>出图数量：</span>
-                        <InputNumber
-                          min={1}
-                          max={4}
-                          value={drawerOptions.imageCount}
-                          onChange={(v) => setDrawerOptions((p) => ({ ...p, imageCount: v ?? 1 }))}
-                          size="small"
-                          style={{ width: 64 }}
-                        />
-                      </Flex>
-                      <Flex align="center" gap={4}>
-                        <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)' }}>图比例：</span>
-                        <Select
-                          size="small"
-                          value={drawerOptions.aspectRatio}
-                          onChange={(v) => setDrawerOptions((p) => ({ ...p, aspectRatio: v }))}
-                          options={DRAWER_ASPECT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                          style={{ width: 100 }}
-                        />
-                      </Flex>
-                    </>
-                  )}
+              <Flex justify="space-between" align="center" gap={8} wrap="wrap" style={{ width: '100%' }}>
+                <Flex align="center" gap={8} wrap style={{ flex: 1, minWidth: 0 }}>
+                  {/* 附件 / 上传按钮 */}
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<LinkOutlined />}
+                    onClick={() => core.setAttachmentsOpen(!core.attachmentsOpen)}
+                    title="附件 / 上传"
+                  />
+                  {/* 模型切换下拉框 */}
+                  {validModels.length > 1 && selectedChatModelId && onChatModelChange ?
+                    <Select
+                      size="small"
+                      value={selectedChatModelId}
+                      onChange={onChatModelChange}
+                      options={validModels.map((m) => ({
+                        value: m.id,
+                        label: formatModelSelectLabel(m, validModels),
+                      }))}
+                      style={{ minWidth: 80, maxWidth: 160, width: 'auto', cursor: 'pointer' }}
+                      variant="borderless"
+                      popupMatchSelectWidth={false}
+                      showSearch={{
+                        optionFilterProp: 'label',
+                      }}
+                    />
+                  : null}
+                  {/* 深度思考按钮 */}
+                  {allowThinkToggle ?
+                    <IconButton
+                      type="default"
+                      size="small"
+                      icon={<i className="iconfont">&#xe71f;</i>}
+                      iconSize={18}
+                      enabled={reasoningEnabled}
+                      enabledStyle={{ background: 'rgba(23,119,255,0.25)' }}
+                      tooltip={
+                        reasoningEnabled
+                          ? '深度思考已开启，点击关闭'
+                          : '深度思考已关闭，点击开启'
+                      }
+                      aria-label={reasoningEnabled ? '关闭深度思考' : '开启深度思考'}
+                      onClick={() => setReasoningEnabled(!reasoningEnabled)}
+                    >
+                      深度思考
+                    </IconButton>
+                  : null}
+                  {/* 专家模式按钮组 */}
+                  {skillMiddle}
+                </Flex>
+                {/* 发送按钮 */}
+                <Flex align="center" gap={8} style={{ flexShrink: 0 }}>
                   {SendButton && LoadingButton ? (
                     isRequesting ? <LoadingButton type="default" /> : <SendButton type="primary" />
                   ) : (
@@ -618,10 +775,17 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
                       loading={isRequesting}
                       onClick={() => {
                         const v = senderRef.current?.getValue?.();
-                        const raw = v && typeof v === 'object' && 'value' in v ? String((v as { value?: unknown }).value ?? '') : '';
+                        const raw =
+                          v && typeof v === 'object' && 'value' in v ?
+                            String((v as { value?: unknown }).value ?? '')
+                          : '';
                         const text = raw.trim();
                         if (text) {
-                          handleSenderSubmit(text, (v as { slotConfig?: SlotConfigType[] })?.slotConfig, (v as { skill?: SkillType })?.skill);
+                          handleSenderSubmit(
+                            text,
+                            (v as { slotConfig?: SlotConfigType[] })?.slotConfig,
+                            (v as { skill?: SkillType })?.skill
+                          );
                         }
                       }}
                     >
@@ -648,3 +812,119 @@ export const AIChatSidePanel = forwardRef<AIChatSidePanelHandle, AIChatSidePanel
     </Layout>
   );
 });
+
+// ── 新架构 §5：辅助组件 ──
+
+/** 渲染可用 Agent 按钮组，超出宽度折叠为 Dropdown */
+function renderAgentButtonGroup(
+  agents: SkillAgentDefinition[],
+  onSelect: (agentId: string) => void,
+  activeExpertKey: string,
+): ReactNode {
+  if (agents.length === 0) return null;
+
+  const maxVisible = 4;
+  const visible = agents.slice(0, maxVisible);
+  const overflow = agents.slice(maxVisible);
+
+  const overflowMenu: MenuProps['items'] = overflow.map((a) => ({
+    key: a.agentId,
+    label: a.agentName,
+    onClick: () => onSelect(a.agentId),
+  }));
+
+  return (
+    <>
+      {visible.map((a) => {
+        const expertKey = expertKeyFromSkillAgentId(a.agentId);
+        const active = expertKey != null && expertKey === activeExpertKey;
+        return (
+          <Button
+            key={a.agentId}
+            size="small"
+            type={active ? 'primary' : 'default'}
+            style={{
+              fontSize: 12,
+              borderRadius: 4,
+              ...(!active ?
+                {
+                  borderColor: 'rgba(255,255,255,0.15)',
+                  color: 'rgba(255,255,255,0.75)',
+                }
+              : {}),
+            }}
+            onClick={() => onSelect(a.agentId)}
+          >
+            {a.agentName}
+          </Button>
+        );
+      })}
+      {overflow.length > 0 && (
+        <Dropdown menu={{ items: overflowMenu }} trigger={['click']}>
+          <Button
+            size="small"
+            type="default"
+            style={{
+              fontSize: 12,
+              borderRadius: 4,
+              borderColor: 'rgba(255,255,255,0.15)',
+              color: 'rgba(255,255,255,0.75)',
+            }}
+          >
+            +{overflow.length} 更多
+          </Button>
+        </Dropdown>
+      )}
+    </>
+  );
+}
+
+/** 渲染 Agent 配置区字段输入控件 */
+function AgentConfigFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: AgentUIConfigField;
+  value: string | number | boolean | undefined;
+  onChange: (v: string | number | boolean) => void;
+}): ReactNode {
+  const labelStyle: React.CSSProperties = {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.65)',
+    whiteSpace: 'nowrap',
+  };
+
+  switch (field.type) {
+    case 'select':
+      return (
+        <Flex key={field.name} align="center" gap={4}>
+          <span style={labelStyle}>{field.label}：</span>
+          <Select
+            size="small"
+            value={String(value ?? field.defaultValue ?? '')}
+            onChange={(v) => onChange(v)}
+            options={(field.options ?? []).map((o) => ({ value: o.value, label: o.label }))}
+            style={{ width: 100 }}
+          />
+        </Flex>
+      );
+    case 'number':
+      return (
+        <Flex key={field.name} align="center" gap={4}>
+          <span style={labelStyle}>{field.label}：</span>
+          <InputNumber
+            size="small"
+            min={field.min}
+            max={field.max}
+            step={field.step}
+            value={typeof value === 'number' ? value : (field.defaultValue as number) ?? 1}
+            onChange={(v) => onChange(v ?? 1)}
+            style={{ width: 64 }}
+          />
+        </Flex>
+      );
+    default:
+      return null;
+  }
+}

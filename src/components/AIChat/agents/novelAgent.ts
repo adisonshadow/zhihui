@@ -1,7 +1,10 @@
 /**
  * 小说写作 Agent：小说编写工作台专用，工具调用 + novel-body-json 代码块输出正文
+ *
+ * 新架构：同时注册为标准化 SkillAgentDefinition
  */
 import type { AgentPrompts } from '../types';
+import { registerSkillAgent } from '../registryTypes';
 
 export const novelAgentPrompts: AgentPrompts = {
   agentKey: 'novel',
@@ -38,3 +41,16 @@ export const novelAgentPrompts: AgentPrompts = {
     { key: 'rewrite-selection', label: '重写选取段落', message: '请重写当前章节中选中的段落，换个表达方式但保留核心情节走向，替换当前选中的内容' },
   ],
 };
+
+// ── 新架构：标准化 Skill Agent 注册 ──
+registerSkillAgent({
+  agentId: 'novel_writer',
+  agentName: '小说作家',
+  agentType: 'skill',
+  description: '专注小说创作，根据故事大纲生成符合人设、情节连贯、文风统一的小说章节，支持调整叙事视角、节奏快慢',
+  skillPromptTemplate: `${novelAgentPrompts.basePrompt}\n\n【额外需求】\n{{extra_requirements}}`,
+  supportedModels: ['novel'],
+  allowedTools: ['generate_text', 'update_data'],
+  inputType: 'text',
+  outputType: 'text',
+});

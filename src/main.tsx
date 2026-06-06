@@ -52,7 +52,7 @@ const customTheme = {
         "colorBgElevated": "rgb(45,45,45)"
       },
       "Switch": {
-        "colorPrimary": "rgb(156,204,255)"
+        "colorPrimary": "rgb(69, 157, 251)"
       },
       "Collapse": {
         "colorBorder": "rgba(131,131,131,0.15)",

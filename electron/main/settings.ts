@@ -19,6 +19,8 @@ export interface AIModelConfig {
   capabilityKeys: string[];
   presetKey?: string;
   isLocal?: boolean;
+  /** MiniMax 音色复刻 / 音色设计 API 必填 GroupId */
+  minimaxGroupId?: string;
 }
 
 export type AIMattingProvider = 'volcengine';
@@ -48,6 +50,47 @@ export interface LocalTtsConfig {
   profiles: Record<string, LocalTtsModelProfile>;
 }
 
+/** 本地音效单模型配置 */
+export interface LocalSfxModelProfile {
+  modelPath: string;
+  idleTimeoutMinutes?: number;
+  mossAudioTokenizerPath?: string;
+  defaultDurationSeconds?: number;
+}
+
+/** 本地音效配置 */
+export interface LocalSfxConfig {
+  enabled: boolean;
+  modelKey: string;
+  profiles: Record<string, LocalSfxModelProfile>;
+}
+
+function migrateLocalSfxFromDisk(raw: Record<string, unknown> | undefined): LocalSfxConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const modelKey = (typeof raw.modelKey === 'string' ? raw.modelKey : null) ?? 'moss_sound_effect';
+  const profiles: Record<string, LocalSfxModelProfile> = {};
+  if (raw.profiles && typeof raw.profiles === 'object') {
+    for (const [k, v] of Object.entries(raw.profiles as Record<string, unknown>)) {
+      if (!v || typeof v !== 'object') continue;
+      const p = v as Record<string, unknown>;
+      const row: LocalSfxModelProfile = {
+        modelPath: typeof p.modelPath === 'string' ? p.modelPath : '',
+        idleTimeoutMinutes: typeof p.idleTimeoutMinutes === 'number' ? p.idleTimeoutMinutes : 3,
+        defaultDurationSeconds: typeof p.defaultDurationSeconds === 'number' ? p.defaultDurationSeconds : 6,
+      };
+      if (typeof p.mossAudioTokenizerPath === 'string' && p.mossAudioTokenizerPath.trim()) {
+        row.mossAudioTokenizerPath = p.mossAudioTokenizerPath.trim();
+      }
+      profiles[k] = row;
+    }
+  }
+  return {
+    enabled: raw.enabled === true,
+    modelKey,
+    profiles,
+  };
+}
+
 function migrateLocalTtsFromDisk(raw: Record<string, unknown> | undefined): LocalTtsConfig | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const modelKey = (typeof raw.modelKey === 'string' ? raw.modelKey : null) ?? 'longcat_audio_dit';
@@ -61,7 +104,7 @@ function migrateLocalTtsFromDisk(raw: Record<string, unknown> | undefined): Loca
         idleTimeoutMinutes: typeof p.idleTimeoutMinutes === 'number' ? p.idleTimeoutMinutes : 3,
       };
       if (
-        (k === 'moss_tts' || k === 'moss_tts_local_mlx') &&
+        (k === 'moss_tts' || k === 'moss_tts_local_mlx' || k === 'moss_tts_nano') &&
         typeof p.mossAudioTokenizerPath === 'string' &&
         p.mossAudioTokenizerPath.trim()
       ) {
@@ -94,15 +137,42 @@ function migrateLocalTtsFromDisk(raw: Record<string, unknown> | undefined): Loca
 
 export interface NovelWriterConfig {
   coverImageCount: number;
+  /** 封面助手：提示词中带「作者 xxx」署名 */
+  authorName?: string;
+}
+
+function normalizeNovelWriterAuthorName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const s = raw
+    .replace(/[\r\n\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64);
+  return s || undefined;
 }
 
 export interface AISettings {
   models: AIModelConfig[];
   aiMattingConfigs?: AIMattingConfig[];
   localTts?: LocalTtsConfig;
+  localSfx?: LocalSfxConfig;
   novelWriter?: NovelWriterConfig;
+  /** 有声书 */
+  audiobook?: {
+    voiceSamplesRootDir?: string;
+    defaultTtsModelKey?: string;
+    savedVoiceSamples?: Array<{
+      id: string;
+      name: string;
+      relativePath: string;
+      voiceDescription?: string;
+      createdAt: string;
+    }>;
+  };
   novelBgVideo?: string;
   projectBgVideo?: string;
+  audiobookBgVideo?: string;
+  toolboxBgVideo?: string;
   defaultProjectRoot?: string;
   canvasAutoFitViewport?: boolean;
   /** 弹窗遮罩模糊；默认 true */
@@ -202,7 +272,11 @@ export function loadAISettings(): AISettings {
         if (parsed.novelWriter && typeof parsed.novelWriter === 'object') {
           const nw = parsed.novelWriter as Record<string, unknown>;
           const coverCount = typeof nw.coverImageCount === 'number' ? nw.coverImageCount : 4;
-          result.novelWriter = { coverImageCount: Math.max(1, Math.min(12, coverCount)) };
+          const authorName = normalizeNovelWriterAuthorName(nw.authorName);
+          result.novelWriter = {
+            coverImageCount: Math.max(1, Math.min(12, coverCount)),
+            ...(authorName ? { authorName } : {}),
+          };
         }
         if (typeof parsed.novelBgVideo === 'string') {
           result.novelBgVideo = parsed.novelBgVideo;
@@ -210,9 +284,59 @@ export function loadAISettings(): AISettings {
         if (typeof parsed.projectBgVideo === 'string') {
           result.projectBgVideo = parsed.projectBgVideo;
         }
+        if (typeof parsed.audiobookBgVideo === 'string') {
+          result.audiobookBgVideo = parsed.audiobookBgVideo;
+        }
+        if (typeof parsed.toolboxBgVideo === 'string') {
+          result.toolboxBgVideo = parsed.toolboxBgVideo;
+        }
         if (parsed.localTts && typeof parsed.localTts === 'object') {
           const migrated = migrateLocalTtsFromDisk(parsed.localTts as Record<string, unknown>);
           if (migrated) result.localTts = migrated;
+        }
+        if (parsed.localSfx && typeof parsed.localSfx === 'object') {
+          const migratedSfx = migrateLocalSfxFromDisk(parsed.localSfx as Record<string, unknown>);
+          if (migratedSfx) result.localSfx = migratedSfx;
+        }
+        if (parsed.audiobook && typeof parsed.audiobook === 'object') {
+          const ab = parsed.audiobook as Record<string, unknown>;
+          const legacyRoot = typeof ab.voiceSamplesRootDir === 'string' ? ab.voiceSamplesRootDir.trim() : '';
+          const presetRoot =
+            typeof ab.presetVoiceSamplesRootDir === 'string' ?
+              ab.presetVoiceSamplesRootDir.trim()
+            : legacyRoot;
+          const customRoot =
+            typeof ab.customVoiceSamplesRootDir === 'string' ?
+              ab.customVoiceSamplesRootDir.trim()
+            : legacyRoot;
+          const defaultTtsModelKey =
+            typeof ab.defaultTtsModelKey === 'string' ? ab.defaultTtsModelKey.trim() : '';
+          const savedRaw = ab.savedVoiceSamples;
+          const savedVoiceSamples =
+            Array.isArray(savedRaw) ?
+              savedRaw
+                .map((x: unknown) => {
+                  const o = x as Record<string, unknown>;
+                  const id = typeof o.id === 'string' ? o.id.trim() : '';
+                  const name = typeof o.name === 'string' ? o.name.trim() : '';
+                  const relativePath =
+                    typeof o.relativePath === 'string' ? o.relativePath.trim().replace(/\\/g, '/') : '';
+                  const createdAt =
+                    typeof o.createdAt === 'string' ? o.createdAt.trim() : new Date().toISOString();
+                  const voiceDescription =
+                    typeof o.voiceDescription === 'string' ? o.voiceDescription.trim() : undefined;
+                  if (!id || !name || !relativePath) return null;
+                  return { id, name, relativePath, createdAt, voiceDescription };
+                })
+                .filter((x): x is NonNullable<typeof x> => x != null)
+            : [];
+
+          const row: NonNullable<AISettings['audiobook']> = {};
+          if (presetRoot) row.presetVoiceSamplesRootDir = presetRoot;
+          if (customRoot) row.customVoiceSamplesRootDir = customRoot;
+          if (defaultTtsModelKey) row.defaultTtsModelKey = defaultTtsModelKey;
+          if (savedVoiceSamples.length > 0) row.savedVoiceSamples = savedVoiceSamples;
+          if (Object.keys(row).length > 0) result.audiobook = row;
         }
         return result;
       }
@@ -252,6 +376,13 @@ function defaultMattingConfig(): AIMattingConfig {
 export function saveAISettings(data: AISettings): { ok: boolean; error?: string } {
   try {
     const p = getSettingsPath();
+    if (fs.existsSync(p)) {
+      try {
+        fs.copyFileSync(p, `${p}.bak`);
+      } catch {
+        /* 备份失败不阻断保存 */
+      }
+    }
     const toSave: AISettings = {
       models: data.models.map((m) => {
         const row: AIModelConfig = {
@@ -267,6 +398,7 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
         if (m.primaryVersion) row.primaryVersion = m.primaryVersion;
         if (m.presetKey) row.presetKey = m.presetKey;
         if (m.isLocal === true) row.isLocal = true;
+        if (m.minimaxGroupId?.trim()) row.minimaxGroupId = m.minimaxGroupId.trim();
         return row;
       }),
       aiMattingConfigs: Array.isArray(data.aiMattingConfigs)
@@ -289,6 +421,14 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
         profiles: lt.profiles && typeof lt.profiles === 'object' ? lt.profiles : {},
       };
     }
+    if (data.localSfx) {
+      const ls = data.localSfx;
+      toSave.localSfx = {
+        enabled: ls.enabled === true,
+        modelKey: ls.modelKey ?? 'moss_sound_effect',
+        profiles: ls.profiles && typeof ls.profiles === 'object' ? ls.profiles : {},
+      };
+    }
     if (data.defaultProjectRoot !== undefined) {
       toSave.defaultProjectRoot = data.defaultProjectRoot;
     }
@@ -299,8 +439,11 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
       toSave.modalMaskBlur = data.modalMaskBlur;
     }
     if (data.novelWriter) {
+      const nw = data.novelWriter;
+      const authorName = normalizeNovelWriterAuthorName(nw.authorName);
       toSave.novelWriter = {
-        coverImageCount: Math.max(1, Math.min(12, data.novelWriter.coverImageCount ?? 4)),
+        coverImageCount: Math.max(1, Math.min(12, nw.coverImageCount ?? 4)),
+        ...(authorName ? { authorName } : {}),
       };
     }
     if (data.novelBgVideo !== undefined) {
@@ -308,6 +451,44 @@ export function saveAISettings(data: AISettings): { ok: boolean; error?: string 
     }
     if (data.projectBgVideo !== undefined) {
       toSave.projectBgVideo = data.projectBgVideo;
+    }
+    if (data.audiobookBgVideo !== undefined) {
+      toSave.audiobookBgVideo = data.audiobookBgVideo;
+    }
+    if (data.toolboxBgVideo !== undefined) {
+      toSave.toolboxBgVideo = data.toolboxBgVideo;
+    }
+    if (data.audiobook && typeof data.audiobook === 'object') {
+      const legacyRoot =
+        typeof data.audiobook.voiceSamplesRootDir === 'string' ? data.audiobook.voiceSamplesRootDir.trim() : '';
+      const presetRoot =
+        typeof data.audiobook.presetVoiceSamplesRootDir === 'string' ?
+          data.audiobook.presetVoiceSamplesRootDir.trim()
+        : legacyRoot;
+      const customRoot =
+        typeof data.audiobook.customVoiceSamplesRootDir === 'string' ?
+          data.audiobook.customVoiceSamplesRootDir.trim()
+        : legacyRoot;
+      const defaultTtsModelKey =
+        typeof data.audiobook.defaultTtsModelKey === 'string' ? data.audiobook.defaultTtsModelKey.trim() : '';
+      const sv = Array.isArray(data.audiobook.savedVoiceSamples) ?
+        data.audiobook.savedVoiceSamples.map((x) => ({
+          id: String(x?.id ?? '').trim(),
+          name: String(x?.name ?? '').trim(),
+          relativePath: String(x?.relativePath ?? '').trim().replace(/\\/g, '/'),
+          voiceDescription:
+            typeof x?.voiceDescription === 'string' && x.voiceDescription.trim()
+              ? x.voiceDescription.trim()
+              : undefined,
+          createdAt: String(x?.createdAt ?? '').trim() || new Date().toISOString(),
+        }))
+      : [];
+      const row: NonNullable<AISettings['audiobook']> = {};
+      if (presetRoot) row.presetVoiceSamplesRootDir = presetRoot;
+      if (customRoot) row.customVoiceSamplesRootDir = customRoot;
+      if (defaultTtsModelKey) row.defaultTtsModelKey = defaultTtsModelKey;
+      if (sv.length > 0) row.savedVoiceSamples = sv.filter((x) => x.id && x.name && x.relativePath);
+      toSave.audiobook = Object.keys(row).length > 0 ? row : {};
     }
     fs.writeFileSync(p, JSON.stringify(toSave, null, 2), 'utf-8');
     return { ok: true };

@@ -78,7 +78,9 @@ class TtsHandler(BaseHTTPRequestHandler):
         global LAST_REQUEST_TIME
         if self.path == "/health":
             LAST_REQUEST_TIME = time.time()
-            self.send_json(200, {"ok": True, "message": "ready", "backend": BACKEND})
+            import tts_voice_ref_routes as vref
+
+            self.send_json(200, {"ok": True, "message": "ready", "backend": BACKEND, **vref.health_extra()})
         else:
             send_json(self, 404, {"ok": False, "error": "Not Found"})
 
@@ -87,13 +89,26 @@ class TtsHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global LAST_REQUEST_TIME
+        LAST_REQUEST_TIME = time.time()
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(content_len))
+
+        import tts_voice_ref_routes as vref
+        import voice_reference_cache as vrc
+
+        def _encode(ref_path: str, _ref_text, _body):
+            if MOSS_STATE is None:
+                raise RuntimeError("MOSS model not loaded")
+            _loaded_model, _loaded_codec, processor = MOSS_STATE
+            return vrc._encode_moss(processor, ref_path)
+
+        if vref.handle_post(self.path, self, body, BACKEND, _encode):
+            return
+
         if self.path != "/generate":
             send_json(self, 404, {"ok": False, "error": "Not Found"})
             return
 
-        LAST_REQUEST_TIME = time.time()
-        content_len = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_len))
         text = body.get("text", "").strip()
         if not text:
             send_json(self, 400, {"ok": False, "error": "text is required"})
@@ -117,10 +132,23 @@ class TtsHandler(BaseHTTPRequestHandler):
 
         loaded_model, loaded_codec, processor = MOSS_STATE
 
+        ref_raw = (body.get("referenceAudioPath") or "").strip()
+        ref_path = ref_raw if ref_raw and os.path.isfile(ref_raw) else None
+        if ref_raw and not ref_path:
+            print(
+                json.dumps(
+                    {
+                        "event": "moss_ref_file_missing",
+                        "referenceAudioPath": ref_raw,
+                        "exists": os.path.exists(ref_raw),
+                    }
+                ),
+                flush=True,
+            )
+
         args = SimpleNamespace(
             text=text,
             mode="generation",
-            reference_audio=None,
             instruction=None,
             quality=None,
             sound_event=None,
@@ -147,22 +175,37 @@ class TtsHandler(BaseHTTPRequestHandler):
         )
 
         use_kv_cache = False if args.no_kv_cache else True
-        generation_config = MossTTSLocalGenerationConfig(
-            max_new_tokens=None if args.no_max_new_tokens else args.max_new_tokens,
-            safety_max_new_tokens=args.safety_max_new_tokens,
-            n_vq_for_inference=args.n_vq,
-            text_temperature=args.text_temperature,
-            text_top_k=args.text_top_k,
-            text_top_p=args.text_top_p,
-            text_repetition_penalty=args.text_repetition_penalty,
-            audio_temperature=args.audio_temperature,
-            audio_top_k=args.audio_top_k,
-            audio_top_p=args.audio_top_p,
-            audio_repetition_penalty=args.audio_repetition_penalty,
-            do_sample=False if args.greedy else None,
-            use_kv_cache=use_kv_cache,
-        )
+        # 有参考音色时优先使用克隆推荐采样参数（mlx_speech MossTTSLocalGenerationConfig.clone_v1_defaults）
+        if ref_path:
+            generation_config = MossTTSLocalGenerationConfig.clone_v1_defaults(
+                max_new_tokens=None if args.no_max_new_tokens else args.max_new_tokens,
+                safety_max_new_tokens=args.safety_max_new_tokens,
+                n_vq_for_inference=args.n_vq,
+                text_temperature=args.text_temperature,
+                text_top_k=args.text_top_k,
+                text_top_p=args.text_top_p,
+                text_repetition_penalty=args.text_repetition_penalty,
+                do_sample=False if args.greedy else None,
+                use_kv_cache=use_kv_cache,
+            )
+        else:
+            generation_config = MossTTSLocalGenerationConfig(
+                max_new_tokens=None if args.no_max_new_tokens else args.max_new_tokens,
+                safety_max_new_tokens=args.safety_max_new_tokens,
+                n_vq_for_inference=args.n_vq,
+                text_temperature=args.text_temperature,
+                text_top_k=args.text_top_k,
+                text_top_p=args.text_top_p,
+                text_repetition_penalty=args.text_repetition_penalty,
+                audio_temperature=args.audio_temperature,
+                audio_top_k=args.audio_top_k,
+                audio_top_p=args.audio_top_p,
+                audio_repetition_penalty=args.audio_repetition_penalty,
+                do_sample=False if args.greedy else None,
+                use_kv_cache=use_kv_cache,
+            )
 
+        # API 须为 reference: 路径/波形列表；误用 reference_audio 会导致 TypeError 并被旧逻辑去掉参考
         user_kwargs = {
             "text": args.text,
             "instruction": args.instruction,
@@ -172,7 +215,36 @@ class TtsHandler(BaseHTTPRequestHandler):
             "ambient_sound": args.ambient_sound,
             "language": args.language,
         }
-        conversations = [[processor.build_user_message(**user_kwargs)]]
+        voice_ref_cache_hit = False
+        if ref_path:
+            import voice_reference_cache as vrc
+
+            lookup = vrc.get_or_encode(
+                BACKEND,
+                ref_path,
+                encoder=lambda: vrc._encode_moss(processor, ref_path),
+            )
+            from voice_reference_cache import MossVoicePayload
+
+            voice_ref_cache_hit = lookup.cache_hit
+            moss_payload = lookup.entry.payload
+            if not isinstance(moss_payload, MossVoicePayload):
+                raise RuntimeError("invalid moss voice cache payload")
+            user_kwargs["reference"] = moss_payload.audio_codes
+            print(
+                json.dumps(
+                    {
+                        "event": "moss_generate_start",
+                        "text_chars": len(text),
+                        "has_ref_audio": True,
+                        "voice_ref_cache_hit": voice_ref_cache_hit,
+                        "voice_ref_from_disk": lookup.from_disk,
+                    }
+                ),
+                flush=True,
+            )
+        user_msg = processor.build_user_message(**user_kwargs)
+        conversations = [[user_msg]]
 
         result = synthesize_moss_tts_local_conversations(
             loaded_model.model,

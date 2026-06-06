@@ -17,6 +17,8 @@ export const CAPABILITY_TAGS: CapabilityTag[] = [
   { key: 'script', label: '生成剧本' },
   { key: 'novel', label: '小说创作' },
   { key: 'voice_over', label: '生成配音' },
+  { key: 'voice_design', label: '音色设计' },
+  { key: 'voice_enrollment', label: '音色复制' },
   { key: 'music', label: '生成音乐' },
   { key: 'sound_effect', label: '生成语音特效' },
   { key: 'exec_script', label: '生成执行脚本' },
@@ -31,7 +33,8 @@ export const CAPABILITY_TAGS: CapabilityTag[] = [
   { key: 'image_camera_angle', label: '镜头与视角' },
   { key: 'multi_image_fusion', label: '多图融合' },
   { key: 'interactive_image_edit', label: '交互式图像编辑' },
-  { key: 'agent_orchestration', label: 'Agent 调度' },
+  /** 通用智能 Agent 专属能力 Tag */
+  { key: 'agent_orchestration', label: '通用智能' },
 ];
 
 export interface AIModelConfig {
@@ -60,6 +63,8 @@ export interface AIModelConfig {
   vendorKey?: string;
   /** 本地部署：可无密钥，请求不带 Authorization（见功能文档 3.1.4） */
   isLocal?: boolean;
+  /** MiniMax 音色复刻/上传所需 GroupId（控制台「账户信息」） */
+  minimaxGroupId?: string;
 }
 
 /** AI 抠图服务提供商（见 docs/AI抠图配置说明.md） */
@@ -105,6 +110,12 @@ export const LOCAL_TTS_MODEL_OPTIONS: LocalTtsModelOption[] = [
     description:
       'OpenMOSS MOSS-TTS 本地推理；可按设备选择合适权重/推理后端（访问方式一致）。需配合 mlx-speech 与模型 README 指引',
   },
+  {
+    key: 'moss_tts_nano',
+    label: 'MOSS-TTS-Nano',
+    description:
+      'OpenMOSS 轻量多语 TTS（mlx-audio）；须 MLX 权重（非 ModelScope 原版 pytorch_model.bin）。克隆须参考音频 + MOSS-Audio-Tokenizer-Nano',
+  },
 ];
 
 /** 单个本地 TTS 模型的持久化配置 */
@@ -114,8 +125,8 @@ export interface LocalTtsModelProfile {
   /** 常驻服务空闲超时（分钟）；默认 3；0 表示永不超时（LongCat/MOSS 均由 Node 侧计时） */
   idleTimeoutMinutes?: number;
   /**
-   * 仅 MOSS-TTS：MOSS-Audio-Tokenizer（codec）权重根目录；可与主模型分开下载。
-   * 保存后会注入常驻进程的 YIMAN_MOSS_CODEC_DIR（见 python/moss_tts_server.py）。
+   * MOSS-TTS / MOSS-TTS-Nano：Audio Tokenizer（codec）权重根目录；可与主模型分开下载。
+   * 保存后分别注入 YIMAN_MOSS_CODEC_DIR / YIMAN_MOSS_NANO_CODEC_DIR。
    */
   mossAudioTokenizerPath?: string;
 }
@@ -126,6 +137,7 @@ export const LOCAL_TTS_MODEL_KEY_TO_REST_SEGMENT: Record<string, string> = {
   moss_tts: 'MOSS-TTS',
   /** 旧版设置中的 key，仍路由到同一 MOSS-TTS API */
   moss_tts_local_mlx: 'MOSS-TTS',
+  moss_tts_nano: 'MOSS-TTS-Nano',
 };
 
 export function restSegmentForLocalTtsModelKey(modelKey: string): string {
@@ -139,6 +151,85 @@ export interface LocalTtsConfig {
   modelKey: string;
   /** 各模型独立配置 */
   profiles: Record<string, LocalTtsModelProfile>;
+}
+
+/** 本地音效模型选项 */
+export interface LocalSfxModelOption {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+/** 可用本地音效模型列表 */
+export const LOCAL_SFX_MODEL_OPTIONS: LocalSfxModelOption[] = [
+  {
+    key: 'moss_sound_effect',
+    label: 'MOSS SoundEffect',
+    description:
+      'OpenMOSS 文本生成环境音/音效（mlx-speech）；需 MLX-4bit 权重与 MOSS-Audio-Tokenizer。ModelScope：mlx-community/MOSS-SoundEffect-MLX-4bit',
+  },
+];
+
+/** 单个本地音效模型配置 */
+export interface LocalSfxModelProfile {
+  modelPath: string;
+  idleTimeoutMinutes?: number;
+  /** MOSS-Audio-Tokenizer 目录（可选，可与 MOSS-TTS 共用） */
+  mossAudioTokenizerPath?: string;
+  /** Modal 默认生成时长（秒） */
+  defaultDurationSeconds?: number;
+}
+
+/** REST 路径段（与 ai-model-service 路由一致） */
+export const LOCAL_SFX_MODEL_KEY_TO_REST_SEGMENT: Record<string, string> = {
+  moss_sound_effect: 'MOSS-SoundEffect',
+};
+
+export function restSegmentForLocalSfxModelKey(modelKey: string): string {
+  return LOCAL_SFX_MODEL_KEY_TO_REST_SEGMENT[modelKey] ?? 'MOSS-SoundEffect';
+}
+
+/** 本地音效总配置 */
+export interface LocalSfxConfig {
+  enabled: boolean;
+  modelKey: string;
+  profiles: Record<string, LocalSfxModelProfile>;
+}
+
+export function migrateLocalSfxConfig(
+  raw: Partial<LocalSfxConfig> | undefined | null,
+): LocalSfxConfig | undefined {
+  if (raw == null) return undefined;
+  const modelKey = raw.modelKey ?? 'moss_sound_effect';
+  const profiles: Record<string, LocalSfxModelProfile> = {};
+  if (raw.profiles && typeof raw.profiles === 'object') {
+    for (const [k, v] of Object.entries(raw.profiles)) {
+      if (!v || typeof v !== 'object') continue;
+      const p = v as LocalSfxModelProfile;
+      const row: LocalSfxModelProfile = {
+        modelPath: (p.modelPath ?? '').trim(),
+        idleTimeoutMinutes: p.idleTimeoutMinutes ?? 3,
+        defaultDurationSeconds: p.defaultDurationSeconds ?? 6,
+      };
+      const tx = p.mossAudioTokenizerPath?.trim();
+      if (tx) row.mossAudioTokenizerPath = tx;
+      profiles[k] = row;
+    }
+  }
+  for (const m of LOCAL_SFX_MODEL_OPTIONS) {
+    if (!profiles[m.key]) {
+      profiles[m.key] = { modelPath: '', idleTimeoutMinutes: 3, defaultDurationSeconds: 6 };
+    }
+  }
+  return {
+    enabled: raw.enabled === true,
+    modelKey,
+    profiles,
+  };
+}
+
+export function localSfxProfileIsSaved(cfg: LocalSfxConfig | undefined, modelKey: string): boolean {
+  return !!cfg?.profiles?.[modelKey]?.modelPath?.trim();
 }
 
 /** 旧版扁平字段（迁移用） */
@@ -162,7 +253,7 @@ export function migrateLocalTtsConfig(
         modelPath: (p.modelPath ?? '').trim(),
         idleTimeoutMinutes: p.idleTimeoutMinutes ?? 3,
       };
-      if (k === 'moss_tts' || k === 'moss_tts_local_mlx') {
+      if (k === 'moss_tts' || k === 'moss_tts_local_mlx' || k === 'moss_tts_nano') {
         const tx = p.mossAudioTokenizerPath?.trim();
         if (tx) row.mossAudioTokenizerPath = tx;
       }
@@ -206,6 +297,36 @@ export function localTtsProfileIsSaved(cfg: LocalTtsConfig | undefined, modelKey
 export interface NovelWriterConfig {
   /** 每次生成封面图片的数量，默认 4 */
   coverImageCount: number;
+  /**
+   * 作者显示名（可选）。若在设置中填写，封面助手会要求在画面上包含「作者 xxx」样式的署名。
+   */
+  authorName?: string;
+}
+
+/** 有声书：用户收藏的 AI 设计音色（相对 customVoiceSamplesRootDir） */
+export interface AudiobookSavedVoiceSample {
+  id: string;
+  name: string;
+  /** 相对 customVoiceSamplesRootDir，如 `.yiman-voices/旁白-阳光.wav` */
+  relativePath: string;
+  voiceDescription?: string;
+  createdAt: string;
+}
+
+/** 有声书全局设置（跨小说） */
+export interface AudiobookSettings {
+  /**
+   * @deprecated 旧版单一根目录；读写时若未设 preset/custom 则作为回退
+   */
+  voiceSamplesRootDir?: string;
+  /** 外置音色样本目录（绝对路径）；与内置 PresetVoice/ 合并展示 */
+  presetVoiceSamplesRootDir?: string;
+  /** 自定义音色样本目录（绝对路径）；AI 生成 wav 写入 `.yiman-voices/` */
+  customVoiceSamplesRootDir?: string;
+  /** 新建片段或未单独指定时使用的默认 TTS 模型（与片段卡片下拉 value 一致） */
+  defaultTtsModelKey?: string;
+  /** 「音色设计库」条目，选择样本时置顶 */
+  savedVoiceSamples?: AudiobookSavedVoiceSample[];
 }
 
 export interface AISettings {
@@ -214,12 +335,20 @@ export interface AISettings {
   aiMattingConfigs?: AIMattingConfig[];
   /** 本地 TTS 配置 */
   localTts?: LocalTtsConfig;
+  /** 本地音效生成配置 */
+  localSfx?: LocalSfxConfig;
   /** 小说编剧配置 */
   novelWriter?: NovelWriterConfig;
+  /** 有声书：音色样本目录等 */
+  audiobook?: AudiobookSettings;
   /** 小说编剧列表页背景视频文件名（如 bg1.mp4），无背景时为空 */
   novelBgVideo?: string;
   /** 漫剧项目列表页背景视频文件名（如 bg1.mp4），无背景时为空 */
   projectBgVideo?: string;
+  /** 有声书项目列表页背景视频文件名（如 bg1.mp4），无背景时为空 */
+  audiobookBgVideo?: string;
+  /** 实用工具列表页背景视频文件名（如 bg1.mp4），无背景时为空 */
+  toolboxBgVideo?: string;
   /** 新建漫剧项目时「本地项目目录」的默认父路径（可选） */
   defaultProjectRoot?: string;
   /** 设计器画布：视口尺寸变化时自动按画布适配缩放（见 CanvasContainer fit） */

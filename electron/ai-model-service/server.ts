@@ -7,23 +7,62 @@ import fs from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { runMatting, listMattingModels } from './registry';
 import { MossTtsLocalMlxAdapter } from './adapters/mossTtsLocalMlx';
+import { MossTtsNanoLocalMlxAdapter } from './adapters/mossTtsNanoLocalMlx';
+import { resolveMlxNanoModelDir } from './adapters/mlxNanoModelPaths';
+import { handleRequest as handlePollinationsProxy } from './ccProxys/pollinations';
 import {
   resolveYimanEmbeddedPythonExe,
   resolveYimanTtsMainPy,
   yimanEmbeddedPythonReady,
 } from './pythonPaths';
+import { handleSfxHttpRoute, loadSfxConfig } from './sfxResidentService';
 
 const DEFAULT_PORT = 19815;
 const PORT = parseInt(process.env.AIMODEL_PORT ?? String(DEFAULT_PORT), 10);
 const TTS_LONGCAT_PORT = 54321;
 const TTS_MOSS_PORT = 54322;
+const TTS_MOSS_NANO_PORT = 54323;
 function ttsSvcLog(restLabel: string, ...args: unknown[]): void {
   console.log(`[TTS ${restLabel}]`, ...args);
+}
+
+/** Python 常驻服务 JSON 错误体可能被当作字符串再次包装 */
+function parseTtsPythonErrorBody(errText: string): string {
+  let s = errText.trim();
+  if (!s) return 'TTS 合成失败';
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const j = JSON.parse(s) as { error?: unknown };
+      if (typeof j.error === 'string' && j.error.trim()) {
+        s = j.error.trim();
+        continue;
+      }
+      break;
+    } catch {
+      break;
+    }
+  }
+  return s.length > 500 ? `${s.slice(0, 500)}…` : s;
 }
 
 /** 解析 Python 子进程 stdout 中的 JSON 行并打日志（不依赖是否仍在等 ready） */
 const LC_LABEL = 'LongCat-AudioDiT';
 const MOSS_LABEL = 'MOSS-TTS';
+const MOSS_NANO_LABEL = 'MOSS-TTS-Nano';
+
+type TtsBackendKind = 'longcat' | 'moss' | 'moss_nano';
+
+function ttsLabelForBackend(backend?: string): string {
+  if (backend === 'moss') return MOSS_LABEL;
+  if (backend === 'moss_nano') return MOSS_NANO_LABEL;
+  return LC_LABEL;
+}
+
+function ttsPortForBackend(backend?: string): number {
+  if (backend === 'moss') return TTS_MOSS_PORT;
+  if (backend === 'moss_nano') return TTS_MOSS_NANO_PORT;
+  return TTS_LONGCAT_PORT;
+}
 
 function logTtsPythonEvent(
   parsed: {
@@ -36,12 +75,33 @@ function logTtsPythonEvent(
     elapsed?: number;
     error?: string;
     traceback?: string;
+    /** LongCat tokenizer 预热 */
+    pretrained?: string;
+    elapsed_s?: number;
+    text_chars?: number;
+    lang?: string;
+    steps?: number;
+    cfg_strength?: number;
+    seed?: number;
+    has_ref_audio?: boolean;
+    has_ref_text?: boolean;
+    wall_synthesis_s?: number;
+    mlx_processing_time_s?: number;
+    samples?: number;
+    audio_duration_human?: string;
+    sample_rate?: number;
+    peak_memory_gb?: number;
+    ref_path?: string;
+    cache_hit?: boolean;
+    from_disk?: boolean;
+    wall_encode_s?: number;
+    frames?: number;
+    cache_key_prefix?: string;
   },
   labelOverride?: string,
 ): void {
-  const label =
-    labelOverride ?? (parsed.backend === 'moss' ? MOSS_LABEL : LC_LABEL);
-  const defaultListenPort = parsed.backend === 'moss' ? TTS_MOSS_PORT : TTS_LONGCAT_PORT;
+  const label = labelOverride ?? ttsLabelForBackend(parsed.backend);
+  const defaultListenPort = ttsPortForBackend(parsed.backend);
   switch (parsed.event) {
     case 'loading':
       ttsSvcLog(label, '开始载入模型到内存…', parsed.model ?? '');
@@ -70,6 +130,63 @@ function logTtsPythonEvent(
     case 'shutdown':
       ttsSvcLog(label, 'Python 常驻进程已结束，内存已释放');
       break;
+    case 'longcat_tokenizer_warmup':
+      ttsSvcLog(label, 'UMT5 tokenizer 已预热（含缓存补丁）', `pretrained=${parsed.pretrained ?? '?'}`, `耗时 ${parsed.elapsed_s ?? '?'}s`);
+      break;
+    case 'longcat_generate_start':
+      ttsSvcLog(
+        label,
+        '合成开始',
+        `text_chars=${parsed.text_chars ?? '?'} lang=${parsed.lang ?? '?'}`,
+        `steps=${parsed.steps ?? '?'} cfg=${parsed.cfg_strength ?? '?'} seed=${parsed.seed ?? '?'}`,
+        `ref_audio=${parsed.has_ref_audio === true ? 'yes' : 'no'} ref_text=${parsed.has_ref_text === true ? 'yes' : 'no'}`,
+      );
+      break;
+    case 'longcat_generate_done':
+      ttsSvcLog(
+        label,
+        '合成完成（Python）',
+        `wall_synthesis_s=${parsed.wall_synthesis_s ?? '?'}`,
+        `mlx_processing_time_s=${parsed.mlx_processing_time_s ?? '?'}`,
+        `samples=${parsed.samples ?? '?'}`,
+        `audio_duration=${parsed.audio_duration_human ?? '?'}`,
+        `sr=${parsed.sample_rate ?? '?'}`,
+        `peak_memory_gb=${parsed.peak_memory_gb ?? '?'}`,
+      );
+      break;
+    case 'moss_nano_generate_start':
+      ttsSvcLog(
+        label,
+        '合成开始',
+        `text_chars=${parsed.text_chars ?? '?'}`,
+        `ref_audio=${parsed.has_ref_audio === true ? 'yes' : 'no'}`,
+      );
+      break;
+    case 'moss_nano_generate_done':
+      ttsSvcLog(
+        label,
+        '合成完成（Python）',
+        `wall_synthesis_s=${parsed.wall_synthesis_s ?? '?'}`,
+        `mlx_processing_time_s=${parsed.mlx_processing_time_s ?? '?'}`,
+        `sr=${parsed.sample_rate ?? '?'}`,
+      );
+      break;
+    case 'voice_ref_encode_start':
+      ttsSvcLog(label, '参考音色编码开始', parsed.ref_path ?? '');
+      break;
+    case 'voice_ref_encode_done':
+      ttsSvcLog(
+        label,
+        '参考音色编码完成',
+        `cache_hit=${String(parsed.cache_hit)}`,
+        `from_disk=${String(parsed.from_disk)}`,
+        `wall_encode_s=${parsed.wall_encode_s ?? '?'}`,
+        `frames=${parsed.frames ?? '?'}`,
+      );
+      break;
+    case 'voice_ref_cache_evict':
+      ttsSvcLog(label, '参考音色 LRU 淘汰', parsed.cache_key_prefix ?? '');
+      break;
     default:
       break;
   }
@@ -97,9 +214,12 @@ let residentLongcatProc: ChildProcess | null = null;
 let residentLongcatIdleTimer: ReturnType<typeof setTimeout> | null = null;
 let residentMossProc: ChildProcess | null = null;
 let residentMossIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let residentMossNanoProc: ChildProcess | null = null;
+let residentMossNanoIdleTimer: ReturnType<typeof setTimeout> | null = null;
 /** Node 在空闲定时器里 kill 子进程时为 true，便于 exit 日志区分原因 */
 let ttsLongcatLastExitWasIdleKill = false;
 let ttsMossLastExitWasIdleKill = false;
+let ttsMossNanoLastExitWasIdleKill = false;
 
 /** LongCat 常驻进程使用的解析后配置（来自 profiles.longcat_audio_dit + 旧版扁平字段） */
 let ttsConfig: {
@@ -116,30 +236,81 @@ type RawProfile = {
 /** 完整 env JSON，含各模型 profile */
 let ttsProfiles: Record<string, RawProfile> = {};
 
+type LocalTtsPayload = {
+  modelKey?: string;
+  modelPath?: string;
+  idleTimeoutMin?: number;
+  idleTimeoutMinutes?: number;
+  profiles?: Record<string, RawProfile>;
+};
+
+function applyLocalTtsFromPayload(parsed: LocalTtsPayload | null | undefined, logLabel?: string): void {
+  if (!parsed || typeof parsed !== 'object') return;
+  ttsProfiles = parsed.profiles && typeof parsed.profiles === 'object' ? { ...parsed.profiles } : {};
+  const lc = ttsProfiles.longcat_audio_dit ?? {};
+  const idleMin =
+    lc.idleTimeoutMinutes ??
+    parsed.idleTimeoutMin ??
+    parsed.idleTimeoutMinutes ??
+    3;
+  ttsConfig = {
+    modelPath: (lc.modelPath ?? parsed.modelPath ?? '').trim() || undefined,
+    idleTimeoutMin: idleMin,
+  };
+  console.log('[AI]', logLabel ?? 'TTS 配置已应用:', parsed.modelKey || 'longcat_audio_dit');
+}
+
+function killResidentTtsForReload(reason: string): Promise<void> {
+  if (residentLongcatIdleTimer) clearTimeout(residentLongcatIdleTimer);
+  residentLongcatIdleTimer = null;
+  if (residentMossIdleTimer) clearTimeout(residentMossIdleTimer);
+  residentMossIdleTimer = null;
+  if (residentMossNanoIdleTimer) clearTimeout(residentMossNanoIdleTimer);
+  residentMossNanoIdleTimer = null;
+
+  const lcProc = residentLongcatProc;
+  const mossProc = residentMossProc;
+  const nanoProc = residentMossNanoProc;
+  residentLongcatProc = null;
+  residentMossProc = null;
+  residentMossNanoProc = null;
+
+  const killAndWait = (proc: ChildProcess | null, tag: string): Promise<void> => {
+    if (!proc || proc.exitCode !== null) return Promise.resolve();
+    console.log(`[TTS ${tag}] ${reason}，终止常驻 Python 以便下次加载新路径/超时`);
+    ttsSvcLog(tag, '(reload) SIGTERM/KILL 发往子进程 PID', proc.pid ?? '?');
+
+    void proc.kill();
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (!done) {
+          done = true;
+          resolve();
+        }
+      };
+      proc.once('exit', finish);
+      proc.once('error', finish);
+      setTimeout(finish, 8000);
+    });
+  };
+
+  return Promise.all([
+    killAndWait(lcProc, LC_LABEL),
+    killAndWait(mossProc, MOSS_LABEL),
+    killAndWait(nanoProc, MOSS_NANO_LABEL),
+  ]).then(() => undefined);
+}
+
 function loadTtsConfig(): void {
   try {
     const raw = process.env.YIMAN_LOCAL_TTS_CONFIG;
     if (!raw) return;
-    const parsed = JSON.parse(raw) as {
-      modelKey?: string;
-      modelPath?: string;
-      idleTimeoutMin?: number;
-      idleTimeoutMinutes?: number;
-      profiles?: Record<string, RawProfile>;
-    };
-    ttsProfiles = parsed.profiles && typeof parsed.profiles === 'object' ? { ...parsed.profiles } : {};
-    const lc = ttsProfiles.longcat_audio_dit ?? {};
-    const idleMin =
-      lc.idleTimeoutMinutes ??
-      parsed.idleTimeoutMin ??
-      parsed.idleTimeoutMinutes ??
-      3;
-    ttsConfig = {
-      modelPath: (lc.modelPath ?? parsed.modelPath ?? '').trim() || undefined,
-      idleTimeoutMin: idleMin,
-    };
-    console.log('[AI] TTS 配置已加载:', parsed.modelKey || 'longcat_audio_dit');
-  } catch { /* ignore */ }
+    applyLocalTtsFromPayload(JSON.parse(raw) as LocalTtsPayload, 'TTS 配置已从环境变量加载');
+  } catch {
+    /* ignore */
+  }
 }
 
 function mossResolvedModelPath(): string {
@@ -153,6 +324,102 @@ function mossAudioTokenizerDirFromEnv(): string | undefined {
   const t = (p.mossAudioTokenizerPath ?? '').trim();
   if (t && fs.existsSync(t)) return t;
   return undefined;
+}
+
+function mossNanoResolvedModelPath(): string {
+  const p = ttsProfiles.moss_tts_nano ?? {};
+  const configured = (p.modelPath ?? '').trim();
+  if (!configured) return '';
+  return resolveMlxNanoModelDir(configured) ?? configured;
+}
+
+/** MOSS-Audio-Tokenizer-Nano → YIMAN_MOSS_NANO_CODEC_DIR */
+function mossNanoAudioTokenizerDirFromEnv(): string | undefined {
+  const p = ttsProfiles.moss_tts_nano ?? {};
+  const t = (p.mossAudioTokenizerPath ?? '').trim();
+  if (t && fs.existsSync(t)) return t;
+  return undefined;
+}
+
+function localTtsModelKeyToBackend(modelKey: string): TtsBackendKind | undefined {
+  if (modelKey === 'longcat_audio_dit') return 'longcat';
+  if (modelKey === 'moss_tts' || modelKey === 'moss_tts_local_mlx') return 'moss';
+  if (modelKey === 'moss_tts_nano') return 'moss_nano';
+  return undefined;
+}
+
+function ttsPortForKind(kind: TtsBackendKind): number {
+  if (kind === 'longcat') return TTS_LONGCAT_PORT;
+  if (kind === 'moss') return TTS_MOSS_PORT;
+  return TTS_MOSS_NANO_PORT;
+}
+
+async function postToResidentTts(
+  kind: TtsBackendKind,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  const port = ttsPortForKind(kind);
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let data: Record<string, unknown> = {};
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    data = { error: await res.text().catch(() => '') };
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+async function invalidateVoiceCachesOnResidents(clearDisk = false): Promise<void> {
+  const kinds: TtsBackendKind[] = ['longcat', 'moss', 'moss_nano'];
+  await Promise.all(
+    kinds.map(async (kind) => {
+      try {
+        await postToResidentTts(kind, '/invalidate-voice-cache', { clearDisk });
+      } catch {
+        /* 常驻未启动时忽略 */
+      }
+    }),
+  );
+}
+
+async function warmVoiceReference(params: {
+  modelKey: string;
+  referenceAudioPath: string;
+  referenceText?: string;
+}): Promise<{ ok: boolean; message?: string; cache_hit?: boolean; from_disk?: boolean }> {
+  const backend = localTtsModelKeyToBackend(params.modelKey);
+  if (!backend) {
+    return { ok: false, message: `未知 modelKey: ${params.modelKey}` };
+  }
+  const ref = params.referenceAudioPath.trim();
+  if (!ref || !fs.existsSync(ref)) {
+    return { ok: false, message: `参考音频不存在: ${ref}` };
+  }
+  const ensure = await ensureResidentTtsBackend(backend);
+  if (!ensure.ok) {
+    return { ok: false, message: ensure.message };
+  }
+  const tag =
+    backend === 'longcat' ? LC_LABEL : backend === 'moss' ? MOSS_LABEL : MOSS_NANO_LABEL;
+  ttsSvcLog(tag, '预热参考音色编码', ref);
+  const pyBody: Record<string, unknown> = { referenceAudioPath: ref };
+  if (params.referenceText?.trim()) pyBody.referenceText = params.referenceText.trim();
+  const r = await postToResidentTts(backend, '/warm-voice-reference', pyBody);
+  if (!r.ok) {
+    const err = typeof r.data.error === 'string' ? r.data.error : `HTTP ${r.status}`;
+    return { ok: false, message: err };
+  }
+  return {
+    ok: r.data.ok === true,
+    message: '参考音色已编码并缓存',
+    cache_hit: r.data.cache_hit === true,
+    from_disk: r.data.from_disk === true,
+  };
 }
 
 async function validateLocalTtsProfile(body: {
@@ -196,13 +463,34 @@ async function validateLocalTtsProfile(body: {
     return adapter.healthCheck();
   }
 
+  if (key === 'moss_tts_nano') {
+    const tokenizerPath = (pr.mossAudioTokenizerPath ?? '').trim();
+    if (tokenizerPath && !fs.existsSync(tokenizerPath)) {
+      return { ok: false, message: `MOSS-Audio-Tokenizer-Nano 目录不存在: ${tokenizerPath}` };
+    }
+    const adapter = new MossTtsNanoLocalMlxAdapter(modelPath);
+    return adapter.healthCheck();
+  }
+
   return { ok: false, message: `未知 modelKey: ${key}` };
 }
 
-function resetTtsIdleTimer(kind: 'longcat' | 'moss'): void {
+function idleTimeoutMinForKind(kind: TtsBackendKind): number {
+  if (kind === 'longcat') return ttsConfig.idleTimeoutMin ?? 3;
+  if (kind === 'moss') {
+    return (
+      ttsProfiles.moss_tts?.idleTimeoutMinutes ??
+      ttsProfiles.moss_tts_local_mlx?.idleTimeoutMinutes ??
+      3
+    );
+  }
+  return ttsProfiles.moss_tts_nano?.idleTimeoutMinutes ?? 3;
+}
+
+function resetTtsIdleTimer(kind: TtsBackendKind): void {
+  const timeoutMin = idleTimeoutMinForKind(kind);
   if (kind === 'longcat') {
     if (residentLongcatIdleTimer) clearTimeout(residentLongcatIdleTimer);
-    const timeoutMin = ttsConfig.idleTimeoutMin ?? 3;
     if (timeoutMin <= 0) return;
     residentLongcatIdleTimer = setTimeout(() => {
       if (residentLongcatProc) {
@@ -217,30 +505,49 @@ function resetTtsIdleTimer(kind: 'longcat' | 'moss'): void {
     }, timeoutMin * 60_000);
     return;
   }
-  if (residentMossIdleTimer) clearTimeout(residentMossIdleTimer);
-  const timeoutMin =
-    ttsProfiles.moss_tts?.idleTimeoutMinutes ??
-    ttsProfiles.moss_tts_local_mlx?.idleTimeoutMinutes ??
-    3;
+  if (kind === 'moss') {
+    if (residentMossIdleTimer) clearTimeout(residentMossIdleTimer);
+    if (timeoutMin <= 0) return;
+    residentMossIdleTimer = setTimeout(() => {
+      if (residentMossProc) {
+        ttsSvcLog(
+          MOSS_LABEL,
+          `因 Node 侧空闲超时（${timeoutMin} 分钟无合成请求），正在结束常驻进程并释放内存…`,
+        );
+        ttsMossLastExitWasIdleKill = true;
+        residentMossProc.kill();
+        residentMossProc = null;
+      }
+    }, timeoutMin * 60_000);
+    return;
+  }
+  if (residentMossNanoIdleTimer) clearTimeout(residentMossNanoIdleTimer);
   if (timeoutMin <= 0) return;
-  residentMossIdleTimer = setTimeout(() => {
-    if (residentMossProc) {
+  residentMossNanoIdleTimer = setTimeout(() => {
+    if (residentMossNanoProc) {
       ttsSvcLog(
-        MOSS_LABEL,
+        MOSS_NANO_LABEL,
         `因 Node 侧空闲超时（${timeoutMin} 分钟无合成请求），正在结束常驻进程并释放内存…`,
       );
-      ttsMossLastExitWasIdleKill = true;
-      residentMossProc.kill();
-      residentMossProc = null;
+      ttsMossNanoLastExitWasIdleKill = true;
+      residentMossNanoProc.kill();
+      residentMossNanoProc = null;
     }
   }, timeoutMin * 60_000);
 }
 
-async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok: boolean; message?: string }> {
-  const isLongcat = kind === 'longcat';
-  const tag = isLongcat ? LC_LABEL : MOSS_LABEL;
-  const port = isLongcat ? TTS_LONGCAT_PORT : TTS_MOSS_PORT;
-  const existing = isLongcat ? residentLongcatProc : residentMossProc;
+async function ensureResidentTtsBackend(kind: TtsBackendKind): Promise<{ ok: boolean; message?: string }> {
+  const tag =
+    kind === 'longcat' ? LC_LABEL : kind === 'moss' ? MOSS_LABEL : MOSS_NANO_LABEL;
+  const port =
+    kind === 'longcat' ? TTS_LONGCAT_PORT : kind === 'moss' ? TTS_MOSS_PORT : TTS_MOSS_NANO_PORT;
+  const expectBackend = kind;
+  const existing =
+    kind === 'longcat'
+      ? residentLongcatProc
+      : kind === 'moss'
+        ? residentMossProc
+        : residentMossNanoProc;
 
   if (existing && existing.exitCode === null) {
     resetTtsIdleTimer(kind);
@@ -248,17 +555,14 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
   }
 
   let modelPath: string;
-  let timeoutSec: number;
+  const timeoutSec = idleTimeoutMinForKind(kind) * 60;
 
-  if (isLongcat) {
+  if (kind === 'longcat') {
     modelPath = (ttsConfig.modelPath ?? '').trim();
-    timeoutSec = (ttsConfig.idleTimeoutMin ?? 3) * 60;
-  } else {
+  } else if (kind === 'moss') {
     modelPath = mossResolvedModelPath();
-    timeoutSec =
-      (ttsProfiles.moss_tts?.idleTimeoutMinutes ??
-        ttsProfiles.moss_tts_local_mlx?.idleTimeoutMinutes ??
-        3) * 60;
+  } else {
+    modelPath = mossNanoResolvedModelPath();
   }
 
   if (!modelPath || !fs.existsSync(modelPath)) {
@@ -277,7 +581,6 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
     const checkRes = await fetch(`http://127.0.0.1:${port}/health`);
     if (checkRes.ok) {
       const j = (await checkRes.json().catch(() => ({}))) as { backend?: string };
-      const expectBackend = isLongcat ? 'longcat' : 'moss';
       if (j.backend === expectBackend) {
         resetTtsIdleTimer(kind);
         ttsSvcLog(tag, `检测到 127.0.0.1:${port} 已有常驻进程，复用（${tag}）`);
@@ -293,9 +596,9 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
   }
 
   ttsSvcLog(tag, '正在启动 Python 常驻子进程，随后将把模型载入内存（首次可能较慢）…');
-  const codecDir = !isLongcat ? mossAudioTokenizerDirFromEnv() : undefined;
   const childEnv = { ...process.env, PYTHONUNBUFFERED: '1' } as NodeJS.ProcessEnv;
-  if (!isLongcat) {
+  if (kind === 'moss') {
+    const codecDir = mossAudioTokenizerDirFromEnv();
     const mp = ttsProfiles.moss_tts ?? ttsProfiles.moss_tts_local_mlx ?? {};
     const configuredTok = (mp.mossAudioTokenizerPath ?? '').trim();
     if (configuredTok && !codecDir) {
@@ -309,13 +612,28 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
       childEnv.YIMAN_MOSS_CODEC_DIR = codecDir;
       ttsSvcLog(tag, 'MOSS-Audio-Tokenizer → YIMAN_MOSS_CODEC_DIR', codecDir);
     }
+  } else if (kind === 'moss_nano') {
+    const codecDir = mossNanoAudioTokenizerDirFromEnv();
+    const mp = ttsProfiles.moss_tts_nano ?? {};
+    const configuredTok = (mp.mossAudioTokenizerPath ?? '').trim();
+    if (configuredTok && !codecDir) {
+      ttsSvcLog(
+        tag,
+        '已填写 MOSS-Audio-Tokenizer-Nano 路径但目录不存在或不可读，未设置 YIMAN_MOSS_NANO_CODEC_DIR；请检查路径并保存设置',
+        configuredTok,
+      );
+    }
+    if (codecDir) {
+      childEnv.YIMAN_MOSS_NANO_CODEC_DIR = codecDir;
+      ttsSvcLog(tag, 'MOSS-Audio-Tokenizer-Nano → YIMAN_MOSS_NANO_CODEC_DIR', codecDir);
+    }
   }
   const child = spawn(
     resolveYimanEmbeddedPythonExe(),
     [
       resolveYimanTtsMainPy(),
       '--backend',
-      isLongcat ? 'longcat' : 'moss',
+      kind,
       '--model',
       modelPath,
       '--port',
@@ -326,10 +644,12 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
     { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv },
   );
 
-  if (isLongcat) {
+  if (kind === 'longcat') {
     residentLongcatProc = child;
-  } else {
+  } else if (kind === 'moss') {
     residentMossProc = child;
+  } else {
+    residentMossNanoProc = child;
   }
 
   return new Promise((resolve) => {
@@ -390,19 +710,27 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
         console.error(`[TTS ${tag}] Python stderr 汇总（退出码 ${code ?? '?'}）:\n`, full);
         ttsSvcLog(tag, 'stderr 汇总（摘录末 2000 字）', full.slice(-2000));
       }
-      const idleKill = isLongcat ? ttsLongcatLastExitWasIdleKill : ttsMossLastExitWasIdleKill;
+      const idleKill =
+        kind === 'longcat'
+          ? ttsLongcatLastExitWasIdleKill
+          : kind === 'moss'
+            ? ttsMossLastExitWasIdleKill
+            : ttsMossNanoLastExitWasIdleKill;
       const reason = idleKill
         ? '原因：Node 侧空闲超时'
         : signal
           ? `signal=${signal}`
           : `code=${code}`;
       ttsSvcLog(tag, `常驻子进程已退出（${reason}），${tag} 不再占用常驻内存`);
-      if (isLongcat) {
+      if (kind === 'longcat') {
         ttsLongcatLastExitWasIdleKill = false;
         residentLongcatProc = null;
-      } else {
+      } else if (kind === 'moss') {
         ttsMossLastExitWasIdleKill = false;
         residentMossProc = null;
+      } else {
+        ttsMossNanoLastExitWasIdleKill = false;
+        residentMossNanoProc = null;
       }
       const errTail = code !== 0 && stderrAcc.trim() ? stderrAcc.trimEnd().slice(-800) : '';
       finish({
@@ -415,17 +743,24 @@ async function ensureResidentTtsBackend(kind: 'longcat' | 'moss'): Promise<{ ok:
     });
     const READY_MS = 600_000;
     setTimeout(() => {
-      const procRef = isLongcat ? residentLongcatProc : residentMossProc;
+      const procRef =
+        kind === 'longcat'
+          ? residentLongcatProc
+          : kind === 'moss'
+            ? residentMossProc
+            : residentMossNanoProc;
       if (!settled && procRef && procRef.exitCode === null) {
         try {
           procRef.kill();
         } catch {
           /* ignore */
         }
-        if (isLongcat) {
+        if (kind === 'longcat') {
           residentLongcatProc = null;
-        } else {
+        } else if (kind === 'moss') {
           residentMossProc = null;
+        } else {
+          residentMossNanoProc = null;
         }
         finish({ ok: false, message: `启动超时（>${READY_MS / 60_000} 分钟）` });
       }
@@ -492,6 +827,7 @@ function parseJsonBody(req: http.IncomingMessage): Promise<unknown> {
 
 export async function startServer(): Promise<void> {
   loadTtsConfig();
+  loadSfxConfig();
 
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? '/';
@@ -553,6 +889,65 @@ export async function startServer(): Promise<void> {
       return;
     }
 
+    // POST /api/v1/tts/warm-voice-reference — 有声书批量合成前预热参考音色编码
+    if (req.method === 'POST' && parsed.pathname === '/api/v1/tts/warm-voice-reference') {
+      try {
+        const body = (await parseJsonBody(req)) as {
+          modelKey?: string;
+          referenceAudioPath?: string;
+          referenceText?: string;
+        };
+        const modelKey = (body.modelKey ?? '').trim();
+        const referenceAudioPath = (body.referenceAudioPath ?? '').trim();
+        if (!modelKey || !referenceAudioPath) {
+          sendJson(res, req, 400, { ok: false, message: '缺少 modelKey 或 referenceAudioPath' });
+          return;
+        }
+        const r = await warmVoiceReference({
+          modelKey,
+          referenceAudioPath,
+          referenceText:
+            typeof body.referenceText === 'string' ? body.referenceText : undefined,
+        });
+        sendJson(res, req, r.ok ? 200 : 422, r);
+      } catch (e) {
+        sendJson(res, req, 500, { ok: false, message: e instanceof Error ? e.message : String(e) });
+      }
+      return;
+    }
+
+    // POST /api/v1/tts/invalidate-voice-cache — 清空三端 Python 参考音色内存缓存
+    if (req.method === 'POST' && parsed.pathname === '/api/v1/tts/invalidate-voice-cache') {
+      try {
+        const body = (await parseJsonBody(req)) as { clearDisk?: boolean };
+        await invalidateVoiceCachesOnResidents(body.clearDisk === true);
+        sendJson(res, req, 200, { ok: true, message: '已清空参考音色缓存' });
+      } catch (e) {
+        sendJson(res, req, 500, { ok: false, message: e instanceof Error ? e.message : String(e) });
+      }
+      return;
+    }
+
+    // POST /api/v1/tts/reload-config — 持久化本地 TTS 后热更新（免重启 Electron / ai-server）
+    if (req.method === 'POST' && parsed.pathname === '/api/v1/tts/reload-config') {
+      try {
+        const body = (await parseJsonBody(req)) as { localTts?: LocalTtsPayload };
+        const lt = body.localTts;
+        if (!lt || typeof lt !== 'object') {
+          sendJson(res, req, 400, { ok: false, message: '缺少 body.localTts' });
+          return;
+        }
+        applyLocalTtsFromPayload(lt, 'TTS 配置已通过 reload-config 热更新');
+        process.env.YIMAN_LOCAL_TTS_CONFIG = JSON.stringify(lt);
+        await invalidateVoiceCachesOnResidents(false);
+        await killResidentTtsForReload('本地 TTS 配置变更');
+        sendJson(res, req, 200, { ok: true, message: '已刷新本地 TTS 配置并已结束旧常驻进程' });
+      } catch (e) {
+        sendJson(res, req, 500, { ok: false, message: e instanceof Error ? e.message : String(e) });
+      }
+      return;
+    }
+
     // GET /api/v1/tts/MOSS-TTS/health（兼容旧路径 …/MOSS-TTS-Local-MLX/health）
     if (
       req.method === 'GET' &&
@@ -578,32 +973,103 @@ export async function startServer(): Promise<void> {
         parsed.pathname === '/api/v1/tts/MOSS-TTS-Local-MLX')
     ) {
       try {
-        const body = (await parseJsonBody(req)) as { text?: string; speed?: number };
+        const body = (await parseJsonBody(req)) as {
+          text?: string;
+          speed?: number;
+          referenceAudioPath?: string;
+          referenceText?: string;
+          ref_text?: string;
+        };
         const text = (body.text ?? '').trim();
         if (!text) {
           sendJson(res, req, 400, { ok: false, error: 'text is required' });
           return;
         }
+        const speed = body.speed ?? 1.0;
+        const referenceAudioPath =
+          typeof body.referenceAudioPath === 'string' ? body.referenceAudioPath.trim() : '';
+        const referenceText =
+          (typeof body.referenceText === 'string' ? body.referenceText.trim() : '') ||
+          (typeof body.ref_text === 'string' ? body.ref_text.trim() : '');
+        const pyBody: Record<string, unknown> = { text, speed };
+        if (referenceAudioPath) pyBody.referenceAudioPath = referenceAudioPath;
+        if (referenceText) pyBody.referenceText = referenceText;
         ttsSvcLog(MOSS_LABEL, `${MOSS_LABEL} 合成接口被调用`, `文本 ${text.length} 字`);
         const ensureResult = await ensureResidentTtsBackend('moss');
         if (!ensureResult.ok) {
           sendJson(res, req, 503, { ok: false, error: ensureResult.message });
           return;
         }
-        const speed = body.speed ?? 1.0;
         const ttsRes = await fetch(`http://127.0.0.1:${TTS_MOSS_PORT}/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, speed }),
+          body: JSON.stringify(pyBody),
         });
         if (!ttsRes.ok) {
           const errText = await ttsRes.text().catch(() => '');
-          sendJson(res, req, ttsRes.status, { ok: false, error: errText.slice(0, 200) });
+          sendJson(res, req, ttsRes.status, { ok: false, error: parseTtsPythonErrorBody(errText) });
           return;
         }
         resetTtsIdleTimer('moss');
         const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
         ttsSvcLog(MOSS_LABEL, `${MOSS_LABEL} 合成完成`, `音频 ${audioBuffer.length} 字节`);
+        sendAudio(res, req, audioBuffer);
+      } catch (e) {
+        sendJson(res, req, 500, { ok: false, error: `TTS 异常: ${e instanceof Error ? e.message : String(e)}` });
+      }
+      return;
+    }
+
+    // GET /api/v1/tts/MOSS-TTS-Nano/health
+    if (req.method === 'GET' && parsed.pathname === '/api/v1/tts/MOSS-TTS-Nano/health') {
+      ttsSvcLog(MOSS_NANO_LABEL, '健康检查被调用（不加载模型、不触发合成）');
+      const nanoPath = mossNanoResolvedModelPath();
+      if (!nanoPath) {
+        sendJson(res, req, 200, { ok: false, message: 'MOSS-TTS-Nano 模型目录未配置' });
+        return;
+      }
+      const adapter = new MossTtsNanoLocalMlxAdapter(nanoPath);
+      const h = await adapter.healthCheck();
+      sendJson(res, req, 200, { ok: h.ok, message: h.message });
+      return;
+    }
+
+    // POST /api/v1/tts/MOSS-TTS-Nano
+    if (req.method === 'POST' && parsed.pathname === '/api/v1/tts/MOSS-TTS-Nano') {
+      try {
+        const body = (await parseJsonBody(req)) as {
+          text?: string;
+          speed?: number;
+          referenceAudioPath?: string;
+        };
+        const text = (body.text ?? '').trim();
+        if (!text) {
+          sendJson(res, req, 400, { ok: false, error: 'text is required' });
+          return;
+        }
+        const referenceAudioPath =
+          typeof body.referenceAudioPath === 'string' ? body.referenceAudioPath.trim() : '';
+        const pyBody: Record<string, unknown> = { text };
+        if (referenceAudioPath) pyBody.referenceAudioPath = referenceAudioPath;
+        ttsSvcLog(MOSS_NANO_LABEL, `${MOSS_NANO_LABEL} 合成接口被调用`, `文本 ${text.length} 字`);
+        const ensureResult = await ensureResidentTtsBackend('moss_nano');
+        if (!ensureResult.ok) {
+          sendJson(res, req, 503, { ok: false, error: ensureResult.message });
+          return;
+        }
+        const ttsRes = await fetch(`http://127.0.0.1:${TTS_MOSS_NANO_PORT}/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pyBody),
+        });
+        if (!ttsRes.ok) {
+          const errText = await ttsRes.text().catch(() => '');
+          sendJson(res, req, ttsRes.status, { ok: false, error: parseTtsPythonErrorBody(errText) });
+          return;
+        }
+        resetTtsIdleTimer('moss_nano');
+        const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
+        ttsSvcLog(MOSS_NANO_LABEL, `${MOSS_NANO_LABEL} 合成完成`, `音频 ${audioBuffer.length} 字节`);
         sendAudio(res, req, audioBuffer);
       } catch (e) {
         sendJson(res, req, 500, { ok: false, error: `TTS 异常: ${e instanceof Error ? e.message : String(e)}` });
@@ -645,7 +1111,13 @@ export async function startServer(): Promise<void> {
     // POST /api/v1/tts/LongCat-AudioDiT
     if (req.method === 'POST' && parsed.pathname === '/api/v1/tts/LongCat-AudioDiT') {
       try {
-        const body = (await parseJsonBody(req)) as { text?: string; speed?: number };
+        const body = (await parseJsonBody(req)) as {
+          text?: string;
+          speed?: number;
+          referenceAudioPath?: string;
+          referenceText?: string;
+          ref_text?: string;
+        };
         const text = (body.text ?? '').trim();
         if (!text) {
           sendJson(res, req, 400, { ok: false, error: 'text is required' });
@@ -653,6 +1125,14 @@ export async function startServer(): Promise<void> {
         }
 
         const speed = body.speed ?? 1.0;
+        const referenceAudioPath =
+          typeof body.referenceAudioPath === 'string' ? body.referenceAudioPath.trim() : '';
+        const referenceText =
+          (typeof body.referenceText === 'string' ? body.referenceText.trim() : '') ||
+          (typeof body.ref_text === 'string' ? body.ref_text.trim() : '');
+        const pyBody: Record<string, unknown> = { text, speed };
+        if (referenceAudioPath) pyBody.referenceAudioPath = referenceAudioPath;
+        if (referenceText) pyBody.referenceText = referenceText;
         ttsSvcLog(LC_LABEL, `${LC_LABEL} 合成接口被调用`, `文本 ${text.length} 字，speed=${speed}`);
 
         // 确保常驻服务在运行
@@ -666,12 +1146,12 @@ export async function startServer(): Promise<void> {
         const ttsRes = await fetch(`http://127.0.0.1:${TTS_LONGCAT_PORT}/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, speed }),
+          body: JSON.stringify(pyBody),
         });
 
         if (!ttsRes.ok) {
           const errText = await ttsRes.text().catch(() => '');
-          sendJson(res, req, ttsRes.status, { ok: false, error: errText.slice(0, 200) });
+          sendJson(res, req, ttsRes.status, { ok: false, error: parseTtsPythonErrorBody(errText) });
           return;
         }
 
@@ -686,6 +1166,16 @@ export async function startServer(): Promise<void> {
       } catch (e) {
         sendJson(res, req, 500, { ok: false, error: `TTS 异常: ${e instanceof Error ? e.message : String(e)}` });
       }
+      return;
+    }
+
+    // ===== 本地音效 REST API =====
+    if (await handleSfxHttpRoute(req, res, parsed.pathname, { parseJsonBody, sendJson, sendAudio })) {
+      return;
+    }
+
+    // ===== CC Proxies（自定义 API 代理） =====
+    if (await handlePollinationsProxy(req, res, parsed.pathname)) {
       return;
     }
 

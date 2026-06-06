@@ -1,7 +1,10 @@
 /**
  * 小说创意策划 Agent：故事抽卡、设定搭建、世界观、起名、大纲等前期创意
+ *
+ * 新架构：同时注册为标准化 SkillAgentDefinition
  */
 import type { AgentPrompts } from '../types';
+import { registerSkillAgent } from '../registryTypes';
 
 export const novelIdeaAgentPrompts: AgentPrompts = {
   agentKey: 'novel-idea',
@@ -32,3 +35,16 @@ export const novelIdeaAgentPrompts: AgentPrompts = {
     { key: 'chapter-title', label: '分章命名', message: '请为已规划的各章节起一个吸引人的章标题，风格统一、有悬念感' },
   ],
 };
+
+// ── 新架构：标准化 Skill Agent 注册 ──
+registerSkillAgent({
+  agentId: 'novel_idea',
+  agentName: '小说创意',
+  agentType: 'skill',
+  description: '擅长小说前期创意策划：故事抽卡、世界观搭建、大纲设计、角色塑造、取名创意等',
+  skillPromptTemplate: `${novelIdeaAgentPrompts.basePrompt}\n\n【额外需求】\n{{extra_requirements}}`,
+  supportedModels: ['novel'],
+  allowedTools: ['generate_text'],
+  inputType: 'text',
+  outputType: 'text',
+});

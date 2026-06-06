@@ -71,6 +71,7 @@ const NovelCrepeEditorInner = forwardRef<
       listener.markdownUpdated((_ctx, md, prev) => {
         if (readOnlyRef.current) return;
         if (md === prev) return;
+        lastSetMdRef.current = md;
         onMarkdownChangeRef.current?.(md);
       });
       listener.selectionUpdated((ctx, selection) => {

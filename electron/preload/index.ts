@@ -37,8 +37,12 @@ const api = {
       ipcRenderer.invoke('app:fs:getSafeFilePath', fullCandidatePath) as Promise<string>,
     writeBase64File: (fullPath: string, base64: string) =>
       ipcRenderer.invoke('app:fs:writeBase64File', fullPath, base64) as Promise<{ ok: boolean; error?: string }>,
+    removePathRecursive: (fullPath: string) =>
+      ipcRenderer.invoke('app:fs:removePathRecursive', fullPath) as Promise<{ ok: boolean; error?: string }>,
     readFileAsDataUrl: (fullPath: string) =>
       ipcRenderer.invoke('app:fs:readFileAsDataUrl', fullPath) as Promise<string | null>,
+    readUtf8File: (fullPath: string) =>
+      ipcRenderer.invoke('app:fs:readUtf8File', fullPath) as Promise<string | null>,
     readImageFileForEditor: (fullPath: string) =>
       ipcRenderer.invoke('app:fs:readImageFileForEditor', fullPath) as Promise<
         | { ok: true; kind: 'raster'; dataUrl: string }
@@ -47,6 +51,15 @@ const api = {
       >,
     /** 返回 public/medias（或等价打包目录）下所有视频文件名称 */
     listMedias: () => ipcRenderer.invoke('app:fs:listMedias') as Promise<string[]>,
+    /** 内置 PresetVoice/ 绝对路径 */
+    getBuiltinPresetVoiceDir: () =>
+      ipcRenderer.invoke('app:fs:getBuiltinPresetVoiceDir') as Promise<string>,
+    /** 有声书：递归列出音色样本目录下音频文件（最多约 2000 条） */
+    listAudiobookVoiceSamples: (rootDir: string) =>
+      ipcRenderer.invoke('app:fs:listAudiobookVoiceSamples', rootDir) as Promise<
+        | { ok: true; files: Array<{ relativePath: string; absolutePath: string }> }
+        | { ok: false; error: string }
+      >,
     /** 拖入本地文件时取绝对路径（Electron），供 PDF/EPS/ODG 栅格化或 SVG 读原文 */
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
   },
@@ -63,6 +76,26 @@ const api = {
       ipcRenderer.invoke('app:net:fetchVolcTosImageAsDataUrl', url) as Promise<
         { ok: true; dataUrl: string } | { ok: false; error: string }
       >,
+  },
+  images: {
+    cache: {
+      /** 缓存单张远程图片，返回本地路径 */
+      save: (remoteUrl: string) =>
+        ipcRenderer.invoke('app:images:cache:save', remoteUrl) as Promise<
+          { ok: true; localPath: string } | { ok: false; error: string }
+        >,
+      /** 批量缓存 */
+      saveBatch: (remoteUrls: string[]) =>
+        ipcRenderer.invoke('app:images:cache:saveBatch', remoteUrls) as Promise<
+          { ok: true; paths: string[] } | { ok: false; error: string }
+        >,
+      /** 查询是否已缓存，返回本地路径或 null */
+      resolve: (remoteUrl: string) =>
+        ipcRenderer.invoke('app:images:cache:resolve', remoteUrl) as Promise<string | null>,
+      /** 读取缓存图片为 data URL */
+      readDataUrl: (remoteUrl: string) =>
+        ipcRenderer.invoke('app:images:cache:readDataUrl', remoteUrl) as Promise<string | null>,
+    },
   },
   settings: {
     get: () => ipcRenderer.invoke('app:settings:get'),
@@ -310,35 +343,48 @@ const api = {
     list: () => ipcRenderer.invoke('app:novel:list') as Promise<Array<{
       id: string; title: string; genres: string[];
       coverDataUrl?: string | null; electronProjectId?: string | null;
+      audiobookEnabled?: boolean;
       updatedAt: string; createdAt: string;
     }>>,
     upsert: (item: {
       id: string; title: string; genres: string[]; coverDataUrl?: string | null;
-      electronProjectId?: string | null; createdAt?: string; updatedAt?: string;
+      electronProjectId?: string | null; audiobookEnabled?: boolean;
+      createdAt?: string; updatedAt?: string;
     }) => ipcRenderer.invoke('app:novel:upsert', item),
     delete: (id: string) => ipcRenderer.invoke('app:novel:delete', id) as Promise<{ ok: boolean }>,
 
     getEpisodes: (novelId: string) => ipcRenderer.invoke('app:novel:getEpisodes', novelId) as Promise<Array<{
       id: string; novelId: string; title: string; episode?: number | null;
-      contentMarkdown: string; order: number; updatedAt: string;
+      contentMarkdown: string; scriptJson: string; audiobookJson: string;
+      order: number; updatedAt: string;
     }>>,
     getWorkspaceMeta: (novelId: string) => ipcRenderer.invoke('app:novel:getWorkspaceMeta', novelId) as Promise<{
       novelId: string; title: string; activeEpisodeId: string;
-      remountVersions: Record<string, number>; updatedAt: string;
+      remountVersions: Record<string, number>; novelScriptJson?: string;
+      audiobookOutlineVoiceJson?: string; updatedAt: string;
     } | null>,
     upsertEpisode: (ep: {
       id: string; novelId: string; title: string; episode?: number | null;
-      contentMarkdown?: string; order: number; updatedAt: string;
+      contentMarkdown?: string; scriptJson?: string; audiobookJson?: string;
+      order: number; updatedAt: string;
     }) => ipcRenderer.invoke('app:novel:upsertEpisode', ep),
     deleteEpisode: (novelId: string, episodeId: string) =>
       ipcRenderer.invoke('app:novel:deleteEpisode', novelId, episodeId),
     saveWorkspaceMeta: (meta: {
       novelId: string; title?: string; activeEpisodeId: string;
-      remountVersions: Record<string, number>; updatedAt: string;
+      remountVersions: Record<string, number>; novelScriptJson?: string;
+      audiobookOutlineVoiceJson?: string; innerMonologueEnabled?: boolean;
+      spaceEchoEnabled?: boolean; telephoneEnabled?: boolean; mufflerEnabled?: boolean;
+      updatedAt: string;
     }) => ipcRenderer.invoke('app:novel:saveWorkspaceMeta', meta),
+    saveSegmentTtsModels: (novelId: string, episodeId: string, ttsModelJson: string) =>
+      ipcRenderer.invoke('app:novel:saveSegmentTtsModels', novelId, episodeId, ttsModelJson),
+    loadSegmentTtsModels: (novelId: string, episodeId: string) =>
+      ipcRenderer.invoke('app:novel:loadSegmentTtsModels', novelId, episodeId) as Promise<string>,
     replaceAllEpisodes: (novelId: string, episodes: Array<{
       id: string; novelId: string; title: string; episode?: number | null;
-      contentMarkdown: string; order: number; updatedAt: string;
+      contentMarkdown: string; scriptJson?: string; audiobookJson?: string;
+      order: number; updatedAt: string;
     }>) => ipcRenderer.invoke('app:novel:replaceAllEpisodes', novelId, episodes),
 
     // 故事雏形收藏
@@ -407,6 +453,91 @@ const api = {
         | { ok: false; message: string }
       >,
   },
+  /** Strudel 等：WAV base64 转 MP3 文件（ffmpeg） */
+  audio: {
+    convertWavToMp3: (wavBase64: string, outputPath: string) =>
+      ipcRenderer.invoke('app:audio:convertWavToMp3', wavBase64, outputPath) as Promise<
+        { ok: true; outputPath: string } | { ok: false; error: string }
+      >,
+  },
+  /** 有声书工作台 TTS 缓存 WAV（userData/yiman/audiobook-tts-cache） */
+  audiobookTtsCache: {
+    saveWav: (novelId: string, fileName: string, base64: string) =>
+      ipcRenderer.invoke('app:audiobook:ttsCache:saveWav', novelId, fileName, base64) as Promise<
+        { ok: true; path: string } | { ok: false; error: string }
+      >,
+    resolvePath: (novelId: string, fileName: string) =>
+      ipcRenderer.invoke('app:audiobook:ttsCache:resolvePath', novelId, fileName) as Promise<string | null>,
+  },
+  /** 云端 TTS 复刻 voice id 缓存（userData JSON） */
+  voiceId: {
+    get: (provider: 'minimax' | 'qwen3_tts' | 'cosyvoice', cacheKey: string) =>
+      ipcRenderer.invoke('app:voiceId:get', provider, cacheKey) as Promise<{
+        voiceId: string;
+        createdAt: string;
+        meta?: Record<string, unknown>;
+      } | null>,
+    set: (
+      provider: 'minimax' | 'qwen3_tts' | 'cosyvoice',
+      cacheKey: string,
+      entry: { voiceId: string; createdAt: string; meta?: Record<string, unknown> },
+    ) => ipcRenderer.invoke('app:voiceId:set', provider, cacheKey, entry) as Promise<{ ok: true }>,
+    invalidate: (provider: 'minimax' | 'qwen3_tts' | 'cosyvoice', cacheKey: string) =>
+      ipcRenderer.invoke('app:voiceId:invalidate', provider, cacheKey) as Promise<{ ok: true }>,
+  },
+  /** 声音录制 - audioRecorderService */
+  audioRecorder: {
+    list: () => ipcRenderer.invoke('app:audioRecorder:list') as Promise<
+      Array<{ name: string; path: string; mtime: string; size: number }>
+    >,
+    save: (base64: string, ext: string) =>
+      ipcRenderer.invoke('app:audioRecorder:save', base64, ext) as Promise<
+        { ok: true; path: string } | { ok: false; error: string }
+      >,
+    getDuration: (filePath: string) =>
+      ipcRenderer.invoke('app:audioRecorder:duration', filePath) as Promise<number | null>,
+    process: (
+      filePath: string,
+      options: { trimStart?: number; trimEnd?: number; denoise?: boolean },
+    ) =>
+      ipcRenderer.invoke('app:audioRecorder:process', filePath, options) as Promise<
+        { ok: true; outputPath: string } | { ok: false; error: string }
+      >,
+    export: (
+      filePath: string,
+      outPath: string,
+      options: { format: 'mp3' | 'wav'; trimStart?: number; trimEnd?: number; denoise?: boolean },
+    ) =>
+      ipcRenderer.invoke('app:audioRecorder:export', filePath, outPath, options) as Promise<
+        { ok: true; outputPath: string } | { ok: false; error: string }
+      >,
+    delete: (filePath: string) =>
+      ipcRenderer.invoke('app:audioRecorder:delete', filePath) as Promise<
+        { ok: boolean; error?: string }
+      >,
+    rename: (filePath: string, name: string) =>
+      ipcRenderer.invoke('app:audioRecorder:rename', filePath, name) as Promise<
+        { ok: boolean; error?: string; newPath?: string }
+      >,
+    demucsCheck: () =>
+      ipcRenderer.invoke('app:audioRecorder:demucsCheck') as Promise<
+        { installed: boolean; message?: string }
+      >,
+  },
+  /** 内心独白音效 */
+  innerMonologue: {
+    apply: (inputPath: string, force?: boolean) =>
+      ipcRenderer.invoke('app:innerMonologue:apply', inputPath, force) as Promise<
+        { ok: true; outputPath: string; stderr?: string } | { ok: false; error: string }
+      >,
+  },
+  // CosyVoice 已停用
+  /*
+  cosyVoice: {
+    synthesize: (payload: { ... }) =>
+      ipcRenderer.invoke('app:cosyVoice:synthesize', payload) as Promise<...>,
+  },
+  */
 };
 
 contextBridge.exposeInMainWorld('yiman', api);

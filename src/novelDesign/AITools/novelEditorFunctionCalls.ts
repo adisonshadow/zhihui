@@ -16,11 +16,14 @@ import {
   setActiveEpisode,
   splitEpisodeAtMarker,
   updateEpisodeMarkdown,
+  updateEpisodeScript,
   upsertEpisode,
   type NovelEpisode,
   type NovelWorkspaceSnapshot,
 } from '@/novelDesign/storage/novelWorkspaceStorage';
 import { formatNovelEpisodeNavLabel, stripNumericEpisodeTitlePrefix } from '@/novelDesign/utils/novelEpisodeDisplay';
+import { extractNovelCornerQuoteSpans } from '@/audiobook/utils/audiobookNovelCornerQuotes';
+import { sceneHasContent } from '@/novelDesign/utils/novelScriptModel';
 
 export interface NovelEditorFunctionCallDeps {
   getSnapshot: () => NovelWorkspaceSnapshot | null;
@@ -189,6 +192,8 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
             order: e.order,
             is_outline: e.id === NOVEL_OUTLINE_EPISODE_ID,
             content_length: e.contentMarkdown.length,
+            script_scene_count: e.episodeScript?.scenes?.length ?? 0,
+            has_structured_script: sceneHasContent(e.episodeScript),
           }));
         return ok({ episodes: list });
       },
@@ -231,7 +236,7 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
       name: 'novel_get_episode',
       senderLabel: '读取正文',
       description:
-        '读取指定 episode_id：返回 episode 序号、title_in_editor（编辑器可见标题）、nav_label、content_markdown。',
+        '读取指定 episode_id：返回 episode 序号、title_in_editor（编辑器可见标题）、nav_label、content_markdown。正文含「」对白时附带 corner_quote_spans（quoted_text=引号内台词，narration_after=同段引号后叙述）。',
       parameters: {
         type: 'object',
         properties: { episode_id: { type: 'string', description: '集的 id' } },
@@ -244,12 +249,16 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
         if (!ws) return err('工作区未就绪');
         const ep = ws.episodes.find((e) => e.id === episode_id);
         if (!ep) return err('找不到该集');
+        const cornerQuoteSpans = extractNovelCornerQuoteSpans(ep.contentMarkdown ?? '');
         return ok({
           episode_id,
           episode: ep.id === NOVEL_OUTLINE_EPISODE_ID ? null : (ep.episode ?? null),
           title_in_editor: ep.title,
           nav_label: formatNovelEpisodeNavLabel(ep),
           content_markdown: ep.contentMarkdown,
+          has_structured_script: sceneHasContent(ep.episodeScript),
+          script_scene_count: ep.episodeScript?.scenes?.length ?? 0,
+          ...(cornerQuoteSpans.length ? { corner_quote_spans: cornerQuoteSpans } : {}),
         });
       },
     },
@@ -750,7 +759,8 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
     {
       name: 'novel_rename_novel',
       senderLabel: '改书名',
-      description: '修改当前小说工作台标题（及小说列表条目展示名）。',
+      description:
+        '修改当前小说工作台标题（及小说列表条目展示名）；**故事中**置顶「故事大纲」正文里若出现旧书名（含《》「」及纯文本，旧名≥2字时对全文旧名做替换），会同步替换为新书名并刷新大纲编辑区。',
       parameters: {
         type: 'object',
         properties: { new_title: { type: 'string' } },
@@ -761,7 +771,7 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
         applyMutation((ws) => {
           const t = String((args as { new_title?: string }).new_title ?? '').trim().slice(0, 120);
           if (!t) return err('书名不能为空');
-          let nextWs = renameWorkspaceTitle(ws, t);
+          const nextWs = renameWorkspaceTitle(ws, t);
           const list = loadNovelList();
           const item = list.find((x) => x.id === deps.novelId);
           const nowIso = () => new Date().toISOString();
@@ -776,7 +786,10 @@ export function buildNovelEditorFunctionCalls(deps: NovelEditorFunctionCallDeps)
                 createdAt: nowIso(),
               }
           );
-          return nextWs;
+          return {
+            snapshot: nextWs,
+            extras: { title: t, summary: `书名已改为《${t}》` },
+          };
         }),
     },
   ];

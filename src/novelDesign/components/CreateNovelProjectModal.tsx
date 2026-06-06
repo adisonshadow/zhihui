@@ -102,6 +102,7 @@ export function CreateNovelProjectModal({
         const listItem: NovelWorkspaceItem = {
           id: novelId,
           title: displayTitle,
+          projectDir: dir,
           genres: (() => {
             const pref = loadCreationPreference();
             const tags: string[] = [];
@@ -122,6 +123,7 @@ export function CreateNovelProjectModal({
           novelId,
           novelTitle: displayTitle,
           outlineMarkdown: fullOutlineMarkdown,
+          projectDir: dir,
         });
         message.success('项目已创建');
         form.resetFields();

@@ -5,13 +5,20 @@
  * - watermark: false
  */
 import type { AIModelConfig } from '@/types/settings';
+import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 import type { ImagesApiParams } from './imagesGenerationTypes';
 import OpenAIImagesProvider from './OpenAIImagesProvider';
-import { volcSeedreamPixelSizeForAspectRatio } from './volcSeedreamConfig';
+import {
+  classifyDoubaoSeedreamImageApiTier,
+  volcSeedreamPixelSizeForAspectRatio,
+} from './volcSeedreamConfig';
 
 export default class VolcArkSeedreamImagesProvider extends OpenAIImagesProvider {
+  private readonly seedreamModelConfig: AIModelConfig | null;
+
   constructor(modelConfig: AIModelConfig | null) {
     super(modelConfig);
+    this.seedreamModelConfig = modelConfig;
   }
 
   override transformParams(
@@ -24,9 +31,12 @@ export default class VolcArkSeedreamImagesProvider extends OpenAIImagesProvider 
   ): ImagesApiParams {
     const base = super.transformParams(requestParams, options);
     const ar = String(base.aspect_ratio ?? '1:1');
-    const size = volcSeedreamPixelSizeForAspectRatio(ar);
+    const mid = resolveRequestModelId(this.seedreamModelConfig ?? null) ?? '';
+    const tier = classifyDoubaoSeedreamImageApiTier(mid) ?? '5.0';
+    const size = volcSeedreamPixelSizeForAspectRatio(ar, tier);
+    const { aspect_ratio: _omit, ...rest } = base;
     return {
-      ...base,
+      ...rest,
       size,
       watermark: false,
       response_format: 'b64_json',

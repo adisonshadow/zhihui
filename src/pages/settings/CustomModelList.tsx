@@ -4,7 +4,7 @@
 import { Button, Flex, Space, Tag, Typography } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import type { AIModelConfig } from '@/types/settings';
-import { resolveRequestModelId } from '@/utils/aiModelRequestId';
+import { formatModelSelectLabel } from '@/utils/presetModelInstances';
 import { CAPABILITY_TAGS } from '@/types/settings';
 
 const { Text } = Typography;
@@ -77,7 +77,7 @@ export function CustomModelList({
           >
             <div style={{ flex: 1, minWidth: 0 }}>
               <Space wrap>
-                <Text>{m.name || resolveRequestModelId(m) || '未命名'}</Text>
+                <Text>{formatModelSelectLabel(m, filtered)}</Text>
                 {m.isLocal ? <Tag color="purple">本地</Tag> : null}
                 {m.capabilityKeys?.length ? (
                   <Space size={[0, 4]} wrap>

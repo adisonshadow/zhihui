@@ -2,8 +2,29 @@
  * 小说编写工作台：章节 + 故事大纲（置顶）本地持久化。
  * 键：小说 id（与 novelListStorage 一致，如 novel_*）
  */
-import { loadNovelList } from '@/novelDesign/storage/novelListStorage';
+import type { AudiobookEpisode } from '@/constants/Audiobook';
+import type { Script } from '@/constants/Script';
+import { loadNovelList, upsertNovel } from '@/novelDesign/storage/novelListStorage';
+import {
+  createEmptyNovelScript,
+  createEmptyEpisodeScript,
+  mergeEpisodeScripts,
+  serializeEpisodeScript,
+  serializeNovelScript,
+  tryMigrateMarkdownToEpisodeScript,
+  parseEpisodeScriptJson,
+  parseNovelScriptJson,
+  type NovelEpisodeScript,
+} from '@/novelDesign/utils/novelScriptModel';
+import {
+  createEmptyEpisodeAudiobook,
+  parseEpisodeAudiobookJson,
+  serializeEpisodeAudiobook,
+} from '@/audiobook/utils/audiobookModel';
+
 export const NOVEL_OUTLINE_EPISODE_ID = '__story_outline__';
+
+export type { NovelEpisodeScript };
 
 export interface NovelEpisode {
   id: string;
@@ -15,8 +36,31 @@ export interface NovelEpisode {
    */
   episode?: number;
   contentMarkdown: string;
+  /** 本集结构化剧本（Scene 列表；每场底层固定 1 个 Shot），与正文独立持久化 */
+  episodeScript?: NovelEpisodeScript;
+  /** 本集有声书片段（与正文独立持久化） */
+  episodeAudiobook?: AudiobookEpisode;
   order: number;
   updatedAt: string;
+}
+
+export interface AudiobookOutlineVoiceSamples {
+  /** 相对音色样本根目录 */
+  narratorRelPath?: string;
+  /** 旁白参考 wav 的逐字稿（LongCat 克隆；可与同名 .txt 二选一） */
+  narratorRefText?: string;
+  /** 旁白云端复刻：settings 中 AIModelConfig.id */
+  narratorCloudEngineId?: string;
+  /** 旁白云端复刻 voice_id */
+  narratorCloudVoiceId?: string;
+  /** 角色 id -> 相对路径 */
+  byCharacterId?: Record<string, string>;
+  /** 角色 id -> 参考 wav 逐字稿 */
+  byCharacterRefText?: Record<string, string>;
+  /** 角色 id -> 云端复刻 engineId */
+  byCharacterCloudEngineId?: Record<string, string>;
+  /** 角色 id -> 云端复刻 voice_id */
+  byCharacterCloudVoiceId?: Record<string, string>;
 }
 
 export interface NovelWorkspaceSnapshot {
@@ -24,14 +68,154 @@ export interface NovelWorkspaceSnapshot {
   title: string;
   /** 从抽卡创建时关联的 Electron 漫剧项目 id（可选） */
   electronProjectId?: string | null;
+  /** 小说项目根目录（与创建项目时 project_dir 一致） */
+  projectDir?: string | null;
+  /** 全书顶层剧本（元数据 + 角色）；episodes 数组在客户端保持空，正文剧本在各 NovelEpisode.episodeScript */
+  novelScript?: Script;
   episodes: NovelEpisode[];
   activeEpisodeId: string;
   /** 外部写入（如 AI）后用于强制刷新 Milkdown */
   remountVersionByEpisode: Record<string, number>;
+  /** 故事大纲：旁白与角色的音色样本（相对设置中的样本根目录） */
+  audiobookOutlineVoiceSamples?: AudiobookOutlineVoiceSamples;
+  /** 项目设置：启用内心独白音效 */
+  innerMonologueEnabled?: boolean;
+  /** 项目设置：启用空间回音 */
+  spaceEchoEnabled?: boolean;
+  /** 项目设置：启用电话中的声音 */
+  telephoneEnabled?: boolean;
+  /** 项目设置：启用闷罐 Muffler */
+  mufflerEnabled?: boolean;
   updatedAt: string;
 }
 
 const STORAGE_KEY = 'yiman:novel-design:workspace-v2';
+
+function trimRefTextMap(raw?: Record<string, string>): Record<string, string> | undefined {
+  if (!raw) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(raw)) {
+    const t = val?.trim();
+    if (t) out[k] = t;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function serializeAudiobookOutlineVoiceSamples(v: AudiobookOutlineVoiceSamples | undefined): string {
+  if (!v) return '';
+  const narrator = v.narratorRelPath?.trim();
+  const narratorRefText = v.narratorRefText?.trim();
+  const narratorCloudEngineId = v.narratorCloudEngineId?.trim();
+  const narratorCloudVoiceId = v.narratorCloudVoiceId?.trim();
+  const byCharacterId = trimRefTextMap(v.byCharacterId);
+  const byCharacterRefText = trimRefTextMap(v.byCharacterRefText);
+  const byCharacterCloudEngineId = trimRefTextMap(v.byCharacterCloudEngineId);
+  const byCharacterCloudVoiceId = trimRefTextMap(v.byCharacterCloudVoiceId);
+  const hasBy = !!byCharacterId;
+  const hasRefBy = !!byCharacterRefText;
+  const hasCloudBy = !!byCharacterCloudEngineId;
+  const hasCloudVoiceBy = !!byCharacterCloudVoiceId;
+  if (
+    !narrator &&
+    !narratorRefText &&
+    !narratorCloudEngineId &&
+    !narratorCloudVoiceId &&
+    !hasBy &&
+    !hasRefBy &&
+    !hasCloudBy &&
+    !hasCloudVoiceBy
+  ) {
+    return '';
+  }
+  return JSON.stringify({
+    narratorRelPath: narrator || undefined,
+    narratorRefText: narratorRefText || undefined,
+    narratorCloudEngineId: narratorCloudEngineId || undefined,
+    narratorCloudVoiceId: narratorCloudVoiceId || undefined,
+    byCharacterId: hasBy ? byCharacterId : undefined,
+    byCharacterRefText: hasRefBy ? byCharacterRefText : undefined,
+    byCharacterCloudEngineId: hasCloudBy ? byCharacterCloudEngineId : undefined,
+    byCharacterCloudVoiceId: hasCloudVoiceBy ? byCharacterCloudVoiceId : undefined,
+  });
+}
+
+function parseAudiobookOutlineVoiceJson(raw: string | null | undefined): AudiobookOutlineVoiceSamples | undefined {
+  if (!raw?.trim()) return undefined;
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (!o || typeof o !== 'object') return undefined;
+    const narratorRelPath = typeof o.narratorRelPath === 'string' ? o.narratorRelPath.trim() : undefined;
+    const narratorRefText = typeof o.narratorRefText === 'string' ? o.narratorRefText.trim() : undefined;
+    const narratorCloudEngineId =
+      typeof o.narratorCloudEngineId === 'string' ? o.narratorCloudEngineId.trim() : undefined;
+    const narratorCloudVoiceId =
+      typeof o.narratorCloudVoiceId === 'string' ? o.narratorCloudVoiceId.trim() : undefined;
+    let byCharacterId: Record<string, string> | undefined;
+    if (o.byCharacterId && typeof o.byCharacterId === 'object' && !Array.isArray(o.byCharacterId)) {
+      byCharacterId = {};
+      for (const [k, val] of Object.entries(o.byCharacterId as Record<string, unknown>)) {
+        if (typeof val === 'string' && val.trim()) byCharacterId[k] = val.trim();
+      }
+      if (Object.keys(byCharacterId).length === 0) byCharacterId = undefined;
+    }
+    let byCharacterRefText: Record<string, string> | undefined;
+    if (o.byCharacterRefText && typeof o.byCharacterRefText === 'object' && !Array.isArray(o.byCharacterRefText)) {
+      byCharacterRefText = {};
+      for (const [k, val] of Object.entries(o.byCharacterRefText as Record<string, unknown>)) {
+        if (typeof val === 'string' && val.trim()) byCharacterRefText[k] = val.trim();
+      }
+      if (Object.keys(byCharacterRefText).length === 0) byCharacterRefText = undefined;
+    }
+    let byCharacterCloudEngineId: Record<string, string> | undefined;
+    if (
+      o.byCharacterCloudEngineId &&
+      typeof o.byCharacterCloudEngineId === 'object' &&
+      !Array.isArray(o.byCharacterCloudEngineId)
+    ) {
+      byCharacterCloudEngineId = {};
+      for (const [k, val] of Object.entries(o.byCharacterCloudEngineId as Record<string, unknown>)) {
+        if (typeof val === 'string' && val.trim()) byCharacterCloudEngineId[k] = val.trim();
+      }
+      if (Object.keys(byCharacterCloudEngineId).length === 0) byCharacterCloudEngineId = undefined;
+    }
+    let byCharacterCloudVoiceId: Record<string, string> | undefined;
+    if (
+      o.byCharacterCloudVoiceId &&
+      typeof o.byCharacterCloudVoiceId === 'object' &&
+      !Array.isArray(o.byCharacterCloudVoiceId)
+    ) {
+      byCharacterCloudVoiceId = {};
+      for (const [k, val] of Object.entries(o.byCharacterCloudVoiceId as Record<string, unknown>)) {
+        if (typeof val === 'string' && val.trim()) byCharacterCloudVoiceId[k] = val.trim();
+      }
+      if (Object.keys(byCharacterCloudVoiceId).length === 0) byCharacterCloudVoiceId = undefined;
+    }
+    if (
+      !narratorRelPath &&
+      !narratorRefText &&
+      !narratorCloudEngineId &&
+      !narratorCloudVoiceId &&
+      !byCharacterId &&
+      !byCharacterRefText &&
+      !byCharacterCloudEngineId &&
+      !byCharacterCloudVoiceId
+    ) {
+      return undefined;
+    }
+    return {
+      narratorRelPath: narratorRelPath || undefined,
+      narratorRefText: narratorRefText || undefined,
+      narratorCloudEngineId: narratorCloudEngineId || undefined,
+      narratorCloudVoiceId: narratorCloudVoiceId || undefined,
+      byCharacterId,
+      byCharacterRefText,
+      byCharacterCloudEngineId,
+      byCharacterCloudVoiceId,
+    };
+  } catch {
+    return undefined;
+  }
+}
 
 function safeParse(raw: string | null): Record<string, NovelWorkspaceSnapshot> {
   if (!raw) return {};
@@ -67,6 +251,7 @@ async function ensureNovelParentRowInDb(s: NovelWorkspaceSnapshot): Promise<void
     genres: listItem?.genres ?? [],
     coverDataUrl: listItem?.coverDataUrl ?? null,
     electronProjectId: s.electronProjectId ?? null,
+    audiobookEnabled: listItem?.audiobookEnabled ?? false,
     createdAt: listItem?.createdAt,
     updatedAt: listItem?.updatedAt ?? s.updatedAt,
   });
@@ -82,6 +267,8 @@ function syncSnapshotToDb(s: NovelWorkspaceSnapshot): void {
     title: e.title,
     episode: e.episode ?? null,
     contentMarkdown: e.contentMarkdown,
+    scriptJson: serializeEpisodeScript(e.episodeScript),
+    audiobookJson: serializeEpisodeAudiobook(e.episodeAudiobook),
     order: e.order,
     updatedAt: e.updatedAt,
   }));
@@ -94,12 +281,18 @@ function syncSnapshotToDb(s: NovelWorkspaceSnapshot): void {
         activeEpisodeId: s.activeEpisodeId,
         remountVersions: s.remountVersionByEpisode ?? {},
         updatedAt: s.updatedAt,
+        novelScriptJson: serializeNovelScript(s.novelScript),
+        audiobookOutlineVoiceJson: serializeAudiobookOutlineVoiceSamples(s.audiobookOutlineVoiceSamples),
+        innerMonologueEnabled: s.innerMonologueEnabled,
+        spaceEchoEnabled: s.spaceEchoEnabled,
+        telephoneEnabled: s.telephoneEnabled,
+        mufflerEnabled: s.mufflerEnabled,
       });
       if (eps.length > 0) {
         await a.replaceAllEpisodes(s.novelId, eps);
       }
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.warn('[WorkspaceSync] 保存失败:', e);
     }
   })();
 }
@@ -120,12 +313,69 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * 改书名时同步「故事大纲」正文中对旧书名的写法（《》「」及文中出现的旧名）。
+ * 单字旧名不做全文替换，避免误伤。
+ */
+export function replaceBookTitleInOutlineMarkdown(
+  contentMarkdown: string,
+  oldTitle: string,
+  newTitle: string,
+): string {
+  const o = oldTitle.trim();
+  const n = newTitle.trim();
+  if (!o || o === n || !contentMarkdown) return contentMarkdown;
+  let md = contentMarkdown;
+  const pairs: [string, string][] = [
+    [`《${o}》`, `《${n}》`],
+    [`「${o}」`, `「${n}」`],
+    [`『${o}』`, `『${n}』`],
+    [`"${o}"`, `"${n}"`],
+    [`'${o}'`, `'${n}'`],
+  ];
+  for (const [from, to] of pairs) {
+    if (md.includes(from)) md = md.split(from).join(to);
+  }
+  if (o.length >= 2 && md.includes(o)) {
+    md = md.split(o).join(n);
+  }
+  return md;
+}
+
 function makeId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function stripNumericTitlePrefix(title: string): string {
   return title.trim().replace(/^\d+[、.．:：]\s*/, '').trim() || title.trim();
+}
+
+/** localStorage 旧版 scriptMarkdown（Markdown 或误存的 JSON）→ episodeScript + novelScript */
+function migrateSnapshotScriptFields(snapshot: NovelWorkspaceSnapshot): NovelWorkspaceSnapshot {
+  const needsNovelScript = !snapshot.novelScript;
+  const novelScript = snapshot.novelScript ?? createEmptyNovelScript(snapshot.novelId, snapshot.title);
+  let changed = needsNovelScript;
+
+  const episodes = snapshot.episodes.map((e) => {
+    const legacy = (e as NovelEpisode & { scriptMarkdown?: string }).scriptMarkdown;
+    if (legacy) changed = true;
+    const episodeScript =
+      e.episodeScript ?? (legacy ? tryMigrateMarkdownToEpisodeScript(legacy, e) : undefined);
+    const next: NovelEpisode = {
+      id: e.id,
+      title: e.title,
+      episode: e.episode,
+      contentMarkdown: e.contentMarkdown,
+      episodeScript,
+      episodeAudiobook: e.episodeAudiobook,
+      order: e.order,
+      updatedAt: e.updatedAt,
+    };
+    return next;
+  });
+
+  if (!changed) return snapshot;
+  return { ...snapshot, novelScript, episodes, updatedAt: nowIso() };
 }
 
 /** 迁移旧数据：大纲标题锁定；正文标题去掉可选的「n、」前缀 */
@@ -172,6 +422,21 @@ export function reindexBodyEpisodes(snapshot: NovelWorkspaceSnapshot): NovelWork
 
   const bodyNext = body.map((e, i) => {
     const n = i + 1;
+    if (e.id !== NOVEL_OUTLINE_EPISODE_ID && e.episodeScript) {
+      const needsEpUpdate =
+        e.order !== n || e.episode !== n || e.episodeScript.episodeIndex !== n;
+      if (needsEpUpdate) {
+        changed = true;
+        return {
+          ...e,
+          order: n,
+          episode: n,
+          episodeScript: { ...e.episodeScript, episodeIndex: n },
+          updatedAt: t,
+        };
+      }
+      return e;
+    }
     if (e.order === n && e.episode === n) return e;
     changed = true;
     return { ...e, order: n, episode: n, updatedAt: t };
@@ -231,16 +496,110 @@ export function bumpEpisodeRemount(
   return { ...snapshot, remountVersionByEpisode: next, updatedAt: nowIso() };
 }
 
+let workspaceRestoreAttempted = new Set<string>();
+
+type DbEpisodeRow = {
+  id: string;
+  title: string;
+  episode?: number | null;
+  contentMarkdown: string;
+  scriptJson: string;
+  audiobookJson: string;
+  order: number;
+  updatedAt: string;
+};
+
+type DbWorkspaceMeta = {
+  novelId: string;
+  title: string;
+  activeEpisodeId: string;
+  remountVersions: Record<string, number>;
+  novelScriptJson?: string;
+  audiobookOutlineVoiceJson?: string;
+  innerMonologueEnabled?: boolean;
+  spaceEchoEnabled?: boolean;
+  telephoneEnabled?: boolean;
+  mufflerEnabled?: boolean;
+  updatedAt: string;
+};
+
+function snapshotFromDbRows(
+  novelId: string,
+  meta: DbWorkspaceMeta,
+  rows: DbEpisodeRow[],
+): NovelWorkspaceSnapshot {
+  const listItem = loadNovelList().find((x) => x.id === novelId);
+  const episodes: NovelEpisode[] = rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    episode: r.episode ?? undefined,
+    contentMarkdown: r.contentMarkdown ?? '',
+    episodeScript: parseEpisodeScriptJson(r.scriptJson),
+    episodeAudiobook: parseEpisodeAudiobookJson(r.audiobookJson),
+    order: r.order,
+    updatedAt: r.updatedAt,
+  }));
+  return {
+    novelId,
+    title: (listItem?.title ?? meta.title).trim() || '未命名小说',
+    electronProjectId: listItem?.electronProjectId ?? null,
+    novelScript: parseNovelScriptJson(meta.novelScriptJson),
+    audiobookOutlineVoiceSamples:
+      parseAudiobookOutlineVoiceJson(meta.audiobookOutlineVoiceJson) ?? undefined,
+    innerMonologueEnabled: meta.innerMonologueEnabled === true,
+    spaceEchoEnabled: meta.spaceEchoEnabled === true,
+    telephoneEnabled: meta.telephoneEnabled === true,
+    mufflerEnabled: meta.mufflerEnabled === true,
+    episodes,
+    activeEpisodeId: meta.activeEpisodeId,
+    remountVersionByEpisode: meta.remountVersions ?? {},
+    updatedAt: meta.updatedAt,
+  };
+}
+
+/** 列表项是否已开通有声书 */
+export function getAudiobookEnabled(novelId: string): boolean {
+  return Boolean(loadNovelList().find((x) => x.id === novelId)?.audiobookEnabled);
+}
+
 export function loadNovelWorkspace(novelId: string): NovelWorkspaceSnapshot | null {
   const map = loadAll();
   const s = map[novelId];
-  return s ?? null;
+  if (s) return s;
+
+  if (!workspaceRestoreAttempted.has(novelId)) {
+    workspaceRestoreAttempted.add(novelId);
+    const a = api();
+    if (a?.getEpisodes && a.getWorkspaceMeta) {
+      void Promise.all([a.getWorkspaceMeta(novelId), a.getEpisodes(novelId)])
+        .then(([meta, eps]) => {
+          if (!meta || !eps?.length) return;
+          const snap = snapshotFromDbRows(novelId, meta, eps);
+          saveNovelWorkspace(snap);
+          window.location.reload();
+        })
+        .catch(() => {});
+    }
+  }
+  return null;
 }
 
 export function saveNovelWorkspace(snapshot: NovelWorkspaceSnapshot): void {
   const map = loadAll();
   map[snapshot.novelId] = { ...snapshot, updatedAt: nowIso() };
   saveAll(map);
+}
+
+/** 从 localStorage 移除工作区快照（删除小说项目时调用；SQLite 由 novel.delete 清理） */
+export function deleteNovelWorkspaceLocal(novelId: string): void {
+  const map = loadAll();
+  if (!(novelId in map)) return;
+  delete map[novelId];
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore quota */
+  }
 }
 
 /** 占位工作台：置顶故事大纲空文档 + 无分集 */
@@ -253,9 +612,11 @@ export function createBlankWorkspace(novelId: string, title: string): NovelWorks
     order: 0,
     updatedAt: t,
   };
+  const novelTitle = title.trim() || '未命名小说';
   return {
     novelId,
-    title: title.trim() || '未命名小说',
+    title: novelTitle,
+    novelScript: createEmptyNovelScript(novelId, novelTitle),
     episodes: [outline],
     activeEpisodeId: NOVEL_OUTLINE_EPISODE_ID,
     remountVersionByEpisode: {},
@@ -269,6 +630,7 @@ export function initWorkspaceFromOutline(input: {
   novelTitle: string;
   outlineMarkdown: string;
   electronProjectId?: string | null;
+  projectDir?: string | null;
 }): NovelWorkspaceSnapshot {
   const base = createBlankWorkspace(input.novelId, input.novelTitle);
   const t = nowIso();
@@ -276,6 +638,7 @@ export function initWorkspaceFromOutline(input: {
   return saveAndReturn({
     ...base,
     electronProjectId: input.electronProjectId ?? undefined,
+    projectDir: input.projectDir?.trim() || undefined,
     episodes: [{ ...outline, contentMarkdown: input.outlineMarkdown, updatedAt: t }],
     updatedAt: t,
   });
@@ -288,7 +651,7 @@ function saveAndReturn(s: NovelWorkspaceSnapshot): NovelWorkspaceSnapshot {
 
 export function upsertEpisode(
   snapshot: NovelWorkspaceSnapshot,
-  input: Partial<Pick<NovelEpisode, 'title' | 'contentMarkdown'>> & { id?: string }
+  input: Partial<Pick<NovelEpisode, 'title' | 'contentMarkdown' | 'episodeScript'>> & { id?: string }
 ): { snapshot: NovelWorkspaceSnapshot; episode: NovelEpisode } {
   const id = input.id ?? makeId('ep');
   const t = nowIso();
@@ -308,10 +671,15 @@ export function upsertEpisode(
         input.title !== undefined ? input.title.trim() : existing.title;
       const nextTitle =
         rawTitle ? stripNumericTitlePrefix(rawTitle) || rawTitle.trim() : existing.title;
+      let epScript = input.episodeScript ?? existing.episodeScript;
+      if (epScript && nextTitle && nextTitle !== existing.title) {
+        epScript = { ...epScript, title: nextTitle };
+      }
       episode = {
         ...existing,
         title: nextTitle || existing.title,
         contentMarkdown: input.contentMarkdown ?? existing.contentMarkdown,
+        episodeScript: epScript,
         updatedAt: t,
       };
     }
@@ -321,13 +689,23 @@ export function upsertEpisode(
   }
   const bodyCount = snapshot.episodes.filter((e) => e.id !== NOVEL_OUTLINE_EPISODE_ID).length;
   const rawTitle = input.title?.trim() || `第${bodyCount + 1}集`;
+  const titleClean = stripNumericTitlePrefix(rawTitle) || rawTitle;
   episode = {
     id,
-    title: stripNumericTitlePrefix(rawTitle) || rawTitle,
+    title: titleClean,
     contentMarkdown: input.contentMarkdown ?? '',
+    episodeScript: input.episodeScript,
     order: maxOrder + 1,
     updatedAt: t,
   };
+  if (!episode.episodeScript) {
+    const n = bodyCount + 1;
+    episode = {
+      ...episode,
+      episodeScript: createEmptyEpisodeScript({ id, title: titleClean, episode: n }),
+      episode: n,
+    };
+  }
   const episodes = [...snapshot.episodes, episode].sort((a, b) => a.order - b.order);
   const withNew = { ...snapshot, episodes, activeEpisodeId: id, updatedAt: t };
   const reindexed = reindexBodyEpisodes(withNew);
@@ -350,13 +728,173 @@ export function updateEpisodeMarkdown(
   return saveAndReturn(next);
 }
 
+export function updateEpisodeScript(
+  snapshot: NovelWorkspaceSnapshot,
+  episodeId: string,
+  episodeScript: NovelEpisodeScript | undefined,
+  bumpRemount: boolean
+): NovelWorkspaceSnapshot {
+  const t = nowIso();
+  const episodes = snapshot.episodes.map((e) =>
+    e.id === episodeId ? { ...e, episodeScript, updatedAt: t } : e
+  );
+  let next: NovelWorkspaceSnapshot = { ...snapshot, episodes, updatedAt: t };
+  if (bumpRemount) next = bumpEpisodeRemount(next, episodeId);
+  return saveAndReturn(next);
+}
+
+export function updateEpisodeAudiobook(
+  snapshot: NovelWorkspaceSnapshot,
+  episodeId: string,
+  episodeAudiobook: AudiobookEpisode | undefined,
+  bumpRemount = false
+): NovelWorkspaceSnapshot {
+  const t = nowIso();
+  const episodes = snapshot.episodes.map((e) =>
+    e.id === episodeId ? { ...e, episodeAudiobook, updatedAt: t } : e
+  );
+  let next: NovelWorkspaceSnapshot = { ...snapshot, episodes, updatedAt: t };
+  if (bumpRemount) next = bumpEpisodeRemount(next, episodeId);
+  return saveAndReturn(next);
+}
+
+/** 更新故事大纲旁白/角色音色样本（与已有绑定合并；空字符串可清除某项） */
+export function updateAudiobookOutlineVoiceSamples(
+  snapshot: NovelWorkspaceSnapshot,
+  patch: Partial<AudiobookOutlineVoiceSamples>,
+): NovelWorkspaceSnapshot {
+  const t = nowIso();
+  const prev = snapshot.audiobookOutlineVoiceSamples ?? {};
+  let narrator: string | undefined;
+  if (patch.narratorRelPath !== undefined) {
+    narrator = patch.narratorRelPath.trim() || undefined;
+  } else {
+    narrator = prev.narratorRelPath?.trim() || undefined;
+  }
+  let narratorRefText: string | undefined;
+  if (patch.narratorRefText !== undefined) {
+    narratorRefText = patch.narratorRefText.trim() || undefined;
+  } else {
+    narratorRefText = prev.narratorRefText?.trim() || undefined;
+  }
+  const by: Record<string, string> = { ...(prev.byCharacterId ?? {}) };
+  if (patch.byCharacterId) {
+    for (const [k, v] of Object.entries(patch.byCharacterId)) {
+      const x = v?.trim();
+      if (x) by[k] = x;
+      else delete by[k];
+    }
+  }
+  const byRef: Record<string, string> = { ...(prev.byCharacterRefText ?? {}) };
+  if (patch.byCharacterRefText) {
+    for (const [k, v] of Object.entries(patch.byCharacterRefText)) {
+      const x = v?.trim();
+      if (x) byRef[k] = x;
+      else delete byRef[k];
+    }
+  }
+  let narratorCloudEngineId: string | undefined;
+  if (patch.narratorCloudEngineId !== undefined) {
+    narratorCloudEngineId = patch.narratorCloudEngineId.trim() || undefined;
+  } else {
+    narratorCloudEngineId = prev.narratorCloudEngineId?.trim() || undefined;
+  }
+  let narratorCloudVoiceId: string | undefined;
+  if (patch.narratorCloudVoiceId !== undefined) {
+    narratorCloudVoiceId = patch.narratorCloudVoiceId.trim() || undefined;
+  } else {
+    narratorCloudVoiceId = prev.narratorCloudVoiceId?.trim() || undefined;
+  }
+  const byCloudEngine: Record<string, string> = { ...(prev.byCharacterCloudEngineId ?? {}) };
+  if (patch.byCharacterCloudEngineId) {
+    for (const [k, v] of Object.entries(patch.byCharacterCloudEngineId)) {
+      const x = v?.trim();
+      if (x) byCloudEngine[k] = x;
+      else delete byCloudEngine[k];
+    }
+  }
+  const byCloudVoice: Record<string, string> = { ...(prev.byCharacterCloudVoiceId ?? {}) };
+  if (patch.byCharacterCloudVoiceId) {
+    for (const [k, v] of Object.entries(patch.byCharacterCloudVoiceId)) {
+      const x = v?.trim();
+      if (x) byCloudVoice[k] = x;
+      else delete byCloudVoice[k];
+    }
+  }
+  const hasBy = Object.keys(by).length > 0;
+  const hasRefBy = Object.keys(byRef).length > 0;
+  const hasCloudBy = Object.keys(byCloudEngine).length > 0;
+  const hasCloudVoiceBy = Object.keys(byCloudVoice).length > 0;
+  const audiobookOutlineVoiceSamples =
+    narrator ||
+    narratorRefText ||
+    narratorCloudEngineId ||
+    narratorCloudVoiceId ||
+    hasBy ||
+    hasRefBy ||
+    hasCloudBy ||
+    hasCloudVoiceBy ?
+      {
+        narratorRelPath: narrator || undefined,
+        narratorRefText: narratorRefText || undefined,
+        narratorCloudEngineId: narratorCloudEngineId || undefined,
+        narratorCloudVoiceId: narratorCloudVoiceId || undefined,
+        byCharacterId: hasBy ? by : undefined,
+        byCharacterRefText: hasRefBy ? byRef : undefined,
+        byCharacterCloudEngineId: hasCloudBy ? byCloudEngine : undefined,
+        byCharacterCloudVoiceId: hasCloudVoiceBy ? byCloudVoice : undefined,
+      }
+    : undefined;
+  return saveAndReturn({ ...snapshot, audiobookOutlineVoiceSamples, updatedAt: t });
+}
+
+/** 开通有声书：为正文集初始化空 AudiobookEpisode，并标记列表 audiobookEnabled */
+export function enableAudiobookForNovel(snapshot: NovelWorkspaceSnapshot): NovelWorkspaceSnapshot {
+  const t = nowIso();
+  const episodes = snapshot.episodes.map((e) => {
+    if (e.id === NOVEL_OUTLINE_EPISODE_ID) return e;
+    const episodeAudiobook = e.episodeAudiobook ?? createEmptyEpisodeAudiobook(e);
+    return { ...e, episodeAudiobook, updatedAt: t };
+  });
+  const next = saveAndReturn({ ...snapshot, episodes, updatedAt: t });
+  const listItem = loadNovelList().find((x) => x.id === snapshot.novelId);
+  if (listItem) {
+    upsertNovel({ ...listItem, audiobookEnabled: true, updatedAt: t });
+  }
+  return next;
+}
+
+export function setNovelScript(snapshot: NovelWorkspaceSnapshot, novelScript: Script): NovelWorkspaceSnapshot {
+  return saveAndReturn({ ...snapshot, novelScript, updatedAt: nowIso() });
+}
+
 export function setActiveEpisode(snapshot: NovelWorkspaceSnapshot, episodeId: string): NovelWorkspaceSnapshot {
   if (!snapshot.episodes.some((e) => e.id === episodeId)) return snapshot;
   return saveAndReturn({ ...snapshot, activeEpisodeId: episodeId });
 }
 
 export function renameWorkspaceTitle(snapshot: NovelWorkspaceSnapshot, title: string): NovelWorkspaceSnapshot {
-  return saveAndReturn({ ...snapshot, title: title.trim() || snapshot.title });
+  const newT = (title.trim() || snapshot.title).trim() || snapshot.title;
+  const oldT = snapshot.title.trim();
+  const outline = snapshot.episodes.find((e) => e.id === NOVEL_OUTLINE_EPISODE_ID);
+  const novelScript =
+    snapshot.novelScript ? { ...snapshot.novelScript, title: newT } : createEmptyNovelScript(snapshot.novelId, newT);
+
+  if (!outline || !oldT || oldT === newT) {
+    return saveAndReturn({ ...snapshot, title: newT, novelScript, updatedAt: nowIso() });
+  }
+
+  const nextMd = replaceBookTitleInOutlineMarkdown(outline.contentMarkdown, oldT, newT);
+  if (nextMd === outline.contentMarkdown) {
+    return saveAndReturn({ ...snapshot, title: newT, novelScript, updatedAt: nowIso() });
+  }
+
+  const t = nowIso();
+  const episodes = snapshot.episodes.map((e) =>
+    e.id === NOVEL_OUTLINE_EPISODE_ID ? { ...e, contentMarkdown: nextMd, updatedAt: t } : e,
+  );
+  const withTitle = { ...snapshot, title: newT, novelScript, episodes, updatedAt: t };
+  return saveAndReturn(bumpEpisodeRemount(withTitle, NOVEL_OUTLINE_EPISODE_ID));
 }
 
 /** 删除一集（不可删除故事大纲） */
@@ -432,8 +970,9 @@ export function mergeEpisodesContent(
   if (!keep || !mergeIn) return null;
   const t = nowIso();
   const newMd = `${keep.contentMarkdown.trim()}${separator}${mergeIn.contentMarkdown.trim()}`.trim();
+  const mergedScript = mergeEpisodeScripts(keep.episodeScript, mergeIn.episodeScript);
   const eps = snapshot.episodes.filter((e) => e.id !== episodeIdMergeIn).map((e) =>
-    e.id === episodeIdKeep ? { ...e, contentMarkdown: newMd, updatedAt: t } : e
+    e.id === episodeIdKeep ? { ...e, contentMarkdown: newMd, episodeScript: mergedScript, updatedAt: t } : e
   );
   let activeEpisodeId = snapshot.activeEpisodeId;
   if (activeEpisodeId === episodeIdMergeIn) activeEpisodeId = episodeIdKeep;
@@ -461,12 +1000,13 @@ export function splitEpisodeAtMarker(
   const t = nowIso();
   const maxOrder = snapshot.episodes.reduce((m, e) => Math.max(m, e.order), 0);
   const newId = makeId('ep');
+  const splitTitle =
+    stripNumericTitlePrefix(newEpisodeTitle.trim()) ||
+    newEpisodeTitle.trim() ||
+    `第${snapshot.episodes.filter((x) => x.id !== NOVEL_OUTLINE_EPISODE_ID).length + 1}集`;
   const newEp: NovelEpisode = {
     id: newId,
-    title:
-      stripNumericTitlePrefix(newEpisodeTitle.trim()) ||
-      newEpisodeTitle.trim() ||
-      `第${snapshot.episodes.filter((x) => x.id !== NOVEL_OUTLINE_EPISODE_ID).length + 1}集`,
+    title: splitTitle,
     contentMarkdown: right,
     order: maxOrder + 1,
     updatedAt: t,
@@ -482,8 +1022,21 @@ export function splitEpisodeAtMarker(
     activeEpisodeId: newEp.id,
   };
   next = reindexBodyEpisodes(next);
+  const refreshed = next.episodes.find((e) => e.id === newId);
+  const nNum = refreshed?.episode ?? 1;
+  next = {
+    ...next,
+    episodes: next.episodes.map((e) =>
+      e.id === newId ?
+        {
+          ...e,
+          episodeScript: createEmptyEpisodeScript({ id: newId, title: e.title, episode: nNum }),
+        }
+      : e
+    ),
+  };
   next = bumpEpisodeRemount(next, episodeId);
-  next = bumpEpisodeRemount(next, newEp.id);
+  next = bumpEpisodeRemount(next, newId);
   const saved = saveAndReturn(next);
   return { snapshot: saved, newEpisodeId: newId };
 }
@@ -498,8 +1051,9 @@ export function ensureNovelWorkspace(novelId: string): NovelWorkspaceSnapshot {
   }
   const migrated = migrateNovelWorkspaceEpisodeTitles(existing);
   const normalized = reindexBodyEpisodes(migrated);
-  if (normalized !== existing) {
-    saveNovelWorkspace(normalized);
+  const withScript = migrateSnapshotScriptFields(normalized);
+  if (withScript !== normalized) {
+    saveNovelWorkspace(withScript);
   }
-  return normalized;
+  return withScript;
 }

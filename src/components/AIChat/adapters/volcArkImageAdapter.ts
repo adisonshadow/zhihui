@@ -106,7 +106,10 @@ export interface UseVolcArkDisplayableImageSrcResult {
 }
 
 /**
- * 将远程 URL 转为可预览的 src：火山 TOS 走主进程 / 开发代理，其它 URL 原样使用。
+ * 将远程 URL 转为可预览的 src：
+ * 1. 优先读本地磁盘缓存（{userData}/yiman/image-cache/）
+ * 2. 火山 TOS 走主进程 / 开发代理
+ * 3. 其它 URL 原样使用 + 异步缓存到本地
  */
 export function useVolcArkDisplayableImageSrc(src: string | undefined): UseVolcArkDisplayableImageSrcResult {
   const [displaySrc, setDisplaySrc] = useState<string | undefined>(() => {
@@ -124,43 +127,56 @@ export function useVolcArkDisplayableImageSrc(src: string | undefined): UseVolcA
       return;
     }
 
-    if (!isVolcTosSignedImageUrl(src)) {
-      setDisplaySrc(src);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-
-    const ac = new AbortController();
-    const revokeRef: { current: (() => void) | null } = { current: null };
-    let alive = true;
+    let cancelled = false;
+    const imgCache = typeof window !== 'undefined' ? (window as any).yiman?.images?.cache : undefined;
 
     setLoading(true);
     setError(null);
     setDisplaySrc(undefined);
 
     (async () => {
-      try {
-        const { src: display, revoke } = await loadVolcArkTosImageDisplay(src, ac.signal);
-        if (ac.signal.aborted || !alive) {
-          revoke();
-          return;
+      // 1. 优先读本地缓存
+      if (imgCache?.readDataUrl) {
+        try {
+          const cached = await imgCache.readDataUrl(src) as string | null;
+          if (cancelled) return;
+          if (cached) {
+            setDisplaySrc(cached);
+            setLoading(false);
+            return;
+          }
+        } catch {
+          // 缓存读取失败，静默降级到远程
         }
-        revokeRef.current = revoke;
-        setDisplaySrc(display);
+      }
+
+      // 2. 无缓存，按原逻辑加载远程图片
+      try {
+        let resolvedSrc: string | undefined;
+        if (isVolcTosSignedImageUrl(src)) {
+          const { src: display } = await loadVolcArkTosImageDisplay(src, new AbortController().signal);
+          resolvedSrc = display;
+        } else {
+          resolvedSrc = src;
+        }
+
+        if (cancelled) return;
+        setDisplaySrc(resolvedSrc);
         setLoading(false);
+
+        // 3. 异步缓存到本地（不阻塞展示）
+        if (imgCache?.save) {
+          imgCache.save(src).catch(() => {});
+        }
       } catch (e) {
-        if (ac.signal.aborted || !alive) return;
+        if (cancelled) return;
         setError(e instanceof Error ? e : new Error(String(e)));
         setLoading(false);
       }
     })();
 
     return () => {
-      alive = false;
-      ac.abort();
-      revokeRef.current?.();
-      revokeRef.current = null;
+      cancelled = true;
     };
   }, [src]);
 

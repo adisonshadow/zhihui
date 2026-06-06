@@ -31,7 +31,7 @@ def main():
         # 检测语言：含中文字符则用 zh
         lang = 'zh' if any('\\u4e00' <= c <= '\\u9fff' for c in TEXT) else 'en'
         speed = float(os.environ.get('YIMAN_TTS_SPEED', '1.0'))
-        result = next(model.generate(TEXT, lang_code=lang, speed=speed, steps=16, cfg_strength=4.0))
+        result = next(model.generate(TEXT, lang_code=lang, speed=speed, steps=16, cfg_strength=4.0, split_text=False))
         sf.write(OUTPUT_PATH, result.audio, 24000)
         print(json.dumps({"ok": True, "output": OUTPUT_PATH}))
     except ImportError as e:

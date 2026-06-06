@@ -8,7 +8,9 @@ import { scriptAgentPrompts } from '../agents/scriptAgent';
 import { novelAgentPrompts } from '../agents/novelAgent';
 import { novelIdeaAgentPrompts } from '../agents/novelIdeaAgent';
 import { novelToScriptAgentPrompts } from '../agents/novelToScriptAgent';
+import { novelToAudiobookAgentPrompts } from '../agents/novelToAudiobookAgent';
 import { drawerAgentPrompts, DRAWER_TYPE_OPTIONS } from '../agents/drawerAgent';
+import { musicAgentPrompts } from '../agents/musicAgent';
 
 /** 主 agent：调度入口，默认选项，计划实现 function call 调度能力 */
 export const MAIN_AGENT_KEY = 'main';
@@ -43,11 +45,26 @@ export const AGENT_CONFIGS: AgentConfig[] = [
     missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加具备「{missing}」能力且已配置 API 的模型。',
   },
   {
+    key: 'novel-to-audiobook',
+    label: '转有声书',
+    welcomeMessage: '我是有声书改编专家，可将小说正文转为可朗读的结构化片段。',
+    requiredCapabilityKeys: ['novel'],
+    missingCapabilityHint: '缺失匹配能力的模型，请在设置中为模型勾选「小说创作」能力并配置 API。',
+  },
+  {
     key: 'script',
     label: '剧本专家',
     welcomeMessage: '我是剧本专家，可帮您扩写、缩写、润色概要或剧本。',
     requiredCapabilityKeys: ['script', 'action_script'],
     missingCapabilityHint: '缺失匹配能力的模型，请在设置中添加具备「{missing}」能力且已配置 API 的模型。',
+  },
+  {
+    key: 'music',
+    label: 'Tidal 作曲',
+    welcomeMessage: '我是 Strudel 编曲助手，可生成 Tidal 模式代码并写入你的编辑器。',
+    /** 生成 Strudel 脚本为纯文本任务，任意已配置 API 的文本/通用模型即可 */
+    requiredCapabilityKeys: [],
+    missingCapabilityHint: '请先在设置中添加通用智能或文本类模型并配置 API（绘图/视频/TTS 模型不会出现在本页）。',
   },
   {
     key: 'drawer',
@@ -79,7 +96,9 @@ export const AGENT_PROMPTS_MAP: Record<string, AgentPrompts> = {
   'novel-idea': novelIdeaAgentPrompts,
   novel: novelAgentPrompts,
   'novel-to-script': novelToScriptAgentPrompts,
+  'novel-to-audiobook': novelToAudiobookAgentPrompts,
   script: scriptAgentPrompts,
+  music: musicAgentPrompts,
   drawer: drawerAgentPrompts,
 };
 

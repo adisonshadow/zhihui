@@ -1,0 +1,49 @@
+/* 有声书片段卡片：选中 / 悬停 / 整集播放在当前段 */
+
+.audiobook-seg-card.ant-card {
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    border-width 120ms ease;
+}
+
+.audiobook-seg-card--default.ant-card {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.audiobook-seg-card--hover.ant-card:not(.audiobook-seg-card--playback-active):not(.audiobook-seg-card--selected) {
+  background: rgba(255, 255, 255, 0.065);
+}
+
+.audiobook-seg-card--selected.ant-card:not(.audiobook-seg-card--playback-active) {
+  background: linear-gradient(180deg, rgba(22, 119, 255, 0.16) 0%, rgba(0, 0, 0, 0.36) 100%);
+  border: 2px solid var(--audiobook-seg-selected-border, #1677ff);
+}
+
+/** 整集播放/暂停时「播放在」当前段：暗蓝描边 + 渐变底 */
+.audiobook-seg-card--playback-active.ant-card {
+  background: linear-gradient(180deg, rgba(45, 90, 160, 0.14) 0%, rgba(0, 0, 0, 0.3) 100%);
+  border: 2px solid #2d5aa0;
+}
+
+/** Dropdown 内 TTS 模型未选中项占位，与 CheckOutlined 对齐 */
+.audiobook-seg-menu-check-placeholder {
+  display: inline-block;
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.audiobook-segment-container {
+  width: 100%;
+  position: relative;
+}
+
+.audiobook-segment-container .audiobook-segment-audio-add-button{
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+
+.audiobook-segment-container:hover .audiobook-segment-audio-add-button{
+  opacity: 1;
+}

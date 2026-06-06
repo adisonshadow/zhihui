@@ -1,0 +1,30 @@
+.audiobook-attached-audio-tags {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 140px;
+}
+
+.audiobook-attached-audio-tag {
+  cursor: pointer;
+  margin: 0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audiobook-attached-audio-tag--playing {
+  animation: audiobook-attached-audio-bounce 0.55s ease-in-out infinite;
+}
+
+@keyframes audiobook-attached-audio-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}

@@ -1,7 +1,10 @@
 /**
  * 小说转剧本 Agent：将小说正文改编为漫剧/AI 短剧可分镜执行的剧本格式
+ *
+ * 新架构：同时注册为标准化 SkillAgentDefinition
  */
 import type { AgentPrompts } from '../types';
+import { registerSkillAgent } from '../registryTypes';
 
 export const novelToScriptAgentPrompts: AgentPrompts = {
   agentKey: 'novel-to-script',
@@ -11,7 +14,7 @@ export const novelToScriptAgentPrompts: AgentPrompts = {
 1. 分镜头拆分：将小说段落按镜头逻辑拆分为一个个分镜，每个分镜对应一个画面
 2. 场景设计：说明每个分镜的背景（场景/环境）、前景（角色/道具的层次关系）
 3. 镜头语言：注明镜头类型（远景/中景/近景/特写/俯拍/仰拍/跟拍/推拉摇移）、时长
-4. 旁白/对白：人物对白标明说话人、语气、音量；旁白区分全知旁白与角色内心独白
+4. 旁白/对白：须通过 novel_script_add_scene 的 dialogues 数组写入（speaker+text 或 character_id+text）；小说里的对话禁止只写在 description 里
 5. 动作指示：角色在分镜内的走位、表情变化、肢体动作、与其他角色/道具的互动
 6. 道具说明：每个分镜中出现的道具及其位置关系
 7. 音效/音乐：背景音乐的情绪方向、音效的具体时机与类型
@@ -56,3 +59,16 @@ export const novelToScriptAgentPrompts: AgentPrompts = {
     { key: 'hook-ending', label: '设计钩子结尾', message: '请为本集结尾重新设计一个悬念/反转/情绪高点，让观众想看下一集' },
   ],
 };
+
+// ── 新架构：标准化 Skill Agent 注册 ──
+registerSkillAgent({
+  agentId: 'novel_to_script',
+  agentName: '转剧本',
+  agentType: 'skill',
+  description: '精通将小说正文改编为漫剧/AI短剧的分镜剧本格式，支持分镜头拆分、场景设计、镜头语言、旁白对白等',
+  skillPromptTemplate: `${novelToScriptAgentPrompts.basePrompt}\n\n【额外需求】\n{{extra_requirements}}`,
+  supportedModels: ['script'],
+  allowedTools: ['generate_text', 'update_data'],
+  inputType: 'text',
+  outputType: 'text',
+});

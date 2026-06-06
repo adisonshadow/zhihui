@@ -27,18 +27,25 @@ import {
   resolveVoiceOverEngineId,
   type TtsEngineOption,
 } from './ttsModelAdapters';
-import { MINIMAX_VOICE_AUTOCOMPLETE_OPTIONS } from './minimaxSystemVoices';
+import { MIMO_V25_PRESET_VOICE_IDS } from '@/components/tts/mimoV25PresetVoices';
+import { buildMimoAssistantContentForTts } from './ttsModelAdapters';
+import { resolveRequestModelId } from '@/utils/aiModelRequestId';
+// CosyVoice 已停用
+// import { isCosyVoiceV35ModelId, resolveCosyVoiceModelSlug } from '@/components/tts/cosyVoiceModelUtils';
+import {
+  TtsVoiceSourceFields,
+  minimaxPresetVoiceControl,
+} from '@/components/tts/TtsVoiceSourceFields';
 
 const { Text, Link } = Typography;
 const { TextArea } = Input;
 
 const OPENAI_VOICE_PRESETS = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'] as const;
-const MIMO_VOICE_PRESETS = ['default_zh', 'default_en', 'mimo_default'] as const;
 const OPENAI_SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4] as const;
 const MINIMAX_SAMPLE_RATES = [16000, 24000, 32000, 44100] as const;
 const MINIMAX_BITRATES = [32000, 64000, 128000, 256000] as const;
 
-/** 旁白叙述视角，与剧本面板一致；写入 MiMo &lt;style&gt; 的「角色」侧 */
+/** 旁白叙述视角，与剧本面板一致；映射为 MiMo 导演模式的人设/语气上下文 */
 const NARRATOR_STYLE_OPTIONS: { label: string; value: string }[] = [
   { label: '全知', value: '全知' },
   { label: '第一人称主角', value: '第一人称主角' },
@@ -85,6 +92,27 @@ export function TtsEditModal({
     () => (engineId ? getEngineById(models, engineId) : undefined) ?? engines[0],
     [models, engineId, engines]
   );
+
+  const mimoRequestSlug = activeEngine?.modelConfig ?
+    resolveRequestModelId(activeEngine.modelConfig) ?? ''
+  : '';
+
+  const mimoAssistPreview = useMemo(() => {
+    if (activeEngine?.adapterKind !== 'xiaomi_mimo_chat_audio') return '';
+    let eff = '';
+    const lo = mimoRequestSlug.toLowerCase();
+    if (lo.includes('voiceclone')) eff = 'mimo-v2.5-tts-voiceclone';
+    else if (lo.includes('voicedesign')) eff = 'mimo-v2.5-tts-voicedesign';
+    else eff = 'mimo-v2.5-tts';
+    try {
+      return buildMimoAssistantContentForTts(text, {
+        ...params,
+        mimoEffectiveModelId: eff,
+      }).trim();
+    } catch {
+      return '';
+    }
+  }, [activeEngine?.adapterKind, mimoRequestSlug, params, text]);
 
   useEffect(() => {
     if (!open) {
@@ -181,24 +209,32 @@ export function TtsEditModal({
   const renderParamFields = (eng: TtsEngineOption | undefined) => {
     if (!eng) return null;
     if (eng.adapterKind === 'xiaomi_mimo_chat_audio') {
-      const voiceVal = typeof params.voice === 'string' ? params.voice : 'default_zh';
+      const voiceVal =
+        typeof params.voice === 'string' && params.voice.trim() ? params.voice.trim() : '茉莉';
       const fmt = typeof params.format === 'string' ? params.format : 'mp3';
       const roleVal = typeof params.mimoStyleRole === 'string' ? params.mimoStyleRole : '';
       const emoVal = typeof params.emotion === 'string' ? params.emotion : '';
+      const lo = mimoRequestSlug.toLowerCase();
+      const isClone = lo.includes('voiceclone');
+      const isDesign = lo.includes('voicedesign');
+      const cloneUrl = typeof params.mimoVoiceCloneDataUrl === 'string' ? params.mimoVoiceCloneDataUrl : '';
+
+      const syncRoleAndTone = (v: string) =>
+        setParams((p) => ({ ...p, mimoStyleRole: v, ttsTone: v }));
 
       const roleControl =
         item.type === 'narration' ? (
           <Select
-            style={{ width: 140 }}
+            style={{ width: 160 }}
             value={roleVal || '全知'}
-            onChange={(v) => setParams((p) => ({ ...p, mimoStyleRole: (v as string) || '' }))}
+            onChange={(v) => syncRoleAndTone((v as string) || '')}
             options={NARRATOR_STYLE_OPTIONS}
           />
         ) : item.type === 'dialogue' ? (
           <AutoComplete
-            style={{ width: 160 }}
+            style={{ width: 180 }}
             value={roleVal}
-            onChange={(v) => setParams((p) => ({ ...p, mimoStyleRole: typeof v === 'string' ? v : '' }))}
+            onChange={(v) => syncRoleAndTone(typeof v === 'string' ? v : '')}
             options={characters.map((c) => ({
               value: (c.name?.trim() || c.id) as string,
               label: (c.name?.trim() || c.id) as string,
@@ -208,23 +244,29 @@ export function TtsEditModal({
           />
         ) : (
           <Input
-            style={{ width: 160 }}
+            style={{ width: 180 }}
             value={roleVal}
-            onChange={(e) => setParams((p) => ({ ...p, mimoStyleRole: e.target.value }))}
-            placeholder="风格角色，如 孙悟空"
+            onChange={(e) => syncRoleAndTone(e.target.value)}
+            placeholder="语气提示，如 孙悟空"
             allowClear
           />
         );
 
       return (
         <Space orientation="vertical" style={{ width: '100%' }} size="small">
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            MiMo V2.5：上方「合成文本」进入 API 的 <code style={{ fontSize: 11 }}>assistant.content</code>
+            （自动补充整体风格括号、inline 停顿等）；模型 <code style={{ fontSize: 11 }}>user</code>{' '}
+            侧为导演模式与音色描述。禁止 <code style={{ fontSize: 11 }}>role=system</code>。有声书会在工作台按「故事大纲」
+            wav 自动克隆；此处「克隆参考」仅供剧本单条试音粘贴 <code style={{ fontSize: 11 }}>data:audio/…;base64,…</code>。
+          </Text>
           <Space wrap style={{ width: '100%' }} align="center">
-            <Text type="secondary">角色</Text>
+            <Text type="secondary">语气/人设</Text>
             {roleControl}
             <Text type="secondary">情绪</Text>
             <Input
               style={{ width: 120 }}
-              placeholder="情绪"
+              placeholder="如 开心、怅然"
               value={emoVal}
               onChange={(e) =>
                 setParams((p) => ({ ...p, emotion: e.target.value.trim() ? e.target.value : undefined }))
@@ -232,22 +274,20 @@ export function TtsEditModal({
               allowClear
             />
           </Space>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            待合成目标在 <code style={{ fontSize: 11 }}>assistant.content</code>；「角色」「情绪」合并为{' '}
-            <code style={{ fontSize: 11 }}>&lt;style&gt;…&lt;/style&gt;</code> 置于正文前。TTS 模型不允许{' '}
-            <code style={{ fontSize: 11 }}>role=system</code>，官方身份/日期说明会并入下方「身份说明」字段对应内容的首段，再与 user
-            引导语拼接为一条 <code style={{ fontSize: 11 }}>user</code> 消息。
-          </Text>
-          <Space wrap style={{ width: '100%' }}>
-            <Text type="secondary">音色 voice</Text>
-            <AutoComplete
-              style={{ width: 200 }}
-              value={voiceVal}
-              onChange={(v) => setParams((p) => ({ ...p, voice: v }))}
-              options={MIMO_VOICE_PRESETS.map((v) => ({ value: v, label: v }))}
-              placeholder="如 default_zh"
-              allowClear
-            />
+          {!isClone ?
+            <Space wrap style={{ width: '100%' }} align="center">
+              <Text type="secondary">预置音色（非克隆时）</Text>
+              <AutoComplete
+                style={{ width: 220 }}
+                value={voiceVal}
+                onChange={(v) => setParams((p) => ({ ...p, voice: typeof v === 'string' ? v : '茉莉' }))}
+                options={[...MIMO_V25_PRESET_VOICE_IDS].map((v) => ({ value: v, label: v }))}
+                placeholder="如 茉莉 / Chloe"
+                allowClear
+              />
+            </Space>
+          : null}
+          <Space wrap style={{ width: '100%' }} align="center">
             <Text type="secondary">格式</Text>
             <Select
               style={{ width: 100 }}
@@ -256,16 +296,56 @@ export function TtsEditModal({
               options={[
                 { value: 'mp3', label: 'mp3' },
                 { value: 'wav', label: 'wav' },
+                { value: 'pcm', label: 'pcm' },
               ]}
             />
           </Space>
+          {isClone ?
+            <div style={{ width: '100%' }}>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+                音色克隆参考（完整 data-url，≤10MB）
+              </Text>
+              <TextArea
+                rows={3}
+                placeholder="data:audio/wav;base64,xxxx 或 data:audio/mpeg;base64,xxxx"
+                value={cloneUrl}
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  setParams((p) => ({ ...p, mimoVoiceCloneDataUrl: v === '' ? undefined : v }));
+                }}
+              />
+            </div>
+          : null}
+          {isDesign ?
+            <Checkbox
+              checked={params.mimoOptimizeTextPreview === true}
+              onChange={(e) =>
+                setParams((p) => ({ ...p, mimoOptimizeTextPreview: e.target.checked ? true : undefined }))
+              }
+            >
+              开启 optimize_text_preview（可省略下方合成文本，由服务端润色）
+            </Checkbox>
+          : null}
           <div style={{ width: '100%' }}>
             <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-              身份说明（原 system 全文，并入 user 首段；留空则用官方推荐英文句式）
+              附加 user 指令（导演模式补充，接在自动导演块之后）
             </Text>
             <TextArea
               rows={2}
-              placeholder="You are MiMo, an AI assistant developed by Xiaomi. ..."
+              placeholder="如：语速更慢、尾音带气声、句间留白更长…"
+              value={typeof params.mimoUserPrompt === 'string' ? params.mimoUserPrompt : ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setParams((p) => ({ ...p, mimoUserPrompt: v === '' ? undefined : v }));
+              }}
+            />
+          </div>
+          <div style={{ width: '100%' }}>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+              旧版「身份说明」（可选；会并入 user 块头部，一般用不到）
+            </Text>
+            <TextArea
+              rows={2}
               value={typeof params.mimoSystemPrompt === 'string' ? params.mimoSystemPrompt : ''}
               onChange={(e) => {
                 const v = e.target.value;
@@ -275,17 +355,9 @@ export function TtsEditModal({
           </div>
           <div style={{ width: '100%' }}>
             <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
-              user 引导语（接在身份说明之后；留空则用默认中文）
+              Enrich 预览（实际请求的 assistant.content）
             </Text>
-            <TextArea
-              rows={2}
-              placeholder="可选：调整合成语气与风格的说明"
-              value={typeof params.mimoUserPrompt === 'string' ? params.mimoUserPrompt : ''}
-              onChange={(e) => {
-                const v = e.target.value;
-                setParams((p) => ({ ...p, mimoUserPrompt: v === '' ? undefined : v }));
-              }}
-            />
+            <TextArea rows={4} readOnly value={mimoAssistPreview} style={{ fontFamily: token.fontFamily }} />
           </div>
         </Space>
       );
@@ -302,8 +374,16 @@ export function TtsEditModal({
             : '';
       return (
         <Space orientation="vertical" style={{ width: '100%' }} size="small">
+          <TtsVoiceSourceFields
+            adapterLabel="MiniMax Speech"
+            params={params}
+            onChange={(patch) => setParams((p) => ({ ...p, ...patch }))}
+            presetVoiceControl={minimaxPresetVoiceControl(voiceVal, (v) =>
+              setParams((p) => ({ ...p, voice: v || '' })),
+            )}
+          />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            同步 HTTP 接口{' '}
+            同步 HTTP{' '}
             <Link
               href="https://platform.minimaxi.com/docs/api-reference/speech-t2a-http"
               target="_blank"
@@ -311,29 +391,8 @@ export function TtsEditModal({
             >
               speech-t2a-http
             </Link>
-            ；系统音色见{' '}
-            <Link href="https://platform.minimaxi.com/docs/faq/system-voice-id" target="_blank" rel="noreferrer">
-              system-voice-id
-            </Link>
-            （下列选项与文档一致）。
+            ；复刻需在「设置 → AI 模型 → MiniMax Speech」填写 GroupId。
           </Text>
-          <Space wrap style={{ width: '100%' }} align="center">
-            <Text type="secondary">voice_id</Text>
-            <AutoComplete
-              style={{ width: '100%', maxWidth: 420 }}
-              value={voiceVal}
-              onChange={(v) => setParams((p) => ({ ...p, voice: typeof v === 'string' ? v : '' }))}
-              options={MINIMAX_VOICE_AUTOCOMPLETE_OPTIONS}
-              filterOption={(input, option) => {
-                const q = input.toLowerCase();
-                const val = String(option?.value ?? '').toLowerCase();
-                const lab = String(option?.label ?? '').toLowerCase();
-                return val.includes(q) || lab.includes(q);
-              }}
-              placeholder="系统音色 id"
-              allowClear
-            />
-          </Space>
           <Space wrap style={{ width: '100%' }} align="center">
             <Text type="secondary">语速</Text>
             <InputNumber
@@ -434,6 +493,45 @@ export function TtsEditModal({
         </Space>
       );
     }
+    if (eng.adapterKind === 'qwen3_tts_dashscope') {
+      const voiceVal = typeof params.voice === 'string' ? params.voice : 'Cherry';
+      const lang =
+        typeof params.qwen_language_type === 'string' ? params.qwen_language_type : 'Chinese';
+      return (
+        <Space orientation="vertical" style={{ width: '100%' }} size="small">
+          <TtsVoiceSourceFields
+            adapterLabel="Qwen3-TTS"
+            params={params}
+            onChange={(patch) => setParams((p) => ({ ...p, ...patch }))}
+            presetVoiceControl={
+              <Space wrap align="center">
+                <Text type="secondary">预置 voice</Text>
+                <Input
+                  style={{ width: 200 }}
+                  value={voiceVal}
+                  onChange={(e) => setParams((p) => ({ ...p, voice: e.target.value }))}
+                  placeholder="如 Cherry"
+                />
+              </Space>
+            }
+          />
+          <Space wrap align="center">
+            <Text type="secondary">language_type</Text>
+            <Input
+              style={{ width: 160 }}
+              value={lang}
+              onChange={(e) => setParams((p) => ({ ...p, qwen_language_type: e.target.value }))}
+            />
+          </Space>
+        </Space>
+      );
+    }
+    // CosyVoice 已停用
+    /*
+    if (eng.adapterKind === 'cosyvoice_dashscope_ws') {
+      ...
+    }
+    */
     if (eng.adapterKind === 'openai_audio_speech') {
       const voiceVal = typeof params.voice === 'string' ? params.voice : 'alloy';
       return (

@@ -320,7 +320,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'deepseek-v4-flash',
         displayName: 'DeepSeek-V4-Flash',
-        description: '【生成动作脚本、生成剧本、生成执行脚本、Agent 调度】',
+        description: '【生成动作脚本、生成剧本、生成执行脚本、通用智能】',
         vendorName: 'DeepSeek',
         capabilityKeys: ['action_script', 'script', 'novel', 'exec_script', 'agent_orchestration'],
         isLocal: false,
@@ -333,7 +333,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'deepseek-v4-pro',
         displayName: 'DeepSeek-V4-Pro',
-        description: '【生成动作脚本、生成剧本、生成执行脚本、Agent 调度】',
+        description: '【生成动作脚本、生成剧本、生成执行脚本、通用智能】',
         vendorName: 'DeepSeek',
         capabilityKeys: ['action_script', 'script', 'novel', 'exec_script', 'agent_orchestration'],
         isLocal: false,
@@ -359,7 +359,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'qwen3.6-plus',
         displayName: 'Qwen-3.6-Plus',
-        description: '【Agent 调度、生成动作脚本、生成剧本、生成执行脚本】',
+        description: '【通用智能、生成动作脚本、生成剧本、生成执行脚本】',
         vendorName: '阿里云',
         capabilityKeys: ['agent_orchestration', 'action_script', 'script', 'novel', 'exec_script'],
         isLocal: false,
@@ -368,7 +368,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'qwen3.6-flash',
         displayName: 'Qwen-3.6-Flash',
-        description: '【Agent 调度、生成动作脚本、生成剧本、生成执行脚本】',
+        description: '【通用智能、生成动作脚本、生成剧本、生成执行脚本】',
         vendorName: '阿里云',
         capabilityKeys: ['agent_orchestration', 'action_script', 'script', 'novel', 'exec_script'],
         isLocal: false,
@@ -377,7 +377,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'qwen3.6-max-preview',
         displayName: 'Qwen-3.6-Max-Preview',
-        description: '【Agent 调度、生成动作脚本、生成剧本、生成执行脚本】',
+        description: '【通用智能、生成动作脚本、生成剧本、生成执行脚本】',
         vendorName: '阿里云',
         capabilityKeys: ['agent_orchestration', 'action_script', 'script', 'novel', 'exec_script'],
         isLocal: false,
@@ -398,7 +398,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'qwen3.5-omni-flash',
         displayName: 'Qwen-3.5-Omni-Flash',
-        description: '【Agent 调度】',
+        description: '【通用智能】',
         vendorName: '阿里云',
         capabilityKeys: ['agent_orchestration'],
         isLocal: false,
@@ -407,7 +407,7 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'qwen3.5-omni-plus',
         displayName: 'Qwen-3.5-Omni-Plus',
-        description: '【Agent 调度】',
+        description: '【通用智能】',
         vendorName: '阿里云',
         capabilityKeys: ['agent_orchestration'],
         isLocal: false,
@@ -603,28 +603,46 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
   qwen_tts: {
     displayName: 'Qwen-TTS',
     provider: 'Alibaba DashScope',
-    apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    docsUrl: 'https://help.aliyun.com/zh/dashscope/developer-reference/qwen-tts-api',
+    apiUrl: 'https://dashscope.aliyuncs.com/api/v1',
+    docsUrl: 'https://help.aliyun.com/zh/model-studio/qwen-tts',
     isLocal: false,
     usePrimaryVersion: false,
-    defaultModalName: 'qwen-tts',
+    defaultModalName: 'qwen3-tts-flash',
     vendorKey: VENDOR_KEY_ALIYUN_DASHSCOPE,
     modals: [
       {
         modalId: 'qwen3-tts-flash',
         displayName: 'Qwen3-TTS-Flash',
-        description: '【配音】DashScope 语音 API。',
+        description: '【配音】同步 HTTP；版本众多，请求/响应形态一致。支持音色复刻→voice id 缓存。',
         vendorName: '阿里云',
         capabilityKeys: ['voice_over'],
         isLocal: false,
         io: { input: ['text'], output: ['voice'] },
       },
       {
-        modalId: 'qwen-tts',
-        displayName: 'Qwen-TTS',
-        description: '【配音】',
+        modalId: 'qwen3-tts-instruct-flash',
+        displayName: 'Qwen3-TTS-Instruct-Flash',
+        description: '【配音】指令控制版',
         vendorName: '阿里云',
         capabilityKeys: ['voice_over'],
+        isLocal: false,
+        io: { input: ['text'], output: ['voice'] },
+      },
+      {
+        modalId: 'qwen3-tts-vc-2026-01-22',
+        displayName: 'Qwen3-TTS 声音复刻',
+        description: '【音色复刻】文本描述定制音色（qwen-voice-enrollment API）；合成须使用返回的 voice。',
+        vendorName: '阿里云',
+        capabilityKeys: ['voice_enrollment'],
+        isLocal: false,
+        io: { input: ['audio'], output: ['voice'] },
+      },
+      {
+        modalId: 'qwen3-tts-vd-2026-01-26',
+        displayName: 'Qwen3-TTS 声音设计',
+        description: '【音色设计】文本描述定制音色（qwen-voice-design API）；合成须使用返回的 voice。',
+        vendorName: '阿里云',
+        capabilityKeys: ['voice_design'],
         isLocal: false,
         io: { input: ['text'], output: ['voice'] },
       },
@@ -652,26 +670,36 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       },
     ],
   },
-  cosyvoice: {
-    displayName: 'CosyVoice',
-    provider: 'Alibaba DashScope',
-    apiUrl: 'https://dashscope.aliyuncs.com/api/v1',
-    docsUrl: 'https://help.aliyun.com/zh/dashscope/developer-reference/cosyvoice-quick-start',
-    isLocal: false,
-    usePrimaryVersion: false,
-    vendorKey: VENDOR_KEY_ALIYUN_DASHSCOPE,
-    modals: [
-      {
-        modalId: 'cosyvoice-v1',
-        displayName: 'CosyVoice',
-        description: '【配音】',
-        vendorName: '阿里云',
-        capabilityKeys: ['voice_over'],
-        isLocal: false,
-        io: { input: ['text'], output: ['voice'] },
-      }
-    ],
-  },
+  // cosyvoice: {
+  //   displayName: 'CosyVoice',
+  //   provider: 'Alibaba DashScope',
+  //   apiUrl: 'https://dashscope.aliyuncs.com/api/v1',
+  //   docsUrl: 'https://help.aliyun.com/zh/model-studio/cosyvoice-websocket-api',
+  //   isLocal: false,
+  //   usePrimaryVersion: false,
+  //   vendorKey: VENDOR_KEY_ALIYUN_DASHSCOPE,
+  //   defaultModalName: 'cosyvoice-v3.5-flash',
+  //   modals: [
+  //     {
+  //       modalId: 'cosyvoice-v3.5-flash',
+  //       displayName: 'CosyVoice v3.5 Flash',
+  //       description: '【配音】WebSocket 流式合成；支持声音设计与复刻。',
+  //       vendorName: '阿里云',
+  //       capabilityKeys: ['voice_over', 'voice_enrollment', 'voice_design'],
+  //       isLocal: false,
+  //       io: { input: ['text'], output: ['voice'] },
+  //     },
+  //     {
+  //       modalId: 'cosyvoice-v3.5-plus',
+  //       displayName: 'CosyVoice v3.5 Plus',
+  //       description: '【配音】高质量版；支持声音设计（voice-enrollment + voice_prompt）。',
+  //       vendorName: '阿里云',
+  //       capabilityKeys: ['voice_over', 'voice_enrollment', 'voice_design'],
+  //       isLocal: false,
+  //       io: { input: ['text'], output: ['voice'] },
+  //     },
+  //   ],
+  // },
   xiaomi_mimo_tts: {
     displayName: '小米 MiMo TTS',
     provider: 'Xiaomi MiMo',
@@ -679,15 +707,36 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
     docsUrl: 'https://platform.xiaomimimo.com/#/docs/quick-start/first-api-call',
     isLocal: false,
     usePrimaryVersion: false,
-    defaultModalName: 'mimo-v2-tts',
+    defaultModalName: 'mimo-v2.5-tts',
     modals: [
       {
-        modalId: 'mimo-v2-tts',
-        displayName: '小米 MiMo TTS',
+        modalId: 'mimo-v2.5-tts',
+        displayName: 'MiMo V2.5 预置音色',
         capabilityKeys: ['voice_over'],
         isLocal: false,
         io: { input: ['text'], output: ['voice'] },
-      }
+      },
+      {
+        modalId: 'mimo-v2.5-tts-voicedesign',
+        displayName: 'MiMo V2.5 音色设计',
+        capabilityKeys: ['voice_design'],
+        isLocal: false,
+        io: { input: ['text'], output: ['voice'] },
+      },
+      {
+        modalId: 'mimo-v2.5-tts-voiceclone',
+        displayName: 'MiMo V2.5 音色克隆',
+        capabilityKeys: ['voice_enrollment'],
+        isLocal: false,
+        io: { input: ['text'], output: ['voice'] },
+      },
+      {
+        modalId: 'mimo-v2-tts',
+        displayName: '小米 MiMo TTS（旧版，已映射 V2.5）',
+        capabilityKeys: ['voice_over'],
+        isLocal: false,
+        io: { input: ['text'], output: ['voice'] },
+      },
     ],
   },
   minimax_speech: {
@@ -701,8 +750,17 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
     modals: [
       {
         modalId: 'speech-2.8-hd',
-        displayName: 'MiniMax Speech',
-        capabilityKeys: ['voice_over'],
+        displayName: 'MiniMax Speech HD',
+        description: '【配音】HTTP 合成；音色设计 / 音色复刻为同账号 API（voice_design、files/upload+voice_clone）。',
+        capabilityKeys: ['voice_over', 'voice_enrollment', 'voice_design'],
+        isLocal: false,
+        io: { input: ['text'], output: ['voice'] },
+      },
+      {
+        modalId: 'speech-2.8-turbo',
+        displayName: 'MiniMax Speech Turbo',
+        description: '【配音】低延迟版；支持 voice_design / voice_clone API。',
+        capabilityKeys: ['voice_over', 'voice_enrollment', 'voice_design'],
         isLocal: false,
         io: { input: ['text'], output: ['voice'] },
       },
@@ -719,6 +777,23 @@ const PRESET_META: Record<string, PresetModalGroupConfig> = {
       {
         modalId: 'moss-ttsd',
         displayName: 'MOSS-TTS',
+        capabilityKeys: ['voice_over'],
+        isLocal: true,
+        io: { input: ['text'], output: ['voice'] },
+      },
+    ],
+  },
+  moss_tts_nano: {
+    displayName: 'MOSS-TTS-Nano',
+    provider: 'OpenMOSS',
+    apiUrl: 'http://127.0.0.1:19815/api/v1/tts/MOSS-TTS-Nano',
+    docsUrl: 'https://modelscope.cn/models/openmoss/MOSS-TTS-Nano',
+    isLocal: true,
+    usePrimaryVersion: false,
+    modals: [
+      {
+        modalId: 'moss-tts-nano',
+        displayName: 'MOSS-TTS-Nano',
         capabilityKeys: ['voice_over'],
         isLocal: true,
         io: { input: ['text'], output: ['voice'] },
@@ -748,13 +823,14 @@ const PRESET_KEY_ORDER: readonly string[] = [
   'qwen_deepseek',
   'qwen_tts',
   'qwen_image_edit',
-  'cosyvoice',
+  // 'cosyvoice',
   
   'minimax_speech',
   'minimax_music',
 
   'moss_tts',
-  
+  'moss_tts_nano',
+
 ] as const;
 
 export type ModelPreset = {

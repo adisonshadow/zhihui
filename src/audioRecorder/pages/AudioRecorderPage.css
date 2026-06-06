@@ -1,0 +1,41 @@
+.audio-recorder-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #141414;
+}
+
+.audio-recorder-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+  background: #1a1a1a;
+}
+
+.audio-recorder-topbar .ant-typography {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.audio-recorder-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.audio-recorder-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px;
+  overflow-y: auto;
+  background: #1a1a1a;
+}
+
+.audio-recorder-main {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+}

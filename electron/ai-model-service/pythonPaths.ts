@@ -27,6 +27,10 @@ export function resolveYimanTtsMainPy(): string {
   return path.join(resolveYimanPythonDir(), 'main.py');
 }
 
+export function resolveYimanSfxMainPy(): string {
+  return path.join(resolveYimanPythonDir(), 'sfx_main.py');
+}
+
 export function yimanEmbeddedPythonReady(): boolean {
   return fs.existsSync(resolveYimanEmbeddedPythonExe());
 }

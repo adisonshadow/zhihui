@@ -31,7 +31,9 @@ import { Radio } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
 import { loadNovelList, saveNovelList } from '@/novelDesign/storage/novelListStorage';
+import { resolveNovelCoverForDisplay } from '@/novelDesign/utils/novelCoverImageCache';
 import { ProjectCard } from '@/components/ProjectCard';
+import { NovelListCardMoreActions } from '@/novelDesign/components/NovelListCardMoreActions';
 import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import './ScreenwriterListPage.css';
 
@@ -51,10 +53,52 @@ export default function ScreenwriterListPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [form] = Form.useForm<{ title: string; genres: string[] }>();
+  /** 展示用封面（file:// 或 data:）；远程 URL 会经 image-cache 解析 */
+  const [coverDisplayById, setCoverDisplayById] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setNovels(loadNovelList());
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const list = novels;
+    if (!list.length) {
+      setCoverDisplayById({});
+      return;
+    }
+    void (async () => {
+      const entries = await Promise.all(
+        list.map(async (n) => {
+          if (!n.coverDataUrl?.trim()) return [n.id, ''] as const;
+          const url = await resolveNovelCoverForDisplay(n.coverDataUrl, {
+            novelId: n.id,
+            persistIfCached: true,
+          });
+          return [n.id, url ?? ''] as const;
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [id, url] of entries) {
+        if (url) next[id] = url;
+      }
+      setCoverDisplayById(next);
+      setNovels(loadNovelList());
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [novels]);
+
+  const coverUrlForNovel = (n: NovelWorkspaceItem): string | undefined => {
+    const resolved = coverDisplayById[n.id];
+    if (resolved) return resolved;
+    const raw = n.coverDataUrl?.trim();
+    if (!raw) return undefined;
+    if (raw.startsWith('file://') || raw.startsWith('data:')) return raw;
+    return undefined;
+  };
 
   const filteredSorted = useMemo(() => {
     let list = [...novels];
@@ -81,6 +125,8 @@ export default function ScreenwriterListPage() {
   }, [novels, searchText, sortBy]);
 
   const openNovel = (n: NovelWorkspaceItem) => navigate(`/screenwriter/novel/${n.id}`);
+
+  const refreshNovelList = () => setNovels(loadNovelList());
 
   const onCreate = (v: { title: string; genres: string[] }) => {
     const title = (v.title ?? '').trim() || '未命名小说';
@@ -194,9 +240,16 @@ export default function ScreenwriterListPage() {
           <Row gutter={16} align="middle">
             <Col flex="auto">
               <Space>
-                <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => navigate('/screenwriter/draw')}>
-                  AI抽卡
-                </Button>
+                <span className="yiman-glow-btn-wrap">
+                  <Button
+                    className="yiman-glow-btn"
+                    type="primary"
+                    icon={<i className="iconfont">&#xe60c;</i>}
+                    onClick={() => navigate('/screenwriter/draw')}
+                  >
+                    AI抽卡
+                  </Button>
+                </span>
                 <Button
                   styles={{
                     root: {
@@ -273,9 +326,11 @@ export default function ScreenwriterListPage() {
               <ProjectCard
                 key={n.id}
                 title={n.title}
-                cover={{ url: n.coverDataUrl, aspect: 16 / 9 }}
+                colProps={{ lg: 4 }}
+                cover={{ url: coverUrlForNovel(n), aspect: 1 / 1 }}
                 lastUpdate={n.updatedAt}
                 tags={n.genres.map((g) => ({ name: g, color: 'blue' }))}
+                moreActions={<NovelListCardMoreActions novel={n} onDeleted={refreshNovelList} />}
                 onClick={() => openNovel(n)}
               />
             ))}
@@ -308,9 +363,9 @@ export default function ScreenwriterListPage() {
                   width: 96,
                   render: (_, n) => (
                     <div style={{ width: 56 }}>
-                      {n.coverDataUrl ? (
+                      {coverUrlForNovel(n) ? (
                         <AntImage
-                          src={n.coverDataUrl}
+                          src={coverUrlForNovel(n)}
                           alt={n.title}
                           style={{ width: '100%', aspectRatio: '16 / 9', borderRadius: 8, objectFit: 'cover' }}
                           preview={{ mask: '预览' }}

@@ -37,7 +37,7 @@ export function ModelPresetGrid({
       </Text>
       <Flex wrap="wrap" gap={10}>
         {visible.map((p) => {
-          const existing = models.find((m) => m.presetKey === p.presetKey);
+          const addedCount = models.filter((m) => m.presetKey === p.presetKey).length;
           const active = selectedPresetKey === p.presetKey;
           return (
             <Card
@@ -67,7 +67,7 @@ export function ModelPresetGrid({
                 </Space>
                 <Space size={[0, 4]} wrap>
                   {p.isLocal ? <Tag color="purple">本地</Tag> : null}
-                  {existing ? <Tag color="green">已添加</Tag> : null}
+                  {addedCount > 0 ? <Tag color="green">已添加 · {addedCount}</Tag> : null}
                   {p.configOnly ? <Tag>仅配置</Tag> : null}
                 </Space>
                 <Space size={[0, 4]} wrap>

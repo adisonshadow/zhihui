@@ -26,6 +26,10 @@ const DEFAULT_PREVIEW_TEXT_LONGCAT = `[旁白] 在城市寂静的夜晚，两个
 [男声·低沉感慨] 这几年大家都变化了很多。
 [旁白] 晚风轻轻吹过，两人陷入短暂的沉默。`;
 
+const DEFAULT_PREVIEW_TEXT_NANO = `夜色慢慢沉下来，城市的灯火一点点亮起。
+晚风轻轻吹过窗台，安静得刚刚好。
+今天也太舒服了，好想就这样一直发呆，什么都不用想。`;
+
 const DEFAULT_PREVIEW_TEXT_MOSS = `[spk:0][emo:温柔]
 夜色慢慢沉下来，城市的灯火一点点亮起。<#1.2#>
 晚风轻轻吹过窗台，安静得刚刚好。
@@ -60,9 +64,13 @@ export default function LocalTtsPreview() {
   }, [localTts]);
 
   useEffect(() => {
-    setText(
-      previewModelKey === 'moss_tts' ? DEFAULT_PREVIEW_TEXT_MOSS : DEFAULT_PREVIEW_TEXT_LONGCAT,
-    );
+    if (previewModelKey === 'moss_tts') {
+      setText(DEFAULT_PREVIEW_TEXT_MOSS);
+    } else if (previewModelKey === 'moss_tts_nano') {
+      setText(DEFAULT_PREVIEW_TEXT_NANO);
+    } else {
+      setText(DEFAULT_PREVIEW_TEXT_LONGCAT);
+    }
   }, [previewModelKey]);
 
   const previewProfile = localTts?.profiles?.[previewModelKey];
@@ -94,7 +102,7 @@ export default function LocalTtsPreview() {
             modelPath: previewProfile?.modelPath?.trim(),
             idleTimeoutMinutes: previewProfile?.idleTimeoutMinutes ?? 3,
             mossAudioTokenizerPath:
-              previewModelKey === 'moss_tts'
+              previewModelKey === 'moss_tts' || previewModelKey === 'moss_tts_nano'
                 ? previewProfile?.mossAudioTokenizerPath?.trim() || undefined
                 : undefined,
           },
@@ -116,13 +124,25 @@ export default function LocalTtsPreview() {
       message.warning('请输入文本');
       return;
     }
+    if (previewModelKey === 'moss_tts_nano') {
+      message.warning(
+        'MOSS-TTS-Nano 预览须带参考音频：有声书请用大纲音色合成；本页仅测配置与健康检查，或自行在 API 中传 referenceAudioPath。',
+      );
+      return;
+    }
     setLoading(true);
     setAudioUrl(null);
     try {
       const res = await fetch(`${AI_SERVICE_BASE}/api/v1/tts/${restSegment}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text.trim(), speed }),
+        body: JSON.stringify({
+          text: text.trim(),
+          speed,
+          ...(previewModelKey !== 'moss_tts' && previewModelKey !== 'moss_tts_nano'
+            ? { split_text: false }
+            : {}),
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -208,7 +228,9 @@ export default function LocalTtsPreview() {
               placeholder={
                 previewModelKey === 'moss_tts'
                   ? 'MOSS：支持 [spk:n][emo:…]、停顿 <#秒#> 等标签（以模型 README 为准）'
-                  : 'LongCat：支持 [旁白] [男声] [女声] 等多音色标签'
+                  : previewModelKey === 'moss_tts_nano'
+                    ? 'MOSS-TTS-Nano：普通文本；合成须 referenceAudioPath（参考音色 wav）'
+                    : 'LongCat：支持 [旁白] [男声] [女声] 等多音色标签'
               }
               maxLength={previewModelKey === 'moss_tts' ? 6000 : 2000}
               showCount

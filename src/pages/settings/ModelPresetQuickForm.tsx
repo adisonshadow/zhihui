@@ -1,8 +1,8 @@
 /**
- * 常见模型精简表单：密钥 + 模型显示名 / 主版本 + 名称（见功能文档 3.1.1）
+ * 常见模型精简表单：密钥 + 多模型 ID tags（见功能文档 3.1.1）
  */
-import { useMemo, type ClipboardEvent } from 'react';
-import { Alert, AutoComplete, Button, Form, Input, Space, Tooltip, Typography } from 'antd';
+import { useMemo } from 'react';
+import { Alert, Button, Form, Input, Select, Space, Tooltip, Typography } from 'antd';
 import type { FormInstance } from 'antd/es/form';
 import { LinkOutlined } from '@ant-design/icons';
 import type { AIModelConfig } from '@/types/settings';
@@ -12,20 +12,24 @@ import {
   MODEL_IO_SECTION_ICON_CLASS,
   type RecommendedModalEntry,
 } from '@/types/recommendedModels';
-import { applyDisplayNameVersionSplitToForm } from '@/utils/modelDisplayNameInputSplit';
+import { parseModelIdTag } from '@/utils/presetModelInstances';
 
 const { Text } = Typography;
 
 export interface ModelPresetQuickFormValues {
   name?: string;
-  modelDisplayName?: string;
-  primaryVersion?: string;
+  /** 多模型实例：每项为完整或可拆分的模型 ID slug */
+  modelDisplayNames?: string[];
   apiKey?: string;
+  /** MiniMax 音色复刻 GroupId */
+  minimaxGroupId?: string;
 }
 
 export interface ModelPresetQuickFormProps {
   preset: ModelPreset;
-  existingModel: AIModelConfig | undefined;
+  existingModel?: AIModelConfig | undefined;
+  /** add：添加弹窗；edit：列表编辑同一 preset 下全部实例 */
+  mode?: 'add' | 'edit';
   form: FormInstance<ModelPresetQuickFormValues>;
   onSave: () => void | Promise<void>;
   onCancel: () => void;
@@ -33,7 +37,7 @@ export interface ModelPresetQuickFormProps {
 
 export function ModelPresetQuickForm({
   preset,
-  existingModel,
+  mode = 'edit',
   form,
   onSave,
   onCancel,
@@ -41,20 +45,20 @@ export function ModelPresetQuickForm({
   const hideKey = preset.isLocal;
   const requireKey = !preset.isLocal && !preset.configOnly;
   const usePrimaryVersion = preset.usePrimaryVersion !== false;
-  const watchedModelName = Form.useWatch('modelDisplayName', form) as string | undefined;
+  const watchedTags = Form.useWatch('modelDisplayNames', form) as string[] | undefined;
+  const firstTagParsed = parseModelIdTag((watchedTags?.[0] ?? '').trim());
 
   const matchedModalEntry = useMemo((): RecommendedModalEntry | undefined => {
-    const raw = (watchedModelName ?? '').trim();
-    if (!raw || !preset.recommendedModals?.length) return undefined;
-    const n = raw;
+    const md = firstTagParsed.modelDisplayName.trim();
+    if (!md || !preset.recommendedModals?.length) return undefined;
     return preset.recommendedModals.find(
       (x) =>
-        x.name === n ||
-        x.displayName === n ||
-        x.name.toLowerCase() === n.toLowerCase() ||
-        x.displayName.toLowerCase() === n.toLowerCase(),
+        x.name === md ||
+        x.displayName === md ||
+        x.name.toLowerCase() === md.toLowerCase() ||
+        x.displayName.toLowerCase() === md.toLowerCase(),
     );
-  }, [watchedModelName, preset.recommendedModals]);
+  }, [firstTagParsed.modelDisplayName, preset.recommendedModals]);
 
   const currentModalForIo = useMemo((): RecommendedModalEntry | null => {
     const e = matchedModalEntry;
@@ -65,11 +69,13 @@ export function ModelPresetQuickForm({
 
   const titleTooltip = (matchedModalEntry?.description ?? '').trim() || undefined;
 
-  const autocompleteOptions = useMemo(() => {
+  const selectOptions = useMemo(() => {
     const fromRec = (preset.recommendedModals ?? []).map((m) => {
       const pv = (m.primaryVersion ?? '').trim();
+      /** tags 每项存完整 slug，选项 value 用完整 slug 便于一次选中 */
+      const value = pv ? `${m.name}-${pv}` : m.name;
       return {
-        value: m.name,
+        value,
         label: pv ? `${m.displayName} (${pv})` : m.displayName,
       };
     });
@@ -81,15 +87,7 @@ export function ModelPresetQuickForm({
   }, [preset]);
 
   const placeholderDisplay =
-    preset.defaultModelDisplayName || preset.defaultModel || '按服务商文档填写';
-  const placeholderVersion = preset.defaultPrimaryVersion || '如 260328';
-
-  const applySplitFromEventTarget = (target: EventTarget | null) => {
-    if (!usePrimaryVersion) return;
-    const el = target as HTMLInputElement | null;
-    if (!el?.value) return;
-    applyDisplayNameVersionSplitToForm(form, el.value);
-  };
+    preset.defaultModelDisplayName || preset.defaultModel || '从候选选择或输入模型 ID；可多选多条';
 
   return (
     <>
@@ -206,73 +204,55 @@ export function ModelPresetQuickForm({
         />
       ) : null}
       <Form form={form} layout="vertical">
-        <Form.Item
-          name="modelDisplayName"
-          label="模型ID（模型编码）"
-          tooltip="与控制台/文档中的模型ID（有些供应商叫模型编码、Model ID）一致，可从候选选择或自填。如果供应商要求主版本，则粘贴完整 model id（如 xxx-250615）时可自动拆分主版本。有些供应商没有主版本，则可以不填。"
-        >
-          <AutoComplete
-            allowClear
-            options={autocompleteOptions}
-            placeholder={placeholderDisplay}
-            filterOption={(input, option) => {
-              const q = (input || '').toLowerCase();
-              const v = String(option?.value ?? '').toLowerCase();
-              const lab = String((option as { label?: string })?.label ?? '').toLowerCase();
-              return v.includes(q) || lab.includes(q);
-            }}
-            onSelect={(value: string) => {
-              const m = preset.recommendedModals?.find((x) => x.name === value);
-              if (m) {
-                form.setFieldsValue({
-                  modelDisplayName: m.name,
-                  primaryVersion: usePrimaryVersion ? (m.primaryVersion ?? '') : '',
-                });
-              }
-            }}
-          >
-            <Input
-              onKeyUp={(e) => applySplitFromEventTarget(e.target)}
-              onPaste={(e: ClipboardEvent<HTMLInputElement>) => {
-                if (!usePrimaryVersion) return;
-                const text = e.clipboardData?.getData('text') ?? '';
-                setTimeout(() => {
-                  applyDisplayNameVersionSplitToForm(form, text);
-                }, 0);
-              }}
-            />
-          </AutoComplete>
+        <Form.Item name="name" label="列表名称">
+          <Input placeholder={`默认「${preset.displayName}」，同 preset 多实例共用此名称`} allowClear />
         </Form.Item>
-        {usePrimaryVersion ? (
         <Form.Item
-          name="primaryVersion"
-          label="主版本（PrimaryVersion）"
-          tooltip="易变版本号，如 260328；可单独更新。有填写时，请求中模型 ID 为「名称-主版本」。无独立主版本段的预设（如部分 TTS）不显示本项。"
-          dependencies={['modelDisplayName']}
+          name="modelDisplayNames"
+          label="模型ID（模型编码）"
+          tooltip={
+            usePrimaryVersion
+              ? '可添加多条；每项为完整或可拆分的模型 ID（如 xxx-250615）。从候选选中会自动带主版本；也可粘贴多个 ID（逗号分隔）。'
+              : '可添加多条模型 ID；从候选选择或手输；可用逗号一次拆成多条。'
+          }
           rules={[
-            ({ getFieldValue }) => ({
-              validator(_, v) {
-                const pv = String(v ?? '').trim();
-                if (!pv) return Promise.resolve();
-                const d = String(getFieldValue('modelDisplayName') ?? '').trim();
-                if (!d) {
-                  return Promise.reject(new Error('填写主版本时请先填写模型名称（DisplayName）'));
+            {
+              validator: (_, v) => {
+                const arr = Array.isArray(v) ? v : [];
+                const nonEmpty = arr.map((x) => String(x).trim()).filter(Boolean);
+                if (nonEmpty.length === 0) {
+                  return Promise.reject(new Error('请至少填写一个模型 ID'));
                 }
                 return Promise.resolve();
               },
-            }),
+            },
           ]}
         >
-          <Input placeholder={placeholderVersion} allowClear />
+          <Select
+            mode="tags"
+            allowClear
+            placeholder={placeholderDisplay}
+            options={selectOptions}
+            tokenSeparators={[',', '，', '\n']}
+            popupMatchSelectWidth={false}
+            styles={{ popup: { root: { minWidth: 280 } } }}
+            showSearch={{
+              filterOption: (input, option) => {
+                const q = (input ?? '').toLowerCase();
+                const v = String((option as { value?: string })?.value ?? '').toLowerCase();
+                const lab = String(option?.label ?? '').toLowerCase();
+                return v.includes(q) || lab.includes(q);
+              },
+            }}
+          />
         </Form.Item>
-        ) : null}
         {!hideKey ? (
           <Form.Item
             name="apiKey"
             label="API 密钥"
             tooltip={
               preset.vendorKey
-                ? '同厂商下若已配置过其他模型，可能已自动填充同一密钥。'
+                ? '同厂商下若已配置过其他模型，可能已自动填充同一密钥；保存后本节所有模型 ID 实例共用该密钥。'
                 : undefined
             }
             rules={requireKey ? [{ required: true, message: '请输入 API 密钥' }] : []}
@@ -280,9 +260,18 @@ export function ModelPresetQuickForm({
             <Input.Password placeholder="sk-..." allowClear />
           </Form.Item>
         ) : null}
+        {preset.presetKey === 'minimax_speech' ? (
+          <Form.Item
+            name="minimaxGroupId"
+            label="MiniMax 团队 ID"
+            tooltip="音色复刻与 files/upload 必填；见控制台「基本信息 → 团队 ID」（注意：不是个人信息中的UID）"
+          >
+            <Input placeholder="如 17xxxxxxxxxx" allowClear />
+          </Form.Item>
+        ) : null}
         <Space>
           <Button type="primary" onClick={() => void onSave()}>
-            {existingModel ? '保存修改' : '添加并保存'}
+            {mode === 'add' ? '添加并保存' : '保存修改'}
           </Button>
           <Button onClick={onCancel}>取消</Button>
         </Space>

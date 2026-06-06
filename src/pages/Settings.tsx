@@ -2,23 +2,27 @@
  * 设置面板：通用 + AI 模型（见功能文档 3.1、docs/配置订阅使用.md）
  * 支持全页模式（/settings）与 Modal 模式（全局打开）
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { App, Modal, Button, Form, Layout, Menu, Typography } from 'antd';
-import type { AISettings, AIModelConfig, LocalTtsConfig, NovelWriterConfig } from '@/types/settings';
+import type { AISettings, AIModelConfig, LocalSfxConfig, LocalTtsConfig, NovelWriterConfig } from '@/types/settings';
 import { getAISettings, saveAISettings } from '@/utils/settingsStorage';
 import { CustomModelList } from '@/pages/settings/CustomModelList';
 import { CustomModelForm, type CustomModelFormValues } from '@/pages/settings/CustomModelForm';
 import { GeneralSettingsPanel } from '@/pages/settings/GeneralSettingsPanel';
 import { LocalTtsSettingsPanel } from '@/pages/settings/LocalTtsSettingsPanel';
+import { LocalSfxSettingsPanel } from '@/pages/settings/LocalSfxSettingsPanel';
+import { AudiobookSettingsPanel } from '@/pages/settings/AudiobookSettingsPanel';
 import { NovelWriterSettingsPanel } from '@/pages/settings/NovelWriterSettingsPanel';
+import { ProjectSettingsPanel } from '@/pages/settings/ProjectSettingsPanel';
+import { DevSettingsPanel } from '@/pages/settings/DevSettingsPanel';
 import { AddAiModelModal } from '@/pages/settings/AddAiModelModal';
 import {
   ModelPresetQuickForm,
   type ModelPresetQuickFormValues,
 } from '@/pages/settings/ModelPresetQuickForm';
-import { getPresetFormFieldsFromConfig, MODEL_PRESETS, type ModelPreset } from '@/components/AIChat/constants/modelPresets';
-import { splitLegacyModelId } from '@/utils/aiModelRequestId';
-import { resolveRecommendedVariant } from '@/utils/recommendedModal';
+import { MODEL_PRESETS, type ModelPreset } from '@/components/AIChat/constants/modelPresets';
+import { splitLegacyModelId, resolveRequestModelId } from '@/utils/aiModelRequestId';
+import { syncPresetModelsFromTags } from '@/utils/presetModelInstances';
 
 const { Text } = Typography;
 const { Sider, Content } = Layout;
@@ -28,7 +32,9 @@ function runAfterFormPaint(cb: () => void) {
   setTimeout(cb, 0);
 }
 
-type MenuKey = 'general' | 'ai' | 'localtts' | 'novelwriter';
+const isDevMode = import.meta.env.DEV;
+
+type MenuKey = 'general' | 'ai' | 'localtts' | 'localsfx' | 'novelwriter' | 'project' | 'audiobook' | 'dev';
 
 interface SettingsProps {
   modal?: boolean;
@@ -86,7 +92,7 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
   const handleApplyGeneral = async (
     patch: Pick<
       AISettings,
-      'defaultProjectRoot' | 'canvasAutoFitViewport' | 'modalMaskBlur' | 'novelBgVideo' | 'projectBgVideo'
+      'modalMaskBlur' | 'novelBgVideo' | 'projectBgVideo' | 'audiobookBgVideo' | 'toolboxBgVideo'
     >,
   ) => {
     if (!config) {
@@ -116,6 +122,36 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
     return ok;
   };
 
+  const handleApplyProject = async (
+    patch: Pick<AISettings, 'defaultProjectRoot' | 'canvasAutoFitViewport'>,
+  ) => {
+    if (!config) {
+      message.warning('配置加载中，请稍候再试');
+      return false;
+    }
+    const next: AISettings = {
+      ...config,
+      ...patch,
+    };
+    const ok = await persistConfig(next, '漫剧设置已保存');
+    if (ok) setConfig(next);
+    return ok;
+  };
+
+  const handleApplyAudiobook = async (patch: Pick<AISettings, 'audiobook'>) => {
+    if (!config) {
+      message.warning('配置加载中，请稍候再试');
+      return false;
+    }
+    const next: AISettings = {
+      ...config,
+      audiobook: { ...(config.audiobook ?? {}), ...patch.audiobook },
+    };
+    const ok = await persistConfig(next, '有声书设置已保存');
+    if (ok) setConfig(next);
+    return ok;
+  };
+
   const handleApplyLocalTts = async (patch: { localTts: LocalTtsConfig }) => {
     if (!config) {
       message.warning('配置加载中，请稍候再试');
@@ -130,8 +166,25 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
     return ok;
   };
 
+  const handleApplyLocalSfx = async (patch: { localSfx: LocalSfxConfig }) => {
+    if (!config) {
+      message.warning('配置加载中，请稍候再试');
+      return false;
+    }
+    const next: AISettings = {
+      ...config,
+      localSfx: patch.localSfx,
+    };
+    const ok = await persistConfig(next, '本地音效设置已保存');
+    if (ok) setConfig(next);
+    return ok;
+  };
+
   const handleCommitModels = async (nextModels: AIModelConfig[], successMsg = '已保存'): Promise<boolean> => {
-    if (!config) return false;
+    if (!config) {
+      message.warning('配置尚未加载完成，请稍候再试');
+      return false;
+    }
     const next: AISettings = { ...config, models: nextModels };
     const ok = await persistConfig(next, successMsg);
     if (ok) setConfig(next);
@@ -154,12 +207,15 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
         setEditingPreset(preset);
         setEditModalOpen(true);
         runAfterFormPaint(() => {
-          const p = getPresetFormFieldsFromConfig(preset, m);
+          const siblings = (config.models ?? []).filter((x) => x.presetKey === preset.presetKey);
+          const tagList = siblings
+            .map((x) => resolveRequestModelId(x))
+            .filter((rid): rid is string => Boolean(rid?.trim()));
           presetEditForm.setFieldsValue({
-            name: m.name ?? preset.displayName,
-            modelDisplayName: p.modelDisplayName,
-            primaryVersion: p.primaryVersion,
+            name: siblings[0]?.name ?? m.name ?? preset.displayName,
+            modelDisplayNames: tagList,
             apiKey: m.apiKey ?? '',
+            minimaxGroupId: m.minimaxGroupId ?? siblings[0]?.minimaxGroupId ?? '',
           });
         });
         return;
@@ -204,39 +260,37 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
     if (!config || editingId == null || !editingPreset) return;
     try {
       const values = await presetEditForm.validateFields();
-      const existing = config.models.find((m) => m.id === editingId);
-      if (!existing) return;
-      const md = (values.modelDisplayName ?? '').trim();
-      const pv = (values.primaryVersion ?? '').trim();
-      const variant = resolveRecommendedVariant(editingPreset, md, pv);
-      const capabilityKeys =
-        variant?.abilityTags?.length
-          ? [...variant.abilityTags]
-          : existing.capabilityKeys?.length
-            ? [...existing.capabilityKeys]
-            : [...editingPreset.capabilityKeys];
-      const apiUrl = variant?.baseUrl?.trim()
-        ? variant.baseUrl.trim()
-        : existing.apiUrl ?? editingPreset.apiUrl;
-      const next: AIModelConfig = {
-        id: editingId,
-        name: values.name?.trim() || editingPreset.displayName,
-        provider: editingPreset.provider,
-        apiUrl,
-        apiKey: editingPreset.isLocal ? '' : (values.apiKey ?? '').trim(),
-        capabilityKeys,
-        presetKey: editingPreset.presetKey,
-        isLocal: editingPreset.isLocal,
-      };
-      if (editingPreset.vendorKey) next.vendorKey = editingPreset.vendorKey;
-      if (md) next.modelDisplayName = md;
-      if (pv) next.primaryVersion = pv;
-      if (!md && !pv && existing.model) next.model = existing.model;
-      const models = config.models.map((m) => (m.id === editingId ? next : m));
-      const nextConfig = { ...config, models };
+      const tagsRaw = values.modelDisplayNames ?? [];
+      const sharedName = (values.name ?? '').trim() || editingPreset.displayName;
+      const apiKey = editingPreset.isLocal ? '' : (values.apiKey ?? '').trim();
+
+      const { nextModels, added, removed } = syncPresetModelsFromTags({
+        preset: editingPreset,
+        allModels: config.models,
+        tags: tagsRaw,
+        apiKey,
+        sharedName,
+        mode: 'reconcile',
+      });
+
+      let patchedModels = nextModels;
+      if (editingPreset.presetKey === 'minimax_speech') {
+        const gid = (values.minimaxGroupId ?? '').trim();
+        patchedModels = nextModels.map((m) =>
+          m.presetKey === 'minimax_speech' ?
+            { ...m, minimaxGroupId: gid || undefined }
+          : m,
+        );
+      }
+
+      const nextConfig = { ...config, models: patchedModels };
       const ok = await persistConfig(nextConfig);
       if (ok) {
         setConfig(nextConfig);
+        const parts: string[] = [];
+        if (added) parts.push(`新增 ${added} 条`);
+        if (removed) parts.push(`删除 ${removed} 条`);
+        message.success(parts.length ? `已保存（${parts.join('，')}）` : '已保存');
         closeEditModal();
       }
     } catch {
@@ -277,10 +331,24 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
     }
   };
 
+  const menuItems = useMemo(() => {
+    const items = [
+      { key: 'general', label: '通用' },
+      { key: 'ai', label: 'AI模型' },
+      { key: 'localtts', label: '本地TTS' },
+      { key: 'localsfx', label: '本地生成音效' },
+      { key: 'novelwriter', label: '小说编剧' },
+      { key: 'project', label: '漫剧' },
+      { key: 'audiobook', label: '有声书' },
+    ];
+    if (isDevMode) items.push({ key: 'dev', label: 'Dev' });
+    return items;
+  }, []);
+
   const innerBody = (
-    <Layout style={{ minHeight: modal ? 'calc(100vh - 200px)' : 'calc(100vh - 220px)', background: 'transparent' }}>
+    <Layout style={{ height: modal ? 'calc(100vh - 110px)' : 'calc(100vh - 220px)', background: 'transparent' }}>
       <Sider
-        width={120}
+        width={160}
         style={{
           overflow: 'auto',
           // borderInlineEnd: '1px solid var(--ant-color-split)',
@@ -291,25 +359,28 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
         <Menu
           mode="inline"
           selectedKeys={[menuKey]}
-          style={{ borderInlineEnd: 0, height: '100%' }}
-          items={[
-            { key: 'general', label: '通用' },
-            { key: 'ai', label: 'AI模型' },
-            { key: 'localtts', label: '本地TTS' },
-            { key: 'novelwriter', label: '小说编剧' },
-          ]}
+          style={{ borderInlineEnd: 0, paddingRight: 16, marginTop: 46 }}
+          items={menuItems}
           onClick={({ key }) => setMenuKey(key as MenuKey)}
         />
       </Sider>
-      <Content style={{ overflow: 'auto', padding: 16, minWidth: 0, background: 'transparent' }}>
+      <Content style={{ overflow: 'auto', padding: 26, minWidth: 0, background: 'rgb(0 0 0 / 25%)', borderRadius: 16 }}>
         {loading ? (
           <Text type="secondary">加载中…</Text>
         ) : menuKey === 'general' ? (
           <GeneralSettingsPanel config={config} onApply={handleApplyGeneral} />
         ) : menuKey === 'localtts' ? (
           <LocalTtsSettingsPanel config={config} onApply={handleApplyLocalTts} />
+        ) : menuKey === 'localsfx' ? (
+          <LocalSfxSettingsPanel config={config} onApply={handleApplyLocalSfx} />
         ) : menuKey === 'novelwriter' ? (
           <NovelWriterSettingsPanel config={config} onApply={handleApplyNovelWriter} />
+        ) : menuKey === 'project' ? (
+          <ProjectSettingsPanel config={config} onApply={handleApplyProject} />
+        ) : menuKey === 'audiobook' ? (
+          <AudiobookSettingsPanel config={config} onApply={handleApplyAudiobook} />
+        ) : menuKey === 'dev' && isDevMode ? (
+          <DevSettingsPanel onBeforeNavigate={modal ? onClose : undefined} />
         ) : (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -343,22 +414,20 @@ export default function Settings({ modal = false, open = true, onClose, onSaved 
     />
   );
 
-  const editingRow = editingId ? config?.models.find((m) => m.id === editingId) : undefined;
-
   const editModal = (
     <Modal
       title={editingPreset ? `编辑：${editingPreset.displayName}` : '编辑 AI 模型'}
       open={editModalOpen}
       onCancel={closeEditModal}
       footer={null}
-      width={560}
+      width={620}
       centered
       destroyOnHidden
     >
       {editingPreset ? (
         <ModelPresetQuickForm
           preset={editingPreset}
-          existingModel={editingRow}
+          mode="edit"
           form={presetEditForm}
           onSave={() => void handleSaveEditPreset()}
           onCancel={closeEditModal}

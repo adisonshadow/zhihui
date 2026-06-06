@@ -1,0 +1,15 @@
+.toolbox-list-page {
+  position: relative;
+  min-height: calc(100vh - 64px);
+}
+
+.toolbox-content {
+  padding: 32px 0;
+}
+
+.toolbox-heading {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 24px;
+}

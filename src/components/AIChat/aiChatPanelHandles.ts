@@ -4,6 +4,12 @@
 import type { AIChatContextTag, RefIndicatorType } from './types';
 import type { TemplateSlotValue } from './registryTypes';
 
+/** 编程式发送：用户气泡仅展示 displayContent，ephemeral 仅进入本轮 system */
+export type AIChatEmitUserMessagePayload = {
+  displayContent: string;
+  ephemeralSystemInstructions: string;
+};
+
 export interface AIChatSenderHandle {
   setAgentKey: (key: string) => void;
   applyPromptTemplate: (templateId: string, slotValues: TemplateSlotValue[]) => void;
@@ -30,8 +36,8 @@ export interface AIChatSidePanelHandle {
     /** true：传入的 blocks/tags 整表替换；false：blocks 追加，tags 按 id 合并 */
     replace?: boolean;
   }) => void;
-  /** 与 Sender submit 等价，写入一条用户消息并触发请求（编剧抽卡卡片等） */
-  emitUserMessage: (text: string) => void;
+  /** 与 Sender submit 等价；支持仅 system 可见的一轮内指令（见 AIChatEmitUserMessagePayload） */
+  emitUserMessage: (textOrPayload: string | AIChatEmitUserMessagePayload) => void;
   /** 新建空会话后发送用户消息，避免收藏/工具操作污染当前上下文 */
   emitUserMessageInNewConversation: (text: string) => void;
   /** 切换当前对话会话 */

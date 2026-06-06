@@ -18,12 +18,29 @@ export {
   invokeFunctionCall,
   toOpenAITools,
   getAllFunctionCalls,
+  getFunctionCallDef,
   mergeFunctionCallDefs,
 } from './utils/functionRegistry';
 export { ReasoningChatProvider } from './providers/ReasoningChatProvider';
 export type { AIChatMode, AgentConfig, AgentPrompts, AIChatContextTag, PromptItem, AgentProviderType, RefIndicatorType, AIChatSidePanelOnSubmit, AIChatSidePanelOnSubmitReturn } from './types';
 export { applyRefIndicatorUserChoicePrefix } from './applyRefIndicatorUserChoicePrefix';
-export type { AIChatCoreProps, AIChatDrawerSessionSync, AIChatHandleSubmitOptions } from './AIChatCore';
+export type {
+  AIChatCoreProps,
+  AIChatDrawerSessionSync,
+  AIChatHandleSubmitOptions,
+  AIProjectPromptInput,
+  AIProjectPromptParts,
+} from './AIChatCore';
+export {
+  decideToolDisplayMode,
+  canMergeIntoSameThoughtchain,
+  splitIntoThoughtchains,
+} from './utils/toolCardMarkers';
+export type {
+  ToolDisplayMode,
+  ToolDisplayPreferences,
+  ToolInvocationMeta,
+} from './utils/toolCardMarkers';
 export type { AIChatProps } from './AIChat';
 export type { AIChatFloatingBottomProps } from './AIChatFloatingBottom';
 export type { AIChatPopoverProps } from './AIChatPopover';
@@ -33,7 +50,23 @@ export type {
   PromptTemplateSlotDef,
   RegisterableSenderSlot,
   TemplateSlotValue,
+  SkillAgentDefinition,
+  AgentTypeV2,
+  AgentUIConfig,
+  AgentUIConfigField,
+  MultiModalToolDefinition,
+  ExposedMultimodalAgentDecl,
 } from './registryTypes';
-export type { AIChatSidePanelHandle, AIChatSenderHandle } from './aiChatPanelHandles';
+export {
+  registerSkillAgent,
+  getAllSkillAgents,
+  getSkillAgent,
+  unregisterSkillAgent,
+  registerMultiModalTool,
+  getAllMultiModalTools,
+  getMultiModalTool,
+  buildExposedMultimodalAgents,
+} from './registryTypes';
+export type { AIChatSidePanelHandle, AIChatSenderHandle, AIChatEmitUserMessagePayload } from './aiChatPanelHandles';
 export type { BuiltInAgentsMode, UseAgentModelOptions } from './hooks/useAgentModel';
 export type { ReasoningMessage } from './providers/ReasoningChatProvider';

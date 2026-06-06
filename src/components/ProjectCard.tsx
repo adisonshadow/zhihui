@@ -5,15 +5,19 @@
  */
 import React from 'react';
 import { Card, Col, Image, Tag, Space } from 'antd';
+import type { ColProps } from 'antd';
 import { ClockCircleOutlined, FolderOutlined } from '@ant-design/icons';
 
 export interface ProjectCardProps {
   title: string;
   cover?: { url?: string | null; aspect?: number };
-  lastUpdate: string;
+  lastUpdate?: string;
   tags?: Array<{ name: string; color?: string }>;
   moreActions?: React.ReactNode;
+  isShowLastUpdate?: boolean;
   onClick: () => void;
+  /** 覆盖 Col 栅格（与默认 xs/sm/md/lg 合并，后者可被覆盖） */
+  colProps?: ColProps;
 }
 
 export function ProjectCard({
@@ -23,6 +27,8 @@ export function ProjectCard({
   tags,
   moreActions,
   onClick,
+  colProps,
+  isShowLastUpdate = true,
 }: ProjectCardProps) {
   const aspect = cover?.aspect ?? 16 / 9;
 
@@ -50,11 +56,12 @@ export function ProjectCard({
   );
 
   return (
-    <Col xs={24} sm={12} md={8} lg={6}>
+    <Col xs={24} sm={12} md={8} lg={6} {...colProps}>
       <Card
         hoverable
         variant="borderless"
         onClick={onClick}
+        className="project-card"
         styles={{ root: { backgroundColor: 'rgba(0, 0, 0, 0.2)' } }}
         cover={
           <div style={{ position: 'relative', borderRadius: 8, overflow: 'hidden' }}>
@@ -97,11 +104,12 @@ export function ProjectCard({
               {title}
             </span>
           }
-          description={
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>
-              <ClockCircleOutlined />{' '}
-              {lastUpdate ? new Date(lastUpdate).toLocaleString('zh-CN') : '-'}
-            </div>
+          description={isShowLastUpdate ? ( 
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>
+                <ClockCircleOutlined />{' '}
+                {lastUpdate ? new Date(lastUpdate).toLocaleString('zh-CN') : '-'}
+              </div>
+            ) : null
           }
         />
       </Card>

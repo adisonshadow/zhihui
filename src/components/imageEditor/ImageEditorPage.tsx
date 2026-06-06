@@ -2833,7 +2833,7 @@ export const ImageEditorPage: React.FC = () => {
   return (
     <div className="yiman-image-editor">
       <EditorHeader
-        onBack={() => navigate('/')}
+        onBack={() => navigate(-1)}
         zoomPercentRounded={zoomPercentRounded}
         zoomSelectValue={zoomSelectValue}
         zoomTooltipTitle={zoomTooltipTitle}

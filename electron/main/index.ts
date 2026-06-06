@@ -7,11 +7,28 @@ import { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } from 'electro
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawn, execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { startStrudelSampleServer } from './strudelSampleServer';
+import { convertWavBase64ToMp3File } from './strudelAudioConvertService';
+import {
+  getRemoteVoiceId,
+  setRemoteVoiceId,
+  invalidateRemoteVoiceId,
+  type RemoteVoiceIdProvider,
+  type RemoteVoiceIdEntry,
+} from './remoteVoiceIdCache';
+// CosyVoice 已停用
+// import { synthesizeCosyVoiceWs } from './cosyVoiceWsService';
 import { initAppDb, getProjects, createProject, deleteProject, importProject } from './db';
 import { readImageFileForEditor } from './imageEditorImport';
-import { loadAISettings, saveAISettings, type AISettings } from './settings';
+import {
+  loadAISettings,
+  saveAISettings,
+  type AISettings,
+  type LocalSfxConfig,
+  type LocalTtsConfig,
+} from './settings';
 import {
   initProjectDb,
   getProjectMeta,
@@ -85,23 +102,43 @@ import { exportSceneVideo } from './exportService';
 import { extractVideoFrame, getVideoMetadata } from './videoCoverService';
 import { processTransparentVideo, processSingleFrameColorkey, type ChromaKeyColor } from './transparentVideoService';
 import { getSpriteBackgroundColor, getSpriteFrames, extractSpriteCoverToTemp } from './spriteService';
-import { processSpriteWithOnnx, matteImageForContour, matteImageAndSave } from './spriteOnnxService';
-import { exportSpriteSheetToZip, importSpriteSheetFromZip } from './spriteSheetExportService';
+import { processSpriteWithOnnx, matteImageForContour, matteImageAndSave, type ProcessSpriteWithOnnxResult } from './spriteOnnxService';
+import { exportSpriteSheetToZip, importSpriteSheetFromZip, type SpriteSheetItemExport } from './spriteSheetExportService';
 import { getTextGadgetPresets, getTextGadgetConfig } from './textGadgetService';
 import { getParticlesGadgetPresets, getParticlesGadgetConfig } from './particlesGadgetService';
 import { getSystemFonts, getSystemFontFaces } from './fontService';
 import { extractKeyFrames, extractFramesUniform, keyFramesToDataUrls, generateSpriteSheet, cleanupDir } from './videoToSpriteService';
+import {
+  cacheImage as imgCacheSaveOne,
+  cacheImages as imgCacheSaveBatch,
+  resolveCached as imgCacheResolve,
+  readCachedAsDataUrl as imgCacheReadDataUrl,
+  getCacheStats,
+} from './imageCacheService';
+import {
+  listRecordings,
+  saveRecording,
+  getDuration,
+  processRecording,
+  exportRecording,
+  deleteRecording,
+  renameRecording,
+  checkDemucsInstalled,
+} from './audioRecorderService';
 import { ensureLamaCleanerRunning, openLamaCleanerInstallTerminal } from './lamaCleanerHost';
+import { applyInnerMonologueEffect } from './innerMonologueService';
 import { fetchVolcTosImageAsDataUrl } from './volcTosImageFetch';
 import {
   initNovelDb,
   listNovels,
   upsertNovel as dbUpsertNovel,
   deleteNovel,
-  getEpisodes,
+  getEpisodes as getNovelEpisodes,
   getWorkspaceMeta,
   upsertEpisode as dbUpsertEpisode,
   deleteEpisode as dbDeleteNovelEpisode,
+  getEpisodeTtsModelJson,
+  saveEpisodeTtsModelJson,
   saveWorkspaceMeta,
   replaceAllEpisodes,
   listScreenwriterFavorites,
@@ -186,6 +223,7 @@ function createWindow(): void {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
+      webSecurity: false, // 关闭跨域校验
       sandbox: false,
     },
     show: false,
@@ -220,8 +258,45 @@ function createWindow(): void {
 let aiModelServerProcess: ReturnType<typeof spawn> | null = null;
 const AIMODEL_PORT = 19815;
 
+/** 持久化本地 TTS 设置后推送至 AI 模型服务，更新内存路径/超时并结束旧常驻 Python */
+async function pushLocalSfxReloadToAiServer(localSfx: LocalSfxConfig): Promise<void> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${AIMODEL_PORT}/api/v1/sfx/reload-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localSfx }),
+    });
+    const txt = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.warn('[Main] AI 模型服务 sfx reload-config 失败 HTTP', res.status, txt.slice(0, 300));
+      return;
+    }
+    console.log('[Main] 本地音效已通过 reload-config 同步到 AI 模型服务');
+  } catch (e) {
+    console.warn('[Main] AI 模型服务 sfx reload-config 不可达:', e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function pushLocalTtsReloadToAiServer(localTts: LocalTtsConfig): Promise<void> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${AIMODEL_PORT}/api/v1/tts/reload-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localTts }),
+    });
+    const txt = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.warn('[Main] AI 模型服务 reload-config 失败 HTTP', res.status, txt.slice(0, 300));
+      return;
+    }
+    console.log('[Main] 本地 TTS 已通过 reload-config 同步到 AI 模型服务');
+  } catch (e) {
+    console.warn('[Main] AI 模型服务 reload-config 不可达:', e instanceof Error ? e.message : String(e));
+  }
+}
+
 app.whenReady().then(async () => {
-  await initAppDb();
+  initAppDb();
   initNovelDb();
   // 读取 AI 设置，提取本地 TTS 配置
   const aiSettings = loadAISettings();
@@ -232,6 +307,14 @@ app.whenReady().then(async () => {
     const activePath = aiSettings.localTts.profiles?.[mk]?.modelPath?.trim();
     if (aiSettings.localTts.enabled && activePath) {
       console.log('[Main] 本地 TTS 配置已注入:', mk, activePath);
+    }
+  }
+  if (aiSettings.localSfx) {
+    ttsEnv.YIMAN_LOCAL_SFX_CONFIG = JSON.stringify(aiSettings.localSfx);
+    const sk = aiSettings.localSfx.modelKey ?? 'moss_sound_effect';
+    const sfxPath = aiSettings.localSfx.profiles?.[sk]?.modelPath?.trim();
+    if (aiSettings.localSfx.enabled && sfxPath) {
+      console.log('[Main] 本地音效配置已注入:', sk, sfxPath);
     }
   }
   // 启动 AI 模型服务子进程（纯 Node 优先，无 Electron/Dock 图标；否则回退到 Electron 子进程）
@@ -261,6 +344,11 @@ app.whenReady().then(async () => {
     if (code !== 0 && code !== null) console.warn('[AI Model Service] 子进程退出:', code);
     aiModelServerProcess = null;
   });
+
+  if (app.isPackaged) {
+    const samplesPath = path.join(process.resourcesPath, 'samples');
+    startStrudelSampleServer(samplesPath);
+  }
 
   createWindow();
 
@@ -449,13 +537,103 @@ ipcMain.handle('app:fs:getSafeFilePath', async (_, fullCandidatePath: string) =>
 ipcMain.handle('app:fs:writeBase64File', (_, fullPath: string, base64: string) => {
   try {
     if (!fullPath?.trim()) return { ok: false, error: '路径无效' };
+    const normalized = path.normalize(fullPath.trim());
+    const dir = path.dirname(normalized);
+    fs.mkdirSync(dir, { recursive: true });
     const buf = Buffer.from(base64, 'base64');
-    fs.writeFileSync(path.normalize(fullPath), buf);
+    fs.writeFileSync(normalized, buf);
     return { ok: true as const };
   } catch (e: unknown) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
 });
+
+/** 递归删除目录或文件（小说项目「同时删除本地目录」等） */
+ipcMain.handle('app:fs:removePathRecursive', (_, fullPath: string) => {
+  try {
+    if (!fullPath?.trim()) return { ok: false as const, error: '路径无效' };
+    const normalized = path.normalize(fullPath.trim());
+    if (fs.existsSync(normalized)) {
+      fs.rmSync(normalized, { recursive: true, force: true });
+    }
+    return { ok: true as const };
+  } catch (e: unknown) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+
+/** 有声书工作台：TTS 片段 WAV 持久化（userData/yiman/audiobook-tts-cache） */
+function safeAudiobookTtsNovelDirSegment(novelId: string): string {
+  const t = (novelId ?? '').trim();
+  if (!t || t.includes('..') || path.isAbsolute(t)) return 'invalid-novel';
+  const base = path.basename(t);
+  return base.slice(0, 200) || 'invalid-novel';
+}
+
+ipcMain.handle(
+  'app:audiobook:ttsCache:saveWav',
+  (_e, novelId: string, fileName: string, base64: string) => {
+    try {
+      const nid = safeAudiobookTtsNovelDirSegment(String(novelId));
+      const safeName = path.basename(String(fileName || ''));
+      if (!safeName.endsWith('.wav')) return { ok: false as const, error: '仅支持 .wav 文件名' };
+      const dir = path.join(app.getPath('userData'), 'yiman', 'audiobook-tts-cache', nid);
+      fs.mkdirSync(dir, { recursive: true });
+      const full = path.join(dir, safeName);
+      fs.writeFileSync(full, Buffer.from(String(base64), 'base64'));
+      return { ok: true as const, path: full };
+    } catch (e: unknown) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  },
+);
+
+ipcMain.handle('app:audiobook:ttsCache:resolvePath', (_e, novelId: string, fileName: string) => {
+  try {
+    const nid = safeAudiobookTtsNovelDirSegment(String(novelId));
+    const safeName = path.basename(String(fileName || ''));
+    if (!safeName.endsWith('.wav')) return null;
+    const full = path.join(app.getPath('userData'), 'yiman', 'audiobook-tts-cache', nid, safeName);
+    return fs.existsSync(full) ? full : null;
+  } catch {
+    return null;
+  }
+});
+
+/** Strudel / 通用：WAV base64 → MP3（ffmpeg） */
+ipcMain.handle('app:audio:convertWavToMp3', async (_e, wavBase64: string, outputPath: string) => {
+  return convertWavBase64ToMp3File(String(wavBase64), String(outputPath));
+});
+
+/** 云端 TTS 复刻 voice id 磁盘缓存 */
+ipcMain.handle(
+  'app:voiceId:get',
+  (_e, provider: RemoteVoiceIdProvider, cacheKey: string): RemoteVoiceIdEntry | null =>
+    getRemoteVoiceId(provider, cacheKey),
+);
+ipcMain.handle(
+  'app:voiceId:set',
+  (_e, provider: RemoteVoiceIdProvider, cacheKey: string, entry: RemoteVoiceIdEntry) => {
+    setRemoteVoiceId(provider, cacheKey, entry);
+    return { ok: true as const };
+  },
+);
+ipcMain.handle('app:voiceId:invalidate', (_e, provider: RemoteVoiceIdProvider, cacheKey: string) => {
+  invalidateRemoteVoiceId(provider, cacheKey);
+  return { ok: true as const };
+});
+
+/** CosyVoice WebSocket 合成已停用 */
+/*
+ipcMain.handle(
+  'app:cosyVoice:synthesize',
+  async (_e, payload: { ... }) => {
+    const out = await synthesizeCosyVoiceWs(payload);
+    ...
+  },
+);
+*/
+
 /** 读取本地文件为 data URL（图片编辑打开本机图片） */
 ipcMain.handle('app:fs:readFileAsDataUrl', (_, fullPath: string) => {
   try {
@@ -476,8 +654,35 @@ ipcMain.handle('app:fs:readFileAsDataUrl', (_, fullPath: string) => {
                 ? 'image/bmp'
                 : ext === '.tif' || ext === '.tiff'
                   ? 'image/tiff'
-                  : 'image/jpeg';
+                  : ext === '.mp3'
+                    ? 'audio/mpeg'
+                    : ext === '.wav'
+                      ? 'audio/wav'
+                      : ext === '.m4a' || ext === '.mp4'
+                        ? 'audio/mp4'
+                        : ext === '.aac'
+                          ? 'audio/aac'
+                          : ext === '.flac'
+                            ? 'audio/flac'
+                      : ext === '.ogg' || ext === '.oga'
+                        ? 'audio/ogg'
+                        : ext === '.webm'
+                          ? 'audio/webm'
+                          : 'image/jpeg';
     return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
+});
+
+/** 有声书：读取参考音色 sidecar 文稿（UTF-8，如 旁白.wav 同目录 旁白.txt） */
+ipcMain.handle('app:fs:readUtf8File', (_, fullPath: string) => {
+  try {
+    if (!fullPath?.trim() || !fs.existsSync(fullPath)) return null;
+    const normalized = path.normalize(fullPath);
+    const raw = fs.readFileSync(normalized, 'utf8');
+    const t = raw.replace(/^\uFEFF/, '').trim();
+    return t || null;
   } catch {
     return null;
   }
@@ -508,6 +713,62 @@ ipcMain.handle('app:fs:listMedias', async () => {
   }
   return [];
 });
+
+const AUDIO_SAMPLE_EXT = /\.(mp3|wav|m4a|aac|flac|ogg|oga)$/i;
+const LIST_AUDIO_SAMPLES_MAX = 2000;
+
+function listAudioSamplesRecursive(
+  rootReal: string,
+  relBase: string,
+  out: { relativePath: string; absolutePath: string }[],
+): void {
+  if (out.length >= LIST_AUDIO_SAMPLES_MAX) return;
+  const absBase = relBase ? path.join(rootReal, relBase) : rootReal;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(absBase, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const ent of entries) {
+    if (out.length >= LIST_AUDIO_SAMPLES_MAX) break;
+    /** macOS AppleDouble / Finder 产生的元数据文件与目录 */
+    if (ent.name.startsWith('._')) continue;
+    const rel = relBase ? `${relBase.replace(/\\/g, '/')}/${ent.name}` : ent.name;
+    if (ent.isDirectory()) {
+      if (ent.name === '.' || ent.name === '..') continue;
+      listAudioSamplesRecursive(rootReal, rel, out);
+    } else if (ent.isFile() && AUDIO_SAMPLE_EXT.test(ent.name)) {
+      out.push({ relativePath: rel, absolutePath: path.join(absBase, ent.name) });
+    }
+  }
+}
+
+/** 内置音色样本目录：项目根 PresetVoice/ */
+function resolveBuiltinPresetVoiceDir(): string {
+  const base = app.isPackaged ? path.join(app.getAppPath(), '..') : process.cwd();
+  return path.join(base, 'PresetVoice');
+}
+
+ipcMain.handle('app:fs:getBuiltinPresetVoiceDir', () => resolveBuiltinPresetVoiceDir());
+
+/** 有声书：递归枚举音色样本根目录下的音频文件（相对路径统一为正斜杠） */
+ipcMain.handle('app:fs:listAudiobookVoiceSamples', (_, rootDir: string) => {
+  try {
+    const raw = String(rootDir ?? '').trim();
+    if (!raw) return { ok: false as const, error: '未配置目录' };
+    if (!fs.existsSync(raw)) return { ok: false as const, error: '目录不存在' };
+    const stat = fs.statSync(raw);
+    if (!stat.isDirectory()) return { ok: false as const, error: '路径不是目录' };
+    const rootReal = fs.realpathSync(raw);
+    const out: { relativePath: string; absolutePath: string }[] = [];
+    listAudioSamplesRecursive(rootReal, '', out);
+    out.sort((a, b) => a.relativePath.localeCompare(b.relativePath, 'zh-Hans-CN'));
+    return { ok: true as const, files: out };
+  } catch (e: unknown) {
+    return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+  }
+});
 ipcMain.handle('app:shell:showItemInFolder', (_, fullPath: string) => shell.showItemInFolder(fullPath));
 ipcMain.handle('app:shell:openPath', (_: unknown, path: string) => shell.openPath(path));
 ipcMain.handle('app:shell:openExternal', async (_: unknown, url: string) => {
@@ -526,7 +787,14 @@ ipcMain.handle('app:shell:openExternal', async (_: unknown, url: string) => {
 // AI 供应商配置（见功能文档 3.1、开发计划 2.3）
 ipcMain.handle('app:settings:get', () => loadAISettings());
 ipcMain.handle('app:settings:save', async (_, data: AISettings) => {
-  return saveAISettings(data);
+  const result = saveAISettings(data);
+  if (result.ok && data.localTts) {
+    await pushLocalTtsReloadToAiServer(data.localTts);
+  }
+  if (result.ok && data.localSfx) {
+    await pushLocalSfxReloadToAiServer(data.localSfx);
+  }
+  return result;
 });
 
 // 项目级数据（见技术文档 3.2、开发计划 2.4）
@@ -758,9 +1026,9 @@ ipcMain.handle('app:project:getAssetDataUrl', (_, projectDir: string, relativePa
   getAssetDataUrl(projectDir, relativePath)
 );
 ipcMain.handle('app:project:getTextGadgetPresets', () => getTextGadgetPresets());
-  ipcMain.handle('app:project:getTextGadgetConfig', (_, presetId: string) => getTextGadgetConfig(presetId));
-  ipcMain.handle('app:project:getParticlesGadgetPresets', () => getParticlesGadgetPresets());
-  ipcMain.handle('app:project:getParticlesGadgetConfig', (_, presetId: string) => getParticlesGadgetConfig(presetId));
+ipcMain.handle('app:project:getTextGadgetConfig', (_, presetId: string) => getTextGadgetConfig(presetId));
+ipcMain.handle('app:project:getParticlesGadgetPresets', () => getParticlesGadgetPresets());
+ipcMain.handle('app:project:getParticlesGadgetConfig', (_, presetId: string) => getParticlesGadgetConfig(presetId));
 ipcMain.handle('app:system:getFonts', () => getSystemFonts());
 ipcMain.handle('app:system:getFontFaces', () => getSystemFontFaces());
 ipcMain.handle('app:plugins:lama:ensure', async () => ensureLamaCleanerRunning());
@@ -969,7 +1237,7 @@ ipcMain.handle(
     relativePath: string,
     options?: { frameCount?: number; cellSize?: number; spacing?: number; downsampleRatio?: number; forceRvm?: boolean; mattingModel?: string; u2netpAlphaMatting?: boolean }
   ) => {
-    const res = await processSpriteWithOnnx(projectDir, relativePath, options);
+    const res: ProcessSpriteWithOnnxResult = await processSpriteWithOnnx(projectDir, relativePath, options);
     if (!res.ok || !res.path || !res.frames) return res;
     try {
       const saveRes = saveAssetFromFile(projectDir, res.path, 'character');
@@ -1007,7 +1275,7 @@ ipcMain.handle(
   async (
     _,
     projectDir: string,
-    item: { id: string; name?: string; image_path: string; cover_path?: string; frame_count?: number; frames?: unknown[]; chroma_key?: string; background_color?: unknown; matting_model?: string; playback_fps?: number }
+    item: SpriteSheetItemExport
   ) => {
     const savePath = await dialog.showSaveDialog(BrowserWindow.getFocusedWindow() || mainWindow!, {
       defaultPath: `${item.name || '精灵动作'}.zip`,
@@ -1119,7 +1387,8 @@ ipcMain.handle('app:novel:list', () => {
 
 ipcMain.handle('app:novel:upsert', (_e, item: {
   id: string; title: string; genres: string[]; coverDataUrl?: string | null;
-  electronProjectId?: string | null; createdAt?: string; updatedAt?: string;
+  electronProjectId?: string | null; audiobookEnabled?: boolean;
+  createdAt?: string; updatedAt?: string;
 }) => {
   const row = dbUpsertNovel(item);
   return toNovelWorkspaceItem(row);
@@ -1131,7 +1400,7 @@ ipcMain.handle('app:novel:delete', (_e, id: string) => {
 
 // 小说工作区
 ipcMain.handle('app:novel:getEpisodes', (_e, novelId: string) => {
-  return getEpisodes(novelId).map(toEpisodeItem);
+  return getNovelEpisodes(novelId).map(toEpisodeItem);
 });
 
 ipcMain.handle('app:novel:getWorkspaceMeta', (_e, novelId: string) => {
@@ -1142,13 +1411,16 @@ ipcMain.handle('app:novel:getWorkspaceMeta', (_e, novelId: string) => {
     title: meta.title,
     activeEpisodeId: meta.active_episode_id,
     remountVersions: safeJsonParse(meta.remount_versions, {}),
+    novelScriptJson: meta.novel_script_json ?? '',
+    audiobookOutlineVoiceJson: meta.audiobook_outline_voice_json ?? '',
     updatedAt: meta.updated_at,
   };
 });
 
 ipcMain.handle('app:novel:upsertEpisode', (_e, ep: {
   id: string; novelId: string; title: string; episode?: number | null;
-  contentMarkdown?: string; order: number; updatedAt: string;
+  contentMarkdown?: string; scriptJson?: string; audiobookJson?: string;
+  order: number; updatedAt: string;
 }) => {
   dbUpsertEpisode(ep);
 });
@@ -1157,16 +1429,34 @@ ipcMain.handle('app:novel:deleteEpisode', (_e, novelId: string, episodeId: strin
   dbDeleteNovelEpisode(novelId, episodeId);
 });
 
+/** 保存片段 TTS 模型选择到 SQLite */
+ipcMain.handle('app:novel:saveSegmentTtsModels', (_e, novelId: string, episodeId: string, ttsModelJson: string) => {
+  console.log('[IPC saveSegmentTtsModels] 收到请求:', { novelId, episodeId, ttsModelJson: ttsModelJson?.slice(0, 100) });
+  saveEpisodeTtsModelJson(novelId, episodeId, ttsModelJson);
+  console.log('[IPC saveSegmentTtsModels] 保存成功');
+});
+
+/** 从 SQLite 读取片段 TTS 模型选择 */
+ipcMain.handle('app:novel:loadSegmentTtsModels', (_e, novelId: string, episodeId: string): string => {
+  const result = getEpisodeTtsModelJson(novelId, episodeId);
+  console.log('[IPC loadSegmentTtsModels] 读取结果:', { novelId, episodeId, result: result?.slice(0, 200) });
+  return result;
+});
+
 ipcMain.handle('app:novel:saveWorkspaceMeta', (_e, meta: {
   novelId: string; title?: string; activeEpisodeId: string;
-  remountVersions: Record<string, number>; updatedAt: string;
+  remountVersions: Record<string, number>; novelScriptJson?: string;
+  audiobookOutlineVoiceJson?: string; innerMonologueEnabled?: boolean;
+  spaceEchoEnabled?: boolean; telephoneEnabled?: boolean; mufflerEnabled?: boolean;
+  updatedAt: string;
 }) => {
   saveWorkspaceMeta(meta);
 });
 
 ipcMain.handle('app:novel:replaceAllEpisodes', (_e, novelId: string, episodes: Array<{
   id: string; novelId: string; title: string; episode?: number | null;
-  contentMarkdown: string; order: number; updatedAt: string;
+  contentMarkdown: string; scriptJson?: string; audiobookJson?: string;
+  order: number; updatedAt: string;
 }>) => {
   replaceAllEpisodes(novelId, episodes);
 });
@@ -1234,11 +1524,13 @@ ipcMain.handle('app:novel:outlineFavorites:getByOutlineUuid', (_e, outlineUuid: 
 interface NovelWorkspaceItem {
   id: string; title: string; genres: string[];
   coverDataUrl?: string | null; electronProjectId?: string | null;
+  audiobookEnabled?: boolean;
   updatedAt: string; createdAt: string;
 }
 interface EpisodeItem {
   id: string; novelId: string; title: string; episode?: number | null;
-  contentMarkdown: string; order: number; updatedAt: string;
+  contentMarkdown: string; scriptJson: string; audiobookJson: string;
+  order: number; updatedAt: string;
 }
 interface FavoriteStoryItem {
   id: string; seedUuid?: string | null; title: string; content: string;
@@ -1259,13 +1551,20 @@ function toNovelWorkspaceItem(r: NovelRow): NovelWorkspaceItem {
     genres: safeJsonParse(r.genres, []),
     coverDataUrl: r.cover_data_url,
     electronProjectId: r.electron_project_id,
+    audiobookEnabled: Boolean(r.audiobook_enabled),
     updatedAt: r.updated_at, createdAt: r.created_at,
   };
 }
 function toEpisodeItem(r: EpisodeRow): EpisodeItem {
+  const scriptJson =
+    (r.script_json?.trim() ? r.script_json : null) ??
+    (r.script_markdown?.trim().startsWith('{') ? r.script_markdown : '') ??
+    '';
   return {
     id: r.id, novelId: r.novel_id, title: r.title,
     episode: r.episode, contentMarkdown: r.content_markdown,
+    scriptJson,
+    audiobookJson: r.audiobook_json ?? '',
     order: r.order, updatedAt: r.updated_at,
   };
 }
@@ -1296,6 +1595,7 @@ const LOCAL_TTS_REST_SEGMENT: Record<string, string> = {
   longcat_audio_dit: 'LongCat-AudioDiT',
   moss_tts: 'MOSS-TTS',
   moss_tts_local_mlx: 'MOSS-TTS',
+  moss_tts_nano: 'MOSS-TTS-Nano',
 };
 
 function restSegmentForLocalTts(modelId: string): string {
@@ -1308,6 +1608,7 @@ ipcMain.handle('app:tts:local:models', async () => {
     models: [
       { id: 'longcat_audio_dit', name: 'LongCat-AudioDiT' },
       { id: 'moss_tts', name: 'MOSS-TTS' },
+      { id: 'moss_tts_nano', name: 'MOSS-TTS-Nano' },
     ],
   };
 });
@@ -1353,4 +1654,102 @@ ipcMain.handle(
     }
   }
 );
+
+/** 缓存单张远程图片，返回本地缓存路径 */
+ipcMain.handle('app:images:cache:save', async (_e, remoteUrl: string) => {
+  try {
+    const localPath = await imgCacheSaveOne(remoteUrl);
+    return { ok: true, localPath };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+
+/** 批量缓存远程图片，返回本地路径列表 */
+ipcMain.handle('app:images:cache:saveBatch', async (_e, remoteUrls: string[]) => {
+  try {
+    const paths = await imgCacheSaveBatch(remoteUrls);
+    return { ok: true, paths };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+});
+
+/** 查询远程图片是否已缓存，返回本地路径或 null */
+ipcMain.handle('app:images:cache:resolve', (_e, remoteUrl: string) => {
+  return imgCacheResolve(remoteUrl);
+});
+
+/** 读取缓存的图片为 data URL */
+ipcMain.handle('app:images:cache:readDataUrl', (_e, remoteUrl: string) => {
+  return imgCacheReadDataUrl(remoteUrl);
+});
+
+/** 获取缓存统计信息 */
+ipcMain.handle('app:images:cache:stats', () => {
+  return getCacheStats();
+});
+
+// ===== 声音录制 =====
+
+/** 列出录音文件 */
+ipcMain.handle('app:audioRecorder:list', () => {
+  return listRecordings();
+});
+
+/** 保存录音 base64 → 文件 */
+ipcMain.handle('app:audioRecorder:save', (_e, base64: string, ext: string) => {
+  return saveRecording(String(base64), String(ext));
+});
+
+/** ffprobe 取音频时长 */
+ipcMain.handle('app:audioRecorder:duration', async (_e, filePath: string) => {
+  return getDuration(String(filePath));
+});
+
+/** 裁剪/降噪处理 */
+ipcMain.handle(
+  'app:audioRecorder:process',
+  async (
+    _e,
+    filePath: string,
+    options: { trimStart?: number; trimEnd?: number; denoise?: boolean },
+  ) => {
+    return processRecording(String(filePath), options);
+  },
+);
+
+/** 导出 mp3/wav */
+ipcMain.handle(
+  'app:audioRecorder:export',
+  async (
+    _e,
+    filePath: string,
+    outPath: string,
+    options: { format: 'mp3' | 'wav'; trimStart?: number; trimEnd?: number; denoise?: boolean },
+  ) => {
+    return exportRecording(String(filePath), String(outPath), options);
+  },
+);
+
+/** 删除录音 */
+ipcMain.handle('app:audioRecorder:delete', (_e, filePath: string) => {
+  return deleteRecording(String(filePath));
+});
+
+/** 重命名录音 */
+ipcMain.handle('app:audioRecorder:rename', (_e, filePath: string, name: string) => {
+  return renameRecording(String(filePath), String(name));
+});
+
+/** demucs 占位检查 */
+ipcMain.handle('app:audioRecorder:demucsCheck', () => {
+  return checkDemucsInstalled();
+});
+
+// ===== 内心独白音效 =====
+
+ipcMain.handle('app:innerMonologue:apply', async (_e, inputPath: string, force?: boolean) => {
+  return applyInnerMonologueEffect(String(inputPath), force === true);
+});
 }

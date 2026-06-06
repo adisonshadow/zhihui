@@ -5,24 +5,29 @@
  * 见功能文档 06 § 12
  */
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Card, Typography, Button, Segmented, Flex, Tag, Divider, Switch, Image, App, Tooltip } from 'antd';
-import { CommentOutlined, ImportOutlined } from '@ant-design/icons';
+import { Card, Typography, Button, Segmented, Flex, Tag, Divider, Image, App, Tooltip, Splitter } from 'antd';
+import { CommentOutlined, ImportOutlined, PlusOutlined } from '@ant-design/icons';
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
-import { AIChat, MAIN_AGENT_KEY } from '@/components/AIChat';
-import { registerFunctionCall, unregisterFunctionCall } from '@/components/AIChat';
+import { Conversations } from '@ant-design/x';
+import type { ConversationItemType } from '@ant-design/x';
+import { AIChat, MAIN_AGENT_KEY, type RefIndicatorType, type AIChatSidePanelHandle } from '@/components/AIChat';
+// ── 新架构废弃：使用 Footer Agent 按钮组替代 senderLabel slot 机制 ──
+// import { registerFunctionCall, unregisterFunctionCall } from '@/components/AIChat';
 import type { AIChatMode, AIChatDrawerSessionSync } from '@/components/AIChat';
 import { YimanGenLoaderOverlay } from '@/components/AIChat/YimanGenLoaderOverlay';
 import { useConfigSubscribe } from '@/contexts/ConfigContext';
 import { formatScriptContextForAI } from '@/types/scriptChat';
 import type { ScriptChatContext } from '@/types/scriptChat';
+import type { ConversationListMetaItem } from '@/components/AIChat/aiChatPanelHandles';
+import { screenwriterSidebarGroup } from '@/novelDesign/components/ScreenwriterHistoryConversations';
 import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
 
-const { Title, Text } = Typography;
+const { Text } = Typography;
 
+// BottomSender 演示槽位用（与注释掉的 registerFunctionCall 名称对齐）
 const PREVIEW_TEST_FUNCTION_NAME = 'generate_preview_image';
 const PREVIEW_MODIFY_FUNCTION_NAME = 'modify_preview_image';
-/** Sender 槽位展示用语义化文案（与 registerFunctionCall.senderLabel 一致） */
 const PREVIEW_TEST_FUNCTION_SENDER_LABEL = '生成预览图';
 const PREVIEW_MODIFY_FUNCTION_SENDER_LABEL = '按参考图改画';
 
@@ -37,29 +42,31 @@ function resolvedAspectToCss(ratio: string): string {
   return '1 / 1';
 }
 
+/** 预览左侧 Conversations：置顶优先，其余按活跃时间倒序 */
+function sortPreviewRailConvMeta(items: ConversationListMetaItem[]): ConversationListMetaItem[] {
+  return [...items].sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    const ta = typeof a.lastActive === 'number' && Number.isFinite(a.lastActive) ? a.lastActive : 0;
+    const tb = typeof b.lastActive === 'number' && Number.isFinite(b.lastActive) ? b.lastActive : 0;
+    return tb - ta;
+  });
+}
+
 /** 模拟剧本上下文（预览用） */
-const MOCK_SCRIPT_CONTEXTS: ScriptChatContext[] = [
+const MOCK_SCRIPT_CONTEXTS: any[] = [
   {
     id: 'ctx_1',
-    type: 'episode',
-    description: '第1集：开端',
-    episode: { title: '开端', summary: '主角发现神秘信件', characterRefs: [] },
-    epIndex: 0,
+    type: 'props',
+    description: '附加物',
+    item: ['樱花书', '喷泉', '孔雀'],
   },
   {
     id: 'ctx_2',
-    type: 'scene',
-    description: '分镜1：客厅',
-    scene: {
-      title: '客厅',
-      summary: '两人对话',
-      location: '客厅',
-      timeOfDay: '傍晚',
-      atmosphere: '紧张',
-      dramaTags: ['conflict'],
-    },
-    epIndex: 0,
-    sceneIndex: 0,
+    type: 'props',
+    description: '环境',
+    item: ['微风', '阳光'],
+    epIndex: 12,
+    sceneIndex: 27,
   },
 ];
 
@@ -71,10 +78,10 @@ const MODE_OPTIONS: Array<{ label: string; value: AIChatMode }> = [
 ];
 
 const MODE_DESC: Record<AIChatMode, string> = {
-  SidePanel: '侧边栏布局，占据当前容器全部高度，适合设计器侧栏、详情页等分镜。',
+  SidePanel: '侧边栏布局，占据容器全部高度。',
   FloatingBottom: '固定悬浮在视口右下角，点击气泡按钮展开/收起面板，适合全局入口。',
   Popover: '以任意触发元素打开 Popover 对话框，适合嵌入工具栏或按钮旁。',
-  BottomSender: '仅底部输入条（Sender），无对话列表；适合画布底部嵌入。本页附带占位图与测试 Function Call 槽位演示。',
+  BottomSender: '画布 + 固定在视口底部的仅 Sender',
 };
 
 function AIChatPreviewContent() {
@@ -83,10 +90,52 @@ function AIChatPreviewContent() {
   const models = config?.models ?? [];
   const [mode, setMode] = useState<AIChatMode>('SidePanel');
   const [agentKey, setAgentKey] = useState(MAIN_AGENT_KEY);
-  const [enableReasoning, setEnableReasoning] = useState(false);
+  const [enableReasoning] = useState(false);
   const [contextTags, setContextTags] = useState<Array<{ id: string; description: string }>>([]);
+  /** 预览页：写入 AIChat RefIndicator 条（与 contextTags 独立） */
+  const [refIndicatorPreviewItems, setRefIndicatorPreviewItems] = useState<RefIndicatorType[]>([]);
+  const chatRef = useRef<AIChatSidePanelHandle | null>(null);
+
+  /** SidePanel：与 AIChat Core 会话列表同步，供左侧常驻 Conversations（对齐 demo.tsx / ScreenwriterAIDrawPage） */
+  const [previewConvRail, setPreviewConvRail] = useState<{
+    items: ConversationListMetaItem[];
+    activeKey: string | null;
+  }>({ items: [], activeKey: null });
+
+  /**
+   * 切换展示模式时再清空左侧会话预览（仅 UI；与 FloatingBottom/Popover 共用同一 `storageKeySuffix: "preview"`，
+   * 顶栏下拉历史与 SidePanel 数据源一致）。
+   * 注意：**不要在首次挂载时用 [mode] 无条件清空**：子组件会先通过 onConversationListChange 写入列表，
+   * 父级 effect 若在同一轮提交后清空，会把历史记录整块抹掉（表现为「永远看不到历史」）。
+   */
+  const previewModePrevRef = useRef<AIChatMode | undefined>(undefined);
+  useEffect(() => {
+    const prev = previewModePrevRef.current;
+    if (prev !== undefined && prev !== mode) {
+      setPreviewConvRail({ items: [], activeKey: null });
+    }
+    previewModePrevRef.current = mode;
+  }, [mode]);
+
+  const previewRailConversationRows = useMemo((): ConversationItemType[] => {
+    const sorted = sortPreviewRailConvMeta(previewConvRail.items);
+    const now = Date.now();
+    return sorted.map((it) => ({
+      key: it.key,
+      label: (
+        <Typography.Text ellipsis style={{ marginBottom: 0, display: 'block', color: 'inherit' }}>
+          {it.label}
+        </Typography.Text>
+      ),
+      group: it.pinned ? '置顶' : screenwriterSidebarGroup(
+        typeof it.lastActive === 'number' && Number.isFinite(it.lastActive) ? it.lastActive : 0,
+        now,
+      ),
+    }));
+  }, [previewConvRail.items]);
 
   const [previewDrawerImage, setPreviewDrawerImage] = useState<string | undefined>();
+  // ── 新架构：SKILL-SLOT 已废弃，保留状态为 false（Footer Agent 按钮组替代） ──
   const [showPreviewFcSlot, setShowPreviewFcSlot] = useState(false);
   const [showModifyFcSlot, setShowModifyFcSlot] = useState(false);
   const [drawerSession, setDrawerSession] = useState<AIChatDrawerSessionSync | null>(null);
@@ -94,7 +143,8 @@ function AIChatPreviewContent() {
   drawerSessionRef.current = drawerSession;
   const prevRequestingRef = useRef(false);
 
-  useEffect(() => {
+  // ── 新架构废弃：使用 Footer Agent 按钮组替代 senderLabel slot 机制 ──
+  /* useEffect(() => {
     registerFunctionCall({
       name: PREVIEW_TEST_FUNCTION_NAME,
       senderLabel: PREVIEW_TEST_FUNCTION_SENDER_LABEL,
@@ -121,7 +171,7 @@ function AIChatPreviewContent() {
       unregisterFunctionCall(PREVIEW_TEST_FUNCTION_NAME);
       unregisterFunctionCall(PREVIEW_MODIFY_FUNCTION_NAME);
     };
-  }, []);
+  }, []); */
 
   const onLastDrawerImageChange = useCallback((src: string | undefined) => {
     setPreviewDrawerImage(src);
@@ -216,41 +266,71 @@ function AIChatPreviewContent() {
     });
   }, []);
 
-  const writeBackActions = (lastContent: string) => (
-    <>
-      <Button size="small" onClick={() => alert(`写回概要（预览）：${lastContent.slice(0, 50)}…`)}>
-        写回概要
-      </Button>
-      <Button size="small" onClick={() => alert(`写回剧本（预览）：${lastContent.slice(0, 50)}…`)}>
-        写回剧本
-      </Button>
-    </>
-  );
+  const addMockToRefIndicator = useCallback((ctx: ScriptChatContext) => {
+    const key = `preview_ref_${ctx.id}`;
+    setRefIndicatorPreviewItems((prev) => {
+      if (prev.some((x) => x.key === key)) return prev;
+      return [
+        ...prev,
+        {
+          key,
+          description: ctx.description,
+          content: ctx.description,
+          icon: <i className='iconfont'>&#xe715;</i>,
+        },
+      ];
+    });
+  }, []);
 
+  useEffect(() => {
+    if (mode === 'BottomSender') return;
+    chatRef.current?.setRefIndicator(refIndicatorPreviewItems);
+  }, [mode, refIndicatorPreviewItems]);
+
+  // const writeBackActions = (lastContent: string) => (
+  //   <>
+  //     <Button size="small" onClick={() => alert(`写回概要（预览）：${lastContent.slice(0, 50)}…`)}>
+  //       写回概要
+  //     </Button>
+  //     <Button size="small" onClick={() => alert(`写回剧本（预览）：${lastContent.slice(0, 50)}…`)}>
+  //       写回剧本
+  //     </Button>
+  //   </>
+  // );
+
+  /* commonProps 是 AIChat 组件的通用属性，用于配置 AIChat 组件的通用属性 */
   const commonProps = {
-    agentKey: mode === 'BottomSender' ? 'drawer' : agentKey,
-    onAgentChange: mode === 'BottomSender' ? undefined : setAgentKey,
-    allowAgentSwitch: mode !== 'BottomSender',
-    enableReasoning,
-    models,
-    projectPrompt: '预览模式：无项目级自定义提示词',
-    contextBlocks: [
-      { label: '当前概要', content: '主角收到神秘信件，决定追查真相。' },
-      { label: '当前剧本', content: '分镜1 客厅\n小明：这是什么？\n小红：我也不知道，打开看看。' },
+    agentKey, // 指定 Agent 类型
+    onAgentChange: setAgentKey, // 切换 Agent 类型
+    allowAgentSwitch: true,
+    enableReasoning, // 是否启用推理内容展示
+    models, // 模型列表
+    projectPrompt: '国风修仙漫剧创作项目', // 项目级提示词
+    contextBlocks: [ // 上下文 Preset
+      { label: '绘图风格设定', content: '国风修仙动漫风格，注重画面细节和色彩搭配，符合国风修仙动漫的审美标准。' },
     ],
-    contextTags,
-    onRemoveContextTag: handleRemoveContext,
+    contextTags, // 上下文 Tags
+    onRemoveContextTag: handleRemoveContext, // 移除上下文 Tags
+    /** 格式化上下文 Tags 为 AI 可读文本 */
     formatContextTags: (tags: typeof contextTags) => {
       const ctx = MOCK_SCRIPT_CONTEXTS.filter((c) => tags.some((t) => t.id === c.id));
       return formatScriptContextForAI(ctx);
     },
-    writeBackActions,
-    senderPlaceholder: mode === 'BottomSender' ? '描述要生成的画面，Enter 发送' : '输入您的需求',
-    storageKeySuffix: `preview-${mode}`,
-    extraSenderSlotConfig: mode === 'BottomSender' ? extraSenderSlotConfig : undefined,
-    onLastDrawerImageChange: mode === 'BottomSender' ? onLastDrawerImageChange : undefined,
-    onDrawerSessionSync: mode === 'BottomSender' ? onDrawerSessionSync : undefined,
-    canvasAspectRatio: mode === 'BottomSender' ? '16:9' : undefined,
+    // writeBackActions, // 写回回调（不同专家不同，如剧本专家：写回概要/剧本），接收最后一条 assistant 内容
+    senderPlaceholder: '输入您的需求', // Sender 占位提示
+    /** 各展示模式共用，使顶栏下拉与会话列表与 SidePanel 读同一套 localStorage */
+    storageKeySuffix: 'preview',
+    /** BottomSender 分栏内仍演示绘图 Sender 槽位（选「绘图」Agent 后生效） */
+    extraSenderSlotConfig: mode === 'BottomSender' ? extraSenderSlotConfig : undefined, // Slot配置
+    onLastDrawerImageChange,
+    onDrawerSessionSync,
+    canvasAspectRatio: '16:9',
+    ...(mode === 'SidePanel' ?
+      {
+        sidePanelExternalConversationControl: true as const,
+        onConversationListChange: setPreviewConvRail,
+      } :
+      {}),
   };
 
   const bottomShowPlaceholders =
@@ -268,7 +348,7 @@ function AIChatPreviewContent() {
   return (
     <div
       style={{
-        padding: 24,
+        padding: 0,
         maxWidth: 960,
         margin: '0 auto',
         height: 'calc(100vh - 112px)',
@@ -277,40 +357,21 @@ function AIChatPreviewContent() {
         minHeight: 0,
       }}
     >
-      <Flex justify="space-between" align="flex-start" style={{ flexShrink: 0, marginBottom: 12 }}>
-        <div>
-          <Title level={4} style={{ margin: 0 }}>AI 对话组件预览</Title>
-          <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-            {MODE_DESC[mode]}
-          </Text>
-        </div>
-        <Tag color="blue" style={{ marginTop: 4 }}>DEV only</Tag>
-      </Flex>
 
       <Flex align="center" gap={16} style={{ flexShrink: 0, marginBottom: 16 }} wrap>
         <Flex align="center" gap={8}>
-          <Text type="secondary" style={{ fontSize: 13 }}>展示模式：</Text>
+          <Text type="secondary" style={{ fontSize: 13 }}>模式：</Text>
           <Segmented
             options={MODE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
             value={mode}
             onChange={(v) => {
               setMode(v as AIChatMode);
-              if (v === 'BottomSender') {
-                setPreviewDrawerImage(undefined);
-                setDrawerSession(null);
-                setShowModifyFcSlot(false);
-              }
             }}
           />
         </Flex>
-        {mode !== 'BottomSender' && (
-          <Flex align="center" gap={8}>
-            <Switch size="small" checked={enableReasoning} onChange={setEnableReasoning} />
-            <Text type="secondary" style={{ fontSize: 13 }}>
-              推理内容展示（适用于火山引擎 doubao-seed 等推理模型）
-            </Text>
-          </Flex>
-        )}
+        <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+            {MODE_DESC[mode]}
+          </Text>
       </Flex>
 
       <Flex
@@ -320,7 +381,7 @@ function AIChatPreviewContent() {
         style={{ flexShrink: 0, marginBottom: 16 }}
       >
         <Text type="secondary" style={{ fontSize: 13, flexShrink: 0 }}>
-          剧本上下文（加入 Sender）：
+          添加到Sender：
         </Text>
         <Flex gap={8} wrap>
           {MOCK_SCRIPT_CONTEXTS.map((c) => {
@@ -340,9 +401,106 @@ function AIChatPreviewContent() {
         </Flex>
       </Flex>
 
+      <Flex
+        align="center"
+        gap={12}
+        wrap
+        style={{ flexShrink: 0, marginBottom: 16 }}
+      >
+
+        <Text type="secondary" style={{ fontSize: 13, flexShrink: 0 }}>
+          添加到RefIndicator：
+        </Text>
+        <Flex gap={8} wrap>
+          {MOCK_SCRIPT_CONTEXTS.map((c) => {
+            const key = `preview_ref_${c.id}`;
+            const added = refIndicatorPreviewItems.some((x) => x.key === key);
+            return (
+              <Button
+                key={c.id}
+                size="small"
+                type={added ? 'default' : 'dashed'}
+                disabled={added}
+                onClick={() => addMockToRefIndicator(c)}
+              >
+                {added ? `已加入：${c.description}` : `加入「${c.description}」`}
+              </Button>
+            );
+          })}
+        </Flex>
+      </Flex>
+
       {mode === 'SidePanel' && (
-        <Card style={{ flex: 1, minHeight: 0 }} styles={{ body: { height: '100%', padding: 0 } }}>
-          <AIChat mode="SidePanel" {...commonProps} />
+        <Card
+          style={{ flex: 1, minHeight: 0 }}
+          styles={{
+            body: {
+              height: '100%',
+              padding: 0,
+              minHeight: 0,
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column',
+            },
+          }}
+        >
+          <Splitter orientation="horizontal" style={{ flex: 1, minHeight: 0, height: '100%' }}>
+            <Splitter.Panel defaultSize={236} min={176} max={380}>
+              <div
+                style={{
+                  height: '100%',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  borderRight: '1px solid rgba(255,255,255,0.08)',
+                }}
+              >
+                <div style={{ padding: 10, flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                  <Button
+                    block
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => chatRef.current?.newConversation()}
+                  >
+                    新建对话
+                  </Button>
+                </div>
+                <Typography.Text type="secondary" style={{ padding: '8px 14px 2px', fontSize: 12, flexShrink: 0 }}>
+                  历史对话（本地会话）
+                </Typography.Text>
+                <Conversations
+                  groupable
+                  items={previewRailConversationRows}
+                  activeKey={
+                    previewConvRail.activeKey &&
+                    previewRailConversationRows.some((item) => String(item.key) === previewConvRail.activeKey) ?
+                      previewConvRail.activeKey :
+                      undefined
+                  }
+                  onActiveChange={(key) => {
+                    const ks = String(key ?? '');
+                    if (!ks || ks === previewConvRail.activeKey) return;
+                    chatRef.current?.selectConversation(ks);
+                  }}
+                  styles={{
+                    root: {
+                      flex: 1,
+                      minHeight: 0,
+                      overflow: 'auto',
+                      paddingLeft: 6,
+                      paddingRight: 6,
+                      paddingBottom: 8,
+                    },
+                  }}
+                />
+              </div>
+            </Splitter.Panel>
+            <Splitter.Panel defaultSize="70%" min={280}>
+              <div style={{ height: '100%', minHeight: 0 }}>
+                <AIChat ref={chatRef} mode="SidePanel" {...commonProps} />
+              </div>
+            </Splitter.Panel>
+          </Splitter>
         </Card>
       )}
 
@@ -358,6 +516,7 @@ function AIChatPreviewContent() {
             </Text>
           </Card>
           <AIChat
+            ref={chatRef}
             mode="FloatingBottom"
             floatingTitle="AI 助手（预览）"
             floatingPanelWidth={380}
@@ -376,11 +535,12 @@ function AIChatPreviewContent() {
               Popover 模式：点击下方按钮打开对话框。可将触发元素替换为工具栏图标等。
             </Text>
             <AIChat
+              ref={chatRef}
               mode="Popover"
               popoverTitle="AI 助手（预览）"
               popoverWidth={420}
               popoverHeight={540}
-              popoverPlacement="topLeft"
+              popoverPlacement="right"
               popoverTrigger={
                 <Button type="primary" icon={<CommentOutlined />} size="large">
                   打开 AI 对话
@@ -393,28 +553,43 @@ function AIChatPreviewContent() {
       )}
 
       {mode === 'BottomSender' && (
-        <Card
-          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-          styles={{ body: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 16, overflow: 'hidden' } }}
-        >
-          <Text type="secondary" style={{ fontSize: 12, marginBottom: 8, flexShrink: 0 }}>
-            本模式固定为「绘图师」且不可切换 Agent；需先在设置中配置具备绘图能力的模型。向下滚动主区域时，输入条会 sticky 在卡片底部。
-          </Text>
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: 'auto',
-              display: 'flex',
-              flexDirection: 'column',
+        <>
+          <Card
+            style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+            styles={{
+              body: {
+                flex: 1,
+                minHeight: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                padding: 0,
+                overflow: 'hidden',
+              },
             }}
           >
-            <div style={{ flex: '1 0 auto', minHeight: 360, padding: '8px 0 24px' }}>
-              <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginBottom: 12 }}>
-                （主内容区：模拟画布；增高区域用于验证底部 Sender sticky）
+            <div style={{ padding: '10px 16px', flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
+                上方为主内容区（可滚动），底栏为真实{' '}
+                <Typography.Text code style={{ fontSize: 12 }}>AIChat mode=&quot;BottomSender&quot;</Typography.Text>
+                （固定于视口底部）。选「绘图」后演示占位图、预览与添加到附件流程。
+              </Text>
+            </div>
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflow: 'auto',
+                padding: '12px 16px',
+                /** 防止内容被固定在视口底部的 Sender 遮住 */
+                paddingBottom: 220,
+              }}
+            >
+              <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 12, display: 'block', marginBottom: 8 }}>
+                （模拟画布区，可滚动）
               </Text>
               <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>
-                占位与生成图都在主内容区。出图请求中按数量与比例显示占位与加载动画；生成结果右上角可将图加入对话框附件并插入改图 Function Call 槽位；改图请求中在原图上叠加载动画。
+                Sender 独立于本卡片区；DOM 可查 class{' '}
+                <Typography.Text code style={{ fontSize: 12 }}>aichat-bottom-sender-container</Typography.Text>。
               </Text>
               {bottomShowPlaceholders && (
                 <div
@@ -485,33 +660,13 @@ function AIChatPreviewContent() {
                   </div>
                 </div> :
                 null}
-              {!bottomShowPlaceholders && !previewDrawerImage ?
-                <button
-                  type="button"
-                  onClick={() => setShowPreviewFcSlot(true)}
-                  style={{
-                    maxWidth: BOTTOM_PREVIEW_MAX_W,
-                    width: '100%',
-                    minHeight: 140,
-                    borderRadius: 8,
-                    border: '1px dashed rgba(255,255,255,0.25)',
-                    background: 'rgba(255,255,255,0.04)',
-                    color: 'rgba(255,255,255,0.45)',
-                    fontSize: 13,
-                    cursor: 'pointer',
-                    padding: 16,
-                    textAlign: 'left',
-                  }}
-                >
-                  空白占位（点击后在<strong style={{ color: 'rgba(255,255,255,0.75)' }}>底部 Sender</strong>内显示槽位「
-                  <strong style={{ color: 'rgba(120,180,255,0.95)' }}>{PREVIEW_TEST_FUNCTION_SENDER_LABEL}</strong>
-                  」，悬停槽位可看 tool 名 <code style={{ color: 'rgba(120,180,255,0.75)' }}>{PREVIEW_TEST_FUNCTION_NAME}</code>）
-                </button> :
-                null}
             </div>
-            <AIChat mode="BottomSender" {...commonProps} />
-          </div>
-        </Card>
+          </Card>
+          {/*
+            BottomSender 不转发 ref → chatRef.setRefIndicator 无效；画布与底栏并排由页面布局承载。
+           */}
+          <AIChat mode="BottomSender" {...commonProps} />
+        </>
       )}
     </div>
   );

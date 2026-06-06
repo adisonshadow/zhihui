@@ -1,9 +1,15 @@
 /**
  * 绘图师 Agent 提示词模版与 Sender slot 配置
  * 根据绘图类型（通用、背景、道具、角色/动物）调整提示词
+ *
+ * 新架构：
+ * - 核心绘图能力注册为多模态 Tool（draw_tool）
+ * - 同时注册为可选 Agent 包装（multimodal 类型），供 exposedMultimodalAgents 暴露使用
+ * - 保持向后兼容：现有 exports 不变
  */
 import type { SlotConfigType } from '@ant-design/x/lib/sender/interface';
 import type { AgentPrompts } from '../types';
+import { registerMultiModalTool, registerSkillAgent } from '../registryTypes';
 
 export const DRAWER_SLOT_KEY = 'drawer_type';
 
@@ -61,3 +67,69 @@ export function parseDrawerTypeFromSlotConfig(slotConfig?: SlotConfigType[]): Dr
   const label = (slot as { value?: string })?.value;
   return (DRAWER_TYPE_OPTIONS.find((o) => o.label === label)?.value ?? 'general') as DrawerType;
 }
+
+// ── 新架构：多模态 Tool 注册 ──
+const DRAW_TOOL_DRAWER_CONFIG = {
+  showPanel: true,
+  fields: [
+    {
+      name: 'imageCount',
+      label: '出图数量',
+      type: 'number' as const,
+      defaultValue: 1,
+      min: 1,
+      max: 4,
+    },
+    {
+      name: 'aspectRatio',
+      label: '图比例',
+      type: 'select' as const,
+      options: [
+        { value: '1:1', label: '1:1' },
+        { value: '16:9', label: '16:9' },
+        { value: '9:16', label: '9:16' },
+        { value: '3:4', label: '3:4' },
+        { value: '4:3', label: '4:3' },
+      ],
+      defaultValue: '1:1',
+    },
+    {
+      name: 'style',
+      label: '风格',
+      type: 'select' as const,
+      options: [
+        { value: 'general', label: '通用' },
+        { value: 'realistic', label: '写实' },
+        { value: 'anime', label: '动漫' },
+        { value: 'oil', label: '油画' },
+      ],
+      defaultValue: 'general',
+    },
+  ],
+};
+
+registerMultiModalTool({
+  toolId: 'draw_tool',
+  displayName: '绘图',
+  functionCallName: 'generate_images',
+  description: '根据文本提示词生成图片，支持多种比例和风格',
+  capabilityTag: 'draw',
+  defaultUIConfig: DRAW_TOOL_DRAWER_CONFIG,
+  defaultPlaceholderStyle: 'skeleton',
+  resultRenderType: 'image',
+  inputType: 'text',
+  outputType: 'image',
+});
+
+registerSkillAgent({
+  agentId: 'draw_tool',
+  agentName: '绘图',
+  agentType: 'multimodal',
+  description: '根据文本提示词直接生成图片，支持比例、数量、风格设置',
+  skillPromptTemplate: '',
+  supportedModels: ['draw'],
+  uiConfig: DRAW_TOOL_DRAWER_CONFIG,
+  allowedTools: ['generate_images'],
+  inputType: 'text',
+  outputType: 'image',
+});

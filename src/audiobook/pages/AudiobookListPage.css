@@ -1,0 +1,101 @@
+.screenwriter-list-cards, .screenwriter-list-table {
+  overflow: auto;
+  height: calc(100vh - 78px - 2 * 24px - 32px);
+}
+
+.ant-input-outlined{
+  background-color: transparent !important;
+}
+
+/* 炫光按钮：渐变描边 + 底部光晕，用于 Ant Design Button */
+.yiman-glow-btn-wrap {
+  --yiman-glow-m: 0.75rem;
+  --yiman-glow-red: #ff6565;
+  --yiman-glow-pink: #ff64f9;
+  --yiman-glow-purple: #6b5fff;
+  --yiman-glow-blue: #4d8aff;
+  --yiman-glow-green: #5bff89;
+  --yiman-glow-yellow: #ffee55;
+  --yiman-glow-orange: #ff6d1b;
+  --yiman-glow-gradient: linear-gradient(
+    90deg,
+    var(--yiman-glow-orange),
+    var(--yiman-glow-yellow),
+    var(--yiman-glow-green),
+    var(--yiman-glow-blue),
+    var(--yiman-glow-purple),
+    var(--yiman-glow-pink),
+    var(--yiman-glow-red)
+  );
+
+  position: relative;
+  display: inline-block;
+  isolation: isolate;
+}
+
+.yiman-glow-btn-wrap::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -18%;
+  z-index: 0;
+  width: 62%;
+  height: 32%;
+  transform: translateX(-50%);
+  background: var(--yiman-glow-gradient);
+  background-size: 200%;
+  filter: blur(calc(0.8 * var(--yiman-glow-m)));
+  animation: yiman-glow-btn-shift 2s infinite linear;
+  pointer-events: none;
+}
+
+.yiman-glow-btn-wrap:hover::before {
+  animation-duration: 0.5s;
+}
+
+.yiman-glow-btn.ant-btn {
+  position: relative;
+  z-index: 1;
+  /* border: 2px solid transparent !important; */
+  /* color: #f3f3f3 !important; */
+  /* box-shadow: none !important; */
+  /* background-color: transparent !important; */
+  /* background-image:
+    linear-gradient(#121213, #121213),
+    linear-gradient(#121213 50%, rgba(18, 18, 19, 0.6) 80%, rgba(18, 18, 19, 0)),
+    var(--yiman-glow-gradient) !important; */
+  background-origin: border-box !important;
+  background-clip: padding-box, border-box, border-box !important;
+  background-size: 200% !important;
+  animation: yiman-glow-btn-shift 2s infinite linear;
+}
+
+.yiman-glow-btn.ant-btn:not(:disabled):hover,
+.yiman-glow-btn.ant-btn:not(:disabled):focus-visible {
+  color: #f3f3f3 !important;
+  border-color: transparent !important;
+  background-color: transparent !important;
+  /* background-image:
+    linear-gradient(#121213, #121213),
+    linear-gradient(#121213 50%, rgba(18, 18, 19, 0.6) 80%, rgba(18, 18, 19, 0)),
+    var(--yiman-glow-gradient) !important; */
+  animation-duration: 0.5s;
+}
+
+.yiman-glow-btn.ant-btn:not(:disabled):active {
+  color: #f3f3f3 !important;
+}
+
+.yiman-glow-btn.ant-btn .ant-btn-icon,
+.yiman-glow-btn.ant-btn .iconfont {
+  color: inherit;
+}
+
+@keyframes yiman-glow-btn-shift {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}

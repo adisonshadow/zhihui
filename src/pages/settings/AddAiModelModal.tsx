@@ -2,18 +2,18 @@
  * 添加 AI 模型：常见模型（能力筛选 + 预设 + 右侧表单）/ 自定义表单
  */
 import { useEffect, useState } from 'react';
-import { Button, Form, Typography } from 'antd';
+import { App, Button, Form, Typography } from 'antd';
 import { AdaptiveModal } from '@/components/antd-plus/AdaptiveModal';
 import { AdaptiveTabs } from '@/components/antd-plus/AdaptiveTabs';
 import type { AIModelConfig } from '@/types/settings';
 import type { ModelPreset } from '@/components/AIChat/constants/modelPresets';
-import { getPresetFormFieldsFromConfig, MODEL_PRESETS } from '@/components/AIChat/constants/modelPresets';
-import { resolveRecommendedVariant } from '@/utils/recommendedModal';
+import { MODEL_PRESETS } from '@/components/AIChat/constants/modelPresets';
 import { findReusableApiKeyForPreset } from '@/utils/vendorApiKey';
 import { ModelCapabilityFilter } from '@/pages/settings/ModelCapabilityFilter';
 import { ModelPresetGrid } from '@/pages/settings/ModelPresetGrid';
 import { ModelPresetQuickForm, type ModelPresetQuickFormValues } from '@/pages/settings/ModelPresetQuickForm';
 import { CustomModelForm, type CustomModelFormValues } from '@/pages/settings/CustomModelForm';
+import { syncPresetModelsFromTags } from '@/utils/presetModelInstances';
 
 const { Text } = Typography;
 
@@ -25,6 +25,7 @@ export interface AddAiModelModalProps {
 }
 
 export function AddAiModelModal({ open, onClose, models, onCommitModels }: AddAiModelModalProps) {
+  const { message } = App.useApp();
   const [tab, setTab] = useState<string>('preset');
   const [capabilityFilterKeys, setCapabilityFilterKeys] = useState<string[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<ModelPreset | null>(null);
@@ -52,19 +53,13 @@ export function AddAiModelModal({ open, onClose, models, onCommitModels }: AddAi
     addCustomForm.setFieldsValue({ capabilityKeys: capabilityFilterKeys });
   }, [open, tab, capabilityFilterKeys, addCustomForm]);
 
-  const existingForPreset = selectedPreset
-    ? models.find((m) => m.presetKey === selectedPreset.presetKey)
-    : undefined;
-
   useEffect(() => {
     if (!open || !selectedPreset) return;
     const ex = models.find((m) => m.presetKey === selectedPreset.presetKey);
-    const p = getPresetFormFieldsFromConfig(selectedPreset, ex);
     const reused = ex?.apiKey?.trim() ? ex.apiKey : findReusableApiKeyForPreset(models, selectedPreset);
     presetQuickForm.setFieldsValue({
       name: ex?.name ?? selectedPreset.displayName,
-      modelDisplayName: p.modelDisplayName,
-      primaryVersion: p.primaryVersion,
+      modelDisplayNames: [],
       apiKey: ex?.apiKey ?? reused ?? '',
     });
   }, [open, selectedPreset, models, presetQuickForm]);
@@ -72,12 +67,10 @@ export function AddAiModelModal({ open, onClose, models, onCommitModels }: AddAi
   const handleSelectPreset = (preset: ModelPreset) => {
     setSelectedPreset(preset);
     const ex = models.find((m) => m.presetKey === preset.presetKey);
-    const p = getPresetFormFieldsFromConfig(preset, ex);
     const reused = ex?.apiKey?.trim() ? ex.apiKey : findReusableApiKeyForPreset(models, preset);
     presetQuickForm.setFieldsValue({
       name: ex?.name ?? preset.displayName,
-      modelDisplayName: p.modelDisplayName,
-      primaryVersion: p.primaryVersion,
+      modelDisplayNames: [],
       apiKey: ex?.apiKey ?? reused ?? '',
     });
   };
@@ -86,39 +79,35 @@ export function AddAiModelModal({ open, onClose, models, onCommitModels }: AddAi
     if (!selectedPreset) return;
     try {
       const values = await presetQuickForm.validateFields();
-      const existing = models.find((m) => m.presetKey === selectedPreset.presetKey);
-      const id = existing?.id ?? `m_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-      const md = (values.modelDisplayName ?? '').trim();
-      const pv = (values.primaryVersion ?? '').trim();
-      const variant = resolveRecommendedVariant(selectedPreset, md, pv);
-      const capabilityKeys =
-        variant?.abilityTags?.length
-          ? [...variant.abilityTags]
-          : existing?.capabilityKeys?.length
-            ? [...existing.capabilityKeys]
-            : [...selectedPreset.capabilityKeys];
-      const apiUrl = variant?.baseUrl?.trim()
-        ? variant.baseUrl.trim()
-        : existing?.apiUrl ?? selectedPreset.apiUrl;
-      const nextModel: AIModelConfig = {
-        id,
-        name: values.name?.trim() || selectedPreset.displayName,
-        provider: selectedPreset.provider,
-        apiUrl,
-        apiKey: selectedPreset.isLocal ? '' : (values.apiKey ?? '').trim(),
-        capabilityKeys,
-        presetKey: selectedPreset.presetKey,
-        isLocal: selectedPreset.isLocal,
-      };
-      if (selectedPreset.vendorKey) nextModel.vendorKey = selectedPreset.vendorKey;
-      if (md) nextModel.modelDisplayName = md;
-      if (pv) nextModel.primaryVersion = pv;
-      const nextModels = existing
-        ? models.map((m) => (m.id === existing.id ? nextModel : m))
-        : [...models, nextModel];
-      const ok = await onCommitModels(nextModels, existing ? '已保存修改' : '已添加模型');
+      const tags = (values.modelDisplayNames ?? []).map((x) => String(x).trim()).filter(Boolean);
+      const sharedName = (values.name ?? '').trim() || selectedPreset.displayName;
+      const apiKey = (values.apiKey ?? '').trim();
+      const { nextModels, added, skipped } = syncPresetModelsFromTags({
+        preset: selectedPreset,
+        allModels: models,
+        tags,
+        apiKey,
+        sharedName,
+        mode: 'append',
+      });
+      let patchedModels = nextModels;
+      if (selectedPreset.presetKey === 'minimax_speech') {
+        const gid = (values.minimaxGroupId ?? '').trim();
+        patchedModels = nextModels.map((m) =>
+          m.presetKey === 'minimax_speech' ?
+            { ...m, minimaxGroupId: gid || undefined }
+          : m,
+        );
+      }
+      if (skipped > 0) {
+        message.warning(`已跳过 ${skipped} 个重复模型 ID（与已有实例相同）`);
+      }
+      const ok = await onCommitModels(
+        patchedModels,
+        added > 0 ? `已添加 ${added} 个模型实例` : skipped > 0 ? '未新增实例' : '已保存',
+      );
       if (ok) {
-        presetQuickForm.resetFields();
+        presetQuickForm.setFieldsValue({ modelDisplayNames: [] });
         setSelectedPreset(null);
       }
     } catch {
@@ -193,7 +182,7 @@ export function AddAiModelModal({ open, onClose, models, onCommitModels }: AddAi
         {selectedPreset ? (
           <ModelPresetQuickForm
             preset={selectedPreset}
-            existingModel={existingForPreset}
+            mode="add"
             form={presetQuickForm}
             onSave={() => void handleSavePreset()}
             onCancel={() => {

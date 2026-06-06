@@ -4,6 +4,7 @@ import { defineConfig, build } from 'vite';
 import react from '@vitejs/plugin-react';
 import electron from 'vite-plugin-electron/simple';
 import { volcTosDevFetchPlugin } from './vite-plugins/volcTosDevFetch';
+import { strudelSamplerDevPlugin } from './vite-plugins/strudelSamplerDev';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => {
@@ -30,10 +31,23 @@ export default defineConfig(({ command }) => {
       alias: {
         '@': path.join(__dirname, 'src'),
       },
+      // CodeMirror 核心包须单实例，否则主题/语法扩展的 facet 与编辑器视图不匹配，
+      // 会导致 @uiw 主题（basicDark / vscodeDark）静默失效、行号区回退为默认 light。
+      dedupe: [
+        '@codemirror/state',
+        '@codemirror/view',
+        '@codemirror/language',
+        '@codemirror/commands',
+        '@codemirror/autocomplete',
+        '@codemirror/search',
+        '@codemirror/lint',
+        '@lezer/common',
+        '@lezer/highlight',
+      ],
     },
     plugins: [
       react(),
-      ...(command === 'serve' ? [volcTosDevFetchPlugin()] : []),
+      ...(command === 'serve' ? [volcTosDevFetchPlugin(), strudelSamplerDevPlugin()] : []),
       electron({
         main: {
           entry: 'electron/main/index.ts',
@@ -60,7 +74,24 @@ export default defineConfig(({ command }) => {
               minify: isBuild,
               outDir: 'dist-electron/main',
               rollupOptions: {
-                external: ['electron', 'better-sqlite3', 'node:fs', 'node:path', 'node:url', 'node:http', 'node:os', 'node:child_process', 'ffmpeg-static', 'sharp', 'fluent-ffmpeg', 'font-list'],
+                external: [
+                  'electron',
+                  'better-sqlite3',
+                  'ws',
+                  'bufferutil',
+                  'utf-8-validate',
+                  'node:fs',
+                  'node:path',
+                  'node:url',
+                  'node:http',
+                  'node:os',
+                  'node:child_process',
+                  'node:crypto',
+                  'ffmpeg-static',
+                  'sharp',
+                  'fluent-ffmpeg',
+                  'font-list',
+                ],
               },
             },
           },

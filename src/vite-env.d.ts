@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
 
+declare module '*.md?raw' {
+  const content: string;
+  export default content;
+}
+
 declare global {
   interface ProjectAiConfig {
     script_expert_prompt: string | null;
@@ -46,7 +51,10 @@ declare global {
         /** 若路径已存在则返回 `base (1).ext` 形式的不冲突完整路径 */
         getSafeFilePath: (fullCandidatePath: string) => Promise<string>;
         writeBase64File: (fullPath: string, base64: string) => Promise<{ ok: boolean; error?: string }>;
+        removePathRecursive: (fullPath: string) => Promise<{ ok: boolean; error?: string }>;
         readFileAsDataUrl: (fullPath: string) => Promise<string | null>;
+        /** UTF-8 文本（有声书参考音色 .txt 文稿） */
+        readUtf8File: (fullPath: string) => Promise<string | null>;
         readImageFileForEditor: (
           fullPath: string
         ) => Promise<
@@ -56,6 +64,11 @@ declare global {
         >;
         getPathForFile: (file: File) => string;
         listMedias: () => Promise<string[]>;
+        getBuiltinPresetVoiceDir: () => Promise<string>;
+        listAudiobookVoiceSamples: (rootDir: string) => Promise<
+          | { ok: true; files: Array<{ relativePath: string; absolutePath: string }> }
+          | { ok: false; error: string }
+        >;
       };
       settings: {
         get: () => Promise<import('@/types/settings').AISettings>;
@@ -231,6 +244,89 @@ declare global {
           data: { script_expert_prompt?: string | null; painting_prompt?: string | null }
         ) => Promise<{ ok: boolean; error?: string }>;
       };
+      /** 小说编剧 / 有声书工作台 SQLite 同步 */
+      novel?: {
+        list: () => Promise<
+          Array<{
+            id: string;
+            title: string;
+            genres: string[];
+            coverDataUrl?: string | null;
+            electronProjectId?: string | null;
+            audiobookEnabled?: boolean;
+            updatedAt: string;
+            createdAt: string;
+          }>
+        >;
+        upsert: (item: {
+          id: string;
+          title: string;
+          genres: string[];
+          coverDataUrl?: string | null;
+          electronProjectId?: string | null;
+          audiobookEnabled?: boolean;
+          createdAt?: string;
+          updatedAt?: string;
+        }) => Promise<unknown>;
+        delete: (id: string) => Promise<{ ok: boolean }>;
+        getEpisodes: (novelId: string) => Promise<
+          Array<{
+            id: string;
+            novelId: string;
+            title: string;
+            episode?: number | null;
+            contentMarkdown: string;
+            scriptJson: string;
+            audiobookJson: string;
+            order: number;
+            updatedAt: string;
+          }>
+        >;
+        getWorkspaceMeta: (novelId: string) => Promise<{
+          novelId: string;
+          title: string;
+          activeEpisodeId: string;
+          remountVersions: Record<string, number>;
+          novelScriptJson?: string;
+          audiobookOutlineVoiceJson?: string;
+          updatedAt: string;
+        } | null>;
+        upsertEpisode: (ep: {
+          id: string;
+          novelId: string;
+          title: string;
+          episode?: number | null;
+          contentMarkdown?: string;
+          scriptJson?: string;
+          audiobookJson?: string;
+          order: number;
+          updatedAt: string;
+        }) => Promise<unknown>;
+        deleteEpisode: (novelId: string, episodeId: string) => Promise<unknown>;
+        saveWorkspaceMeta: (meta: {
+          novelId: string;
+          title?: string;
+          activeEpisodeId: string;
+          remountVersions: Record<string, number>;
+          novelScriptJson?: string;
+          audiobookOutlineVoiceJson?: string;
+          updatedAt: string;
+        }) => Promise<unknown>;
+        replaceAllEpisodes: (
+          novelId: string,
+          episodes: Array<{
+            id: string;
+            novelId: string;
+            title: string;
+            episode?: number | null;
+            contentMarkdown: string;
+            scriptJson?: string;
+            audiobookJson?: string;
+            order: number;
+            updatedAt: string;
+          }>,
+        ) => Promise<unknown>;
+      };
       /** 本地 TTS */
       localTts?: {
         listModels: () => Promise<{
@@ -247,6 +343,52 @@ declare global {
         }) => Promise<
           | { ok: true; audioBase64: string; format: string }
           | { ok: false; message: string }
+        >;
+      };
+      /** Strudel / 通用音频：WAV base64 → MP3 */
+      audio?: {
+        convertWavToMp3: (
+          wavBase64: string,
+          outputPath: string,
+        ) => Promise<{ ok: true; outputPath: string } | { ok: false; error: string }>;
+      };
+      /** 有声书 TTS 片段磁盘缓存 */
+      audiobookTtsCache?: {
+        saveWav: (
+          novelId: string,
+          fileName: string,
+          base64: string,
+        ) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
+        resolvePath: (novelId: string, fileName: string) => Promise<string | null>;
+      };
+      /** 云端 TTS 复刻 voice id 缓存 */
+      voiceId?: {
+        get: (
+          provider: 'minimax' | 'qwen3_tts' | 'cosyvoice',
+          cacheKey: string,
+        ) => Promise<{ voiceId: string; createdAt: string; meta?: Record<string, unknown> } | null>;
+        set: (
+          provider: 'minimax' | 'qwen3_tts' | 'cosyvoice',
+          cacheKey: string,
+          entry: { voiceId: string; createdAt: string; meta?: Record<string, unknown> },
+        ) => Promise<{ ok: true }>;
+        invalidate: (
+          provider: 'minimax' | 'qwen3_tts' | 'cosyvoice',
+          cacheKey: string,
+        ) => Promise<{ ok: true }>;
+      };
+      /** CosyVoice WebSocket 合成 */
+      cosyVoice?: {
+        synthesize: (payload: {
+          apiKey: string;
+          model: string;
+          voiceId: string;
+          text: string;
+          format?: 'mp3' | 'wav' | 'pcm';
+          sampleRate?: number;
+        }) => Promise<
+          | { ok: true; audioBase64: string; format: string }
+          | { ok: false; error: string }
         >;
       };
     };

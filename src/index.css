@@ -31,6 +31,15 @@ body {
   min-height: 100vh;
 }
 
+
+.font-svg-icon {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  fill: currentColor;
+  overflow: hidden;
+}
+
 /* 时间尺不显示滚动条（与 tracks 水平联动，由 tracks 滚动驱动） */
 .timeline-ruler-ticks-wrapper {
   scrollbar-width: none;
@@ -103,4 +112,12 @@ body {
 }
 .form-item-horizontal-not-scale>button{
   margin-top: 0 !important;
+}
+
+.project-card{
+  overflow: visible !important;
+}
+.project-card:hover{
+  z-index: 1000;
+  transform: translateY(3px);
 }

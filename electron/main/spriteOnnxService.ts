@@ -277,11 +277,20 @@ export interface ProcessSpriteOptions {
   debugDir?: string;
 }
 
+/** processSpriteWithOnnx 返回值（含可选封面临时路径 coverPath） */
+export interface ProcessSpriteWithOnnxResult {
+  ok: boolean;
+  path?: string;
+  frames?: SpriteFrameRect[];
+  coverPath?: string;
+  error?: string;
+}
+
 export async function processSpriteWithOnnx(
   projectDir: string,
   relativePath: string,
   options?: ProcessSpriteOptions
-): Promise<{ ok: boolean; path?: string; frames?: SpriteFrameRect[]; error?: string }> {
+): Promise<ProcessSpriteWithOnnxResult> {
   const spacing = options?.spacing ?? 0;
   const mattingModel: MattingModel | string = options?.mattingModel ?? 'rvm';
 

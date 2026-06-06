@@ -5,6 +5,26 @@
 import type { AIModelConfig } from '@/types/settings';
 import { resolveRequestModelId } from '@/utils/aiModelRequestId';
 import type { SceneContentItem } from '@/types/script';
+import type { AudioSegment, Pause } from '@/constants/Audiobook';
+import {
+  buildMimoV25ChatBodyParts,
+  coerceMimoApiAudioFormat,
+  type MimoV25EffectiveModelId,
+} from '@/components/tts/mimoV25TtsBuilder';
+import { enrichMimoAssistantText } from '@/components/tts/mimoV25TextEnrich';
+import type { Character } from '@/constants/Script';
+import {
+  ensureRemoteVoiceIdForTts,
+  invalidateRemoteVoiceIdCache,
+} from '@/components/tts/ensureRemoteVoiceId';
+import {
+  isRemoteVoiceIdStaleError,
+  parseTtsVoiceSourceParams,
+} from '@/components/tts/remoteVoiceIdTypes';
+import { synthesizeQwen3Tts } from '@/components/tts/providers/qwen3TtsSynthesize';
+import { resolveDashscopeSynthModel } from '@/components/tts/providers/dashscopeVoiceEnrollment';
+// CosyVoice 已停用，见 cosyVoiceModelUtils.ts
+// import { ... } from '@/components/tts/cosyVoiceModelUtils';
 
 /** 历史版本剧本项可能持久化此 id，打开 TTS 时映射到当前首个 voice_over 模型 */
 export const LEGACY_LOCAL_MOSS_ENGINE_ID = 'local_moss';
@@ -13,7 +33,9 @@ export type TtsAdapterKind =
   | 'openai_audio_speech'
   | 'generic_post_audio'
   | 'xiaomi_mimo_chat_audio'
-  | 'minimax_t2a_v2';
+  | 'minimax_t2a_v2'
+  | 'qwen3_tts_dashscope';
+  // | 'cosyvoice_dashscope_ws'; // CosyVoice 已停用
 
 export interface TtsEngineOption {
   engineId: string;
@@ -32,6 +54,10 @@ function isMinimaxHost(apiUrl: string): boolean {
   return (apiUrl || '').toLowerCase().includes('minimaxi.com');
 }
 
+function isDashscopeHost(apiUrl: string): boolean {
+  return (apiUrl || '').toLowerCase().includes('dashscope.aliyuncs.com');
+}
+
 /** MiMo：控制台密钥去首尾空白；若用户误把「Bearer xxx」整段粘贴进密钥框则去掉前缀（见平台 OpenAI SDK 与 curl 两种习惯） */
 function normalizeMimoApiKey(raw: string): string {
   let k = (raw ?? '').trim();
@@ -42,25 +68,38 @@ function normalizeMimoApiKey(raw: string): string {
 function inferRemoteAdapter(model: AIModelConfig): TtsAdapterKind {
   const u = (model.apiUrl || '').toLowerCase();
   const p = (model.provider || '').toLowerCase();
+  const slug = (resolveRequestModelId(model) ?? model.model ?? '').toLowerCase();
   if (isXiaomiMimoHost(model.apiUrl)) return 'xiaomi_mimo_chat_audio';
   /** MiniMax 与 OpenAI 兼容网关均常见 /v1，必须先于「含 /v1 即 OpenAI speech」的启发式判断 */
   if (isMinimaxHost(model.apiUrl)) return 'minimax_t2a_v2';
+  if (isDashscopeHost(model.apiUrl) || p.includes('dashscope') || p.includes('alibaba')) {
+    // if (slug.includes('cosyvoice')) return 'cosyvoice_dashscope_ws';
+    if (slug.includes('qwen') && slug.includes('tts')) return 'qwen3_tts_dashscope';
+  }
   if (u.includes('audio/speech')) return 'openai_audio_speech';
   if (u.includes('openai') || p.includes('openai') || u.includes('/v1')) return 'openai_audio_speech';
   return 'generic_post_audio';
 }
 
+/** 将 AIModelConfig 映射为 TtsEngineOption（不按 capability 过滤） */
+export function buildTtsEngineListFromModels(models: AIModelConfig[]): TtsEngineOption[] {
+  return (models ?? []).map((m) => ({
+    engineId: m.id,
+    label: (m.name?.trim() || resolveRequestModelId(m)?.trim() || m.id) as string,
+    isLocal: m.isLocal === true,
+    modelConfig: m,
+    adapterKind: inferRemoteAdapter(m),
+  }));
+}
+
 /** 设置中 tag「生成配音」对应 capability key：voice_over */
 export function buildVoiceOverEngineList(models: AIModelConfig[]): TtsEngineOption[] {
-  return (models ?? [])
-    .filter((m) => (m.capabilityKeys ?? []).includes('voice_over'))
-    .map((m) => ({
-      engineId: m.id,
-      label: (m.name?.trim() || resolveRequestModelId(m)?.trim() || m.id) as string,
-      isLocal: m.isLocal === true,
-      modelConfig: m,
-      adapterKind: inferRemoteAdapter(m),
-    }));
+  return buildTtsEngineListFromModels(models).filter((e) => {
+    // CosyVoice 预设已注释，旧配置中的 cosyvoice 实例也不进入配音列表
+    const slug = (resolveRequestModelId(e.modelConfig!) ?? '').toLowerCase();
+    if (slug.includes('cosyvoice')) return false;
+    return (e.modelConfig?.capabilityKeys ?? []).includes('voice_over');
+  });
 }
 
 export function getEngineById(models: AIModelConfig[], engineId: string): TtsEngineOption | undefined {
@@ -77,14 +116,19 @@ export function resolveVoiceOverEngineId(persisted: string | undefined, models: 
   return list[0].id;
 }
 
-export function defaultParamsForAdapter(kind: TtsAdapterKind): Record<string, unknown> {
+export function defaultParamsForAdapter(
+  kind: TtsAdapterKind,
+  model?: AIModelConfig,
+): Record<string, unknown> {
   switch (kind) {
     case 'xiaomi_mimo_chat_audio':
-      return { voice: 'default_zh', format: 'mp3', mimoStyleRole: '' };
+      /** V2.5 预置兜底「茉莉」（中文知性旁白）；有声书可走克隆自动覆盖 voice */
+      return { voice: '茉莉', format: 'mp3', mimoStyleRole: '', ttsTone: '' };
     case 'minimax_t2a_v2':
       /** 与官方示例一致；voice 存 voice_id（见 platform.minimaxi.com speech-t2a-http） */
       return {
         voice: 'male-qn-qingse',
+        ttsVoiceSource: 'preset',
         speed: 1,
         vol: 1,
         pitch: 0,
@@ -95,6 +139,13 @@ export function defaultParamsForAdapter(kind: TtsAdapterKind): Record<string, un
         minimax_channel: 1,
         subtitle_enable: false,
       };
+    case 'qwen3_tts_dashscope':
+      return {
+        voice: 'Cherry',
+        ttsVoiceSource: 'preset',
+        qwen_language_type: 'Chinese',
+      };
+    // case 'cosyvoice_dashscope_ws': { ... } // CosyVoice 已停用
     case 'openai_audio_speech':
       return { speed: 1, voice: 'alloy' };
     case 'generic_post_audio':
@@ -108,7 +159,7 @@ export function mergeParamsForItem(
   engine: TtsEngineOption,
   characters: { id: string; tts_voice?: string | null; tts_speed?: number | null }[]
 ): Record<string, unknown> {
-  const defaults = defaultParamsForAdapter(engine.adapterKind);
+  const defaults = defaultParamsForAdapter(engine.adapterKind, engine.modelConfig);
   const saved = item.tts?.engineId === engine.engineId && item.tts.params ? { ...item.tts.params } : {};
   const merged = { ...defaults, ...saved };
   if (item.type === 'dialogue' && item.speaker) {
@@ -137,13 +188,19 @@ export function mergeParamsForItem(
     merged.emotion = item.emotion;
   }
   if (engine.adapterKind === 'xiaomi_mimo_chat_audio') {
-    if (!(typeof merged.mimoStyleRole === 'string' && merged.mimoStyleRole.trim())) {
-      if (item.type === 'narration') {
-        merged.mimoStyleRole = item.narratorType ?? '全知';
-      } else if (item.type === 'dialogue' && item.speaker) {
-        const nm = characters.find((c) => c.id === item.speaker)?.name?.trim();
-        if (nm) merged.mimoStyleRole = nm;
-      }
+    let roleHint = '';
+    if (typeof merged.mimoStyleRole === 'string' && merged.mimoStyleRole.trim()) {
+      roleHint = merged.mimoStyleRole.trim();
+    } else if (item.type === 'narration') {
+      roleHint = item.narratorType ?? '全知';
+    } else if (item.type === 'dialogue' && item.speaker) {
+      roleHint = characters.find((c) => c.id === item.speaker)?.name?.trim() ?? '';
+    }
+    if (!(typeof merged.mimoStyleRole === 'string' && merged.mimoStyleRole.trim()) && roleHint) {
+      merged.mimoStyleRole = roleHint;
+    }
+    if (!(typeof merged.ttsTone === 'string' && merged.ttsTone.trim()) && merged.mimoStyleRole) {
+      merged.ttsTone = String(merged.mimoStyleRole);
     }
   }
   return merged;
@@ -287,32 +344,7 @@ function parseMinimaxT2aJson(
   return { ok: true, hex: hex.trim(), format: fmt };
 }
 
-/** 小米开放平台强烈建议的系统提示（见首次调用 / 模型说明）；与官方示例一致为英文日期句式 */
-function buildMimoRecommendedSystemContent(): string {
-  const d = new Date();
-  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
-  const months = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-  ] as const;
-  const weekday = weekdays[d.getDay()];
-  const month = months[d.getMonth()];
-  const day = d.getDate();
-  const year = d.getFullYear();
-  return `You are MiMo, an AI assistant developed by Xiaomi. Today is date: ${weekday}, ${month} ${day}, ${year}. Your knowledge cutoff date is December 2024.`;
-}
-
-/** MiMo：将「角色 + 情绪」写入同一 `<style>…</style>` 前缀（官方 speech-synthesis）；若正文已以 `<style>` 开头则不再重复添加 */
+/** @deprecated MiMo V2.5 改用音频标签，`style` 仅兼容旧会话 */
 export function buildMimoStylePrefixFromParams(params: Record<string, unknown>): string {
   const role = typeof params.mimoStyleRole === 'string' ? params.mimoStyleRole.trim() : '';
   const emo = typeof params.emotion === 'string' ? params.emotion.trim() : '';
@@ -321,21 +353,49 @@ export function buildMimoStylePrefixFromParams(params: Record<string, unknown>):
   return `<style>${parts.join(' ')}</style>`;
 }
 
-/** 最终写入 assistant.content 的字符串（风格标签 + 待合成台词） */
+/** V2.5 assistant 正文：默认自动补上整体风格前缀等；有声书可走 mimoPreformattedAssistant */
 export function buildMimoAssistantContentForTts(text: string, params: Record<string, unknown>): string {
-  const body = (text ?? '').trim();
-  const prefix = buildMimoStylePrefixFromParams(params);
-  if (!prefix) return body;
-  if (/^\s*<style>/i.test(body)) return body;
-  return `${prefix}${body}`;
+  if (params.mimoPreformattedAssistant === true) return (text ?? '').trim();
+
+  const eff =
+    typeof params.mimoEffectiveModelId === 'string' ? params.mimoEffectiveModelId.trim().toLowerCase() : '';
+  const audioTagSupported =
+    eff !== 'mimo-v2.5-tts-voicedesign' && params.mimoAudioTagSupported !== false;
+
+  const toneRaw =
+    typeof params.ttsTone === 'string' && params.ttsTone.trim() ?
+      params.ttsTone.trim()
+    : typeof params.mimoStyleRole === 'string' ?
+      params.mimoStyleRole.trim()
+    : undefined;
+  const speedMul =
+    typeof params.voice_speed_for_enrich_hint === 'number' && !Number.isNaN(params.voice_speed_for_enrich_hint) ?
+      params.voice_speed_for_enrich_hint
+    : undefined;
+  const tone =
+    speedMul ?
+      `${toneRaw ?? ''}${toneRaw?.trim() ? ' ' : ''}语速约×${speedMul.toFixed(2)}`
+    : toneRaw;
+
+  const emotion = typeof params.emotion === 'string' ? params.emotion.trim() : undefined;
+  const pausesRaw = params.mimoPauses ?? params.pauses;
+  const pauses =
+    Array.isArray(pausesRaw) ? (pausesRaw.filter(Boolean) as Pause[]) : undefined;
+
+  return enrichMimoAssistantText({
+    rawText: text ?? '',
+    tone,
+    emotion,
+    pauses,
+    audioTagSupported,
+    autoOverallStyle: params.mimoSkipAutoOverallStyle !== true,
+  }).text;
 }
 
-const MIMO_DEFAULT_USER_PROMPT =
-  '请结合语境与系统设定，朗读下一条 assistant 中的目标文本（可含开头的 <style> 风格标签与舞台说明）。';
-
-/** 小米 MiMo TTS：POST /v1/chat/completions + modalities/audio。
- * 上游对 mimo-v2-tts 返回「messages[0] system role is not allowed for TTS model」——不得使用 role=system；
- * 将官方推荐的身份/日期说明并入 user.content 首段，再接语气引导；合成目标仍在 assistant。 */
+/**
+ * MiMo V2.5：POST /v1/chat/completions；user=导演模式/音色描述；assistant=带标签的合成文本；
+ * V2「不得使用 role=system」的旧约束仍适用。
+ */
 export function buildXiaomiMimoChatTtsRequest(
   model: AIModelConfig,
   text: string,
@@ -343,46 +403,73 @@ export function buildXiaomiMimoChatTtsRequest(
 ): { url: string; headers: Record<string, string>; body: Record<string, unknown> } {
   const base = model.apiUrl.trim().replace(/\/$/, '');
   const url = base.endsWith('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-  const voice = typeof params.voice === 'string' && params.voice.trim() ? params.voice.trim() : 'default_zh';
-  const format =
-    typeof params.format === 'string' && ['mp3', 'wav', 'pcm'].includes(params.format)
-      ? params.format
-      : 'mp3';
-  const modelName = (resolveRequestModelId(model) || 'mimo-v2-tts').trim();
+
+  const p = { ...params };
+  if (typeof p.mimoSystemPrompt === 'string' && p.mimoSystemPrompt.trim()) {
+    /** 极少数旧配置：并入导演块前缀 */
+    const prev = typeof p.mimoDirectorUserContent === 'string' ? p.mimoDirectorUserContent.trim() : '';
+    const blk =
+      prev ? `${prev}\n\n【补充】${p.mimoSystemPrompt.trim()}` : p.mimoSystemPrompt.trim();
+    p.mimoDirectorUserContent = blk;
+  }
+
+  const assistantContent =
+    typeof text === 'string' && p.mimoPreformattedAssistant === true ?
+      text.trim()
+    : buildMimoAssistantContentForTts(text ?? '', p);
+
+  const effParam =
+    typeof p.mimoEffectiveModelId === 'string' && p.mimoEffectiveModelId.trim() ?
+      p.mimoEffectiveModelId.trim()
+    : '';
+
+  const bodyParts = buildMimoV25ChatBodyParts({
+    modelFromSettings: model,
+    assistantContentEnriched: assistantContent,
+    params: p,
+    segment: typeof p.mimoSegment === 'object' && p.mimoSegment ? (p.mimoSegment as AudioSegment) : undefined,
+    scriptCharacter:
+      typeof p.mimoScriptCharacter === 'object' && p.mimoScriptCharacter !== null ?
+        (p.mimoScriptCharacter as Character)
+      : null,
+    effectiveModelId:
+      effParam === 'mimo-v2.5-tts-voiceclone' ||
+      effParam === 'mimo-v2.5-tts-voicedesign' ||
+      effParam === 'mimo-v2.5-tts' ?
+        (effParam as MimoV25EffectiveModelId)
+      : undefined,
+    presetVoiceFallback:
+      typeof p.mimoPresetVoiceFallback === 'string' ?
+        p.mimoPresetVoiceFallback.trim() || undefined
+      : undefined,
+    voiceCloneDataUrl:
+      typeof p.mimoVoiceCloneDataUrl === 'string' ? p.mimoVoiceCloneDataUrl.trim() : undefined,
+    voiceDesignPrompt:
+      typeof p.mimoVoiceDesignPrompt === 'string' ? p.mimoVoiceDesignPrompt.trim() : undefined,
+  });
+
   const key = model.isLocal ? '' : normalizeMimoApiKey(model.apiKey);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (key) {
-    // api.xiaomimimo.com 与 OpenAI SDK 一致为 Bearer；mimo-v2 文档 curl 为 api-key，同时发送以兼容不同网关
     headers.Authorization = `Bearer ${key}`;
     headers['api-key'] = key;
   }
-  const guidanceBlock =
-    typeof params.mimoSystemPrompt === 'string' && params.mimoSystemPrompt.trim()
-      ? params.mimoSystemPrompt.trim()
-      : buildMimoRecommendedSystemContent();
-  const instructionBlock =
-    typeof params.mimoUserPrompt === 'string' && params.mimoUserPrompt.trim()
-      ? params.mimoUserPrompt.trim()
-      : MIMO_DEFAULT_USER_PROMPT;
-  const userContent = `${guidanceBlock}\n\n${instructionBlock}`;
-  const assistantContent = buildMimoAssistantContentForTts(text, params);
+
   return {
     url,
     headers,
     body: {
-      model: modelName,
-      modalities: ['text', 'audio'],
-      audio: { voice, format },
-      messages: [
-        { role: 'user', content: userContent },
-        { role: 'assistant', content: assistantContent },
-      ],
+      model: bodyParts.model,
+      messages: bodyParts.messages,
+      audio: bodyParts.audio,
     },
   };
 }
 
 function extFromAudioFormat(format: string): string {
-  if (format === 'wav' || format === 'pcm') return `.${format === 'pcm' ? 'pcm' : 'wav'}`;
+  const f = (format ?? '').trim().toLowerCase();
+  if (f === 'wav') return '.wav';
+  if (f === 'pcm' || f === 'pcm16') return `.${f === 'pcm16' ? 'pcm16' : 'pcm'}`;
   return '.mp3';
 }
 
@@ -456,10 +543,77 @@ export async function fetchRemoteTtsAudio(
   params: Record<string, unknown>
 ): Promise<{ ok: true; arrayBuffer: ArrayBuffer; ext: string } | { ok: false; error: string }> {
   if (!engine.modelConfig) return { ok: false, error: '模型配置缺失' };
+
+  const voiceCloneKinds: TtsAdapterKind[] = [
+    'minimax_t2a_v2',
+    'qwen3_tts_dashscope',
+    // 'cosyvoice_dashscope_ws',
+  ];
+  if (!voiceCloneKinds.includes(engine.adapterKind)) {
+    return fetchRemoteTtsAudioOnce(engine, text, params);
+  }
+
+  const vs = parseTtsVoiceSourceParams(params);
+  const canInvalidateOnFail = vs.source === 'clone_from_file' || vs.source === 'clone_from_url';
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ensured = await ensureRemoteVoiceIdForTts({
+      adapterKind: engine.adapterKind,
+      model: engine.modelConfig,
+      ttsParams: params,
+      previewText: text.slice(0, 120),
+    });
+    if (!ensured.ok) {
+      return { ok: false, error: ensured.error };
+    }
+    const synthParams = { ...params, voice: ensured.voiceId };
+    const result = await fetchRemoteTtsAudioOnce(engine, text, synthParams);
+    if (result.ok) return result;
+    const shouldRetry =
+      attempt === 0 &&
+      canInvalidateOnFail &&
+      (isRemoteVoiceIdStaleError(result.error) || ensured.fromCache);
+    if (shouldRetry) {
+      await invalidateRemoteVoiceIdCache({
+        adapterKind: engine.adapterKind,
+        model: engine.modelConfig,
+        ttsParams: params,
+      });
+      continue;
+    }
+    return result;
+  }
+  return { ok: false, error: '合成失败' };
+}
+
+async function fetchRemoteTtsAudioOnce(
+  engine: TtsEngineOption,
+  text: string,
+  params: Record<string, unknown>
+): Promise<{ ok: true; arrayBuffer: ArrayBuffer; ext: string } | { ok: false; error: string }> {
+  if (!engine.modelConfig) return { ok: false, error: '模型配置缺失' };
   const m = engine.modelConfig;
   try {
     if (engine.adapterKind === 'xiaomi_mimo_chat_audio') {
+      /**
+       * 小米 MiMo：无 voice id 复刻缓存；克隆分支内联 base64 参考音频（见 mimoV25TtsBuilder）。
+       */
       const { url, headers, body } = buildXiaomiMimoChatTtsRequest(m, text, params);
+      const b = body as { model?: string; audio?: { voice?: string } };
+
+      /** 音色克隆链路必须附带参考音频 data-url */
+      if (
+        typeof b.model === 'string' &&
+        b.model.includes('voiceclone') &&
+        !(typeof b.audio?.voice === 'string' && b.audio.voice.startsWith('data:'))
+      ) {
+        return {
+          ok: false,
+          error:
+            'MiMo V2.5 音色克隆需要大纲 wav 样本（data:audio/...;base64,...）。请在「故事大纲」为旁白或角色绑定参考音频。',
+        };
+      }
+
       const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       const jsonMaybe = ct.includes('application/json') || ct.includes('text/json');
@@ -521,6 +675,14 @@ export async function fetchRemoteTtsAudio(
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     }
+    if (engine.adapterKind === 'qwen3_tts_dashscope') {
+      const voiceId = typeof params.voice === 'string' ? params.voice : '';
+      const lang =
+        typeof params.qwen_language_type === 'string' ? params.qwen_language_type : 'Chinese';
+      return synthesizeQwen3Tts({ model: m, text, voiceId, languageType: lang });
+    }
+    // CosyVoice WebSocket 合成已停用
+    // if (engine.adapterKind === 'cosyvoice_dashscope_ws') { ... }
     const { url, headers, body } = buildGenericTtsPost(m, text, params);
     const h = { ...headers } as Record<string, string>;
     if (m.isLocal || !m.apiKey) delete h.Authorization;
