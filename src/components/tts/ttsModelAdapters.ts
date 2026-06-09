@@ -679,7 +679,9 @@ async function fetchRemoteTtsAudioOnce(
       const voiceId = typeof params.voice === 'string' ? params.voice : '';
       const lang =
         typeof params.qwen_language_type === 'string' ? params.qwen_language_type : 'Chinese';
-      return synthesizeQwen3Tts({ model: m, text, voiceId, languageType: lang });
+      const instructions =
+        typeof params.qwenInstructions === 'string' ? params.qwenInstructions.trim() : undefined;
+      return synthesizeQwen3Tts({ model: m, text, voiceId, languageType: lang, instructions });
     }
     // CosyVoice WebSocket 合成已停用
     // if (engine.adapterKind === 'cosyvoice_dashscope_ws') { ... }

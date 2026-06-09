@@ -35,6 +35,25 @@ describe('resolveMimoRouteForAudiobookSegment', () => {
     expect(r.reason).toBe('outline_wav');
   });
 
+  it('对白 + 大纲 xiaomi 内嵌预置 → preset 而非 voiceclone', () => {
+    const seg: DialogueSegment = {
+      type: SegmentType.Dialogue,
+      speakerId: 'lu-chen',
+      text: '你好。',
+      voice: { characterId: 'lu-chen', tone: '平静' },
+    };
+    const r = resolveMimoRouteForAudiobookSegment({
+      segment: seg,
+      outline: {
+        byCharacterId: { 'lu-chen': 'PresetVoice/男-少年-苏打[xiaomi---苏打].wav' },
+      },
+    });
+    expect(r.effectiveModelId).toBe('mimo-v2.5-tts');
+    expect(r.presetVoice).toBe('苏打');
+    expect(r.referenceRelPath).toBeUndefined();
+    expect(r.reason).toBe('preset_from_voice_id');
+  });
+
   it('旁白 narratorRelPath → voiceclone', () => {
     const seg = {
       type: SegmentType.Narration,

@@ -34,8 +34,8 @@ export function NovelCoverAiPopover({ novelId, models, getSnapshot, onCoverSaved
   const sanitizedAuthorName = normalizeNovelWriterAuthorName(config?.novelWriter?.authorName);
 
   const projectPrompt = useMemo(
-    () => buildNovelCoverPopoverProjectPrompt({ authorName: sanitizedAuthorName }),
-    [sanitizedAuthorName],
+    () => buildNovelCoverPopoverProjectPrompt({ authorName: sanitizedAuthorName, coverCount }),
+    [sanitizedAuthorName, coverCount],
   );
 
   const novelOk = listModelsForAgent(models, NOVEL_CFG).length > 0;

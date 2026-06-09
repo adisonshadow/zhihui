@@ -4,6 +4,10 @@
  */
 import type { AIModelConfig } from '@/types/settings';
 import {
+  isMimoV25PresetVoice,
+  normalizeMimoUserVoicePreset,
+} from '@/components/tts/mimoV25PresetVoices';
+import {
   buildTtsEngineListFromModels,
   type TtsAdapterKind,
   type TtsEngineOption,
@@ -50,10 +54,28 @@ export function stripEmbeddedVoiceIdFromFileName(fileName: string): string {
   return cleaned ? `${cleaned}${ext}` : trimmed;
 }
 
+/** MiMo / 小米 TTS 文件名 provider 标记（[xiaomi---苏打] / [mimo---苏打]） */
+export function isEmbeddedMimoProviderToken(provider: string): boolean {
+  const p = provider.trim().toLowerCase();
+  return p === 'mimo' || p === 'xiaomi' || p === 'xiaomimimo';
+}
+
+/** 大纲 wav 路径内嵌 MiMo 系统预置音色名（如 苏打）；非 MiMo 标记或无效预置名则 null */
+export function resolveEmbeddedMimoPresetFromPath(pathOrRel: string | undefined): string | null {
+  const rel = pathOrRel?.trim();
+  if (!rel) return null;
+  const embedded = parseEmbeddedPresetVoiceIdFromPath(rel);
+  if (!embedded || !isEmbeddedMimoProviderToken(embedded.provider)) return null;
+  const preset = normalizeMimoUserVoicePreset(embedded.voiceId)?.trim();
+  if (!preset || !isMimoV25PresetVoice(preset)) return null;
+  return preset;
+}
+
 /** 文件名内 provider 标记 → 列表展示用品牌名 */
 function embeddedProviderDisplayLabel(provider: string): string {
   const p = provider.trim().toLowerCase();
   if (p === 'minimax') return 'Minimax';
+  if (isEmbeddedMimoProviderToken(p)) return 'Xiaomi';
   if (!p) return '';
   return p.charAt(0).toUpperCase() + p.slice(1);
 }
@@ -79,6 +101,7 @@ export function formatVoiceSampleDisplayName(pathOrRel: string): string {
 /** TTS 适配器 → 文件名中的 provider 标记（与预制命名约定一致） */
 export function embeddedVoiceProviderTokenForAdapter(kind: TtsAdapterKind): string | null {
   if (kind === 'minimax_t2a_v2') return 'minimax';
+  if (kind === 'xiaomi_mimo_chat_audio') return 'xiaomi';
   return null;
 }
 
@@ -88,12 +111,18 @@ export function embeddedVoiceProviderTokenForModel(model: AIModelConfig): string
   return embeddedVoiceProviderTokenForAdapter(engine.adapterKind);
 }
 
+function embeddedProviderMatchesAdapterToken(embeddedProvider: string, adapterToken: string): boolean {
+  if (embeddedProvider === adapterToken) return true;
+  if (adapterToken === 'xiaomi' && isEmbeddedMimoProviderToken(embeddedProvider)) return true;
+  return false;
+}
+
 export function embeddedVoiceMatchesModel(
   embedded: EmbeddedPresetVoiceId,
   model: AIModelConfig,
 ): boolean {
   const token = embeddedVoiceProviderTokenForModel(model);
-  return token != null && token === embedded.provider;
+  return token != null && embeddedProviderMatchesAdapterToken(embedded.provider, token);
 }
 
 export function embeddedVoiceMatchesEngine(

@@ -92,13 +92,15 @@ export function buildAudiobookTtsSelectOptions(config: AISettings | null | undef
   const opts: AudiobookTtsSelectOption[] = [];
   const local = config?.localTts;
 
-  if (local?.enabled) {
+  // 本地 TTS：只显示已启用 + 已配置路径的模型
+  if (local) {
     for (const o of LOCAL_TTS_MODEL_OPTIONS) {
-      const saved = localTtsProfileIsSaved(local, o.key);
-      opts.push({
-        value: o.key,
-        label: saved ? `[本地] ${o.label}` : `[本地] ${o.label}（未配置路径）`,
-      });
+      const profile = local.profiles?.[o.key];
+      const enabled = profile?.enabled === true;
+      const saved = !!profile?.modelPath?.trim();
+      if (enabled && saved) {
+        opts.push({ value: o.key, label: `[本地] ${o.label}` });
+      }
     }
   }
 

@@ -13,6 +13,8 @@ export async function synthesizeQwen3Tts(params: {
   text: string;
   voiceId: string;
   languageType?: string;
+  /** qwen3-tts-instruct-flash：人声风格指令 */
+  instructions?: string;
 }): Promise<{ ok: true; arrayBuffer: ArrayBuffer; ext: string } | { ok: false; error: string }> {
   const apiKey = (params.model.apiKey ?? '').trim();
   if (!apiKey) return { ok: false, error: '缺少 DashScope API Key' };
@@ -22,6 +24,7 @@ export async function synthesizeQwen3Tts(params: {
   if (!text) return { ok: false, error: '文本为空' };
   const voice = params.voiceId.trim();
   if (!voice) return { ok: false, error: '缺少 voice 参数' };
+  const instructions = params.instructions?.trim();
 
   try {
     const res = await fetch(GENERATION_URL_CN, {
@@ -36,6 +39,7 @@ export async function synthesizeQwen3Tts(params: {
           text,
           voice,
           language_type: params.languageType?.trim() || 'Chinese',
+          ...(instructions ? { instructions } : {}),
         },
         parameters: {
           stream: false,

@@ -61,6 +61,10 @@ export interface AudiobookOutlineVoiceSamples {
   byCharacterCloudEngineId?: Record<string, string>;
   /** 角色 id -> 云端复刻 voice_id */
   byCharacterCloudVoiceId?: Record<string, string>;
+  /** 旁白风格指令（纯文字人声描述，用于音色设计 / 无样本 TTS） */
+  narratorStyleInstruction?: string;
+  /** 角色 id -> 风格指令 */
+  byCharacterStyleInstruction?: Record<string, string>;
 }
 
 export interface NovelWorkspaceSnapshot {
@@ -78,6 +82,8 @@ export interface NovelWorkspaceSnapshot {
   remountVersionByEpisode: Record<string, number>;
   /** 故事大纲：旁白与角色的音色样本（相对设置中的样本根目录） */
   audiobookOutlineVoiceSamples?: AudiobookOutlineVoiceSamples;
+  /** 大纲音色：用本地算法处理内心独白，不单独配置画外音音色行 */
+  useLocalSfxForInnerVoice?: boolean;
   /** 项目设置：启用内心独白音效 */
   innerMonologueEnabled?: boolean;
   /** 项目设置：启用空间回音 */
@@ -111,19 +117,24 @@ function serializeAudiobookOutlineVoiceSamples(v: AudiobookOutlineVoiceSamples |
   const byCharacterRefText = trimRefTextMap(v.byCharacterRefText);
   const byCharacterCloudEngineId = trimRefTextMap(v.byCharacterCloudEngineId);
   const byCharacterCloudVoiceId = trimRefTextMap(v.byCharacterCloudVoiceId);
+  const narratorStyleInstruction = v.narratorStyleInstruction?.trim();
+  const byCharacterStyleInstruction = trimRefTextMap(v.byCharacterStyleInstruction);
   const hasBy = !!byCharacterId;
   const hasRefBy = !!byCharacterRefText;
   const hasCloudBy = !!byCharacterCloudEngineId;
   const hasCloudVoiceBy = !!byCharacterCloudVoiceId;
+  const hasStyleBy = !!byCharacterStyleInstruction;
   if (
     !narrator &&
     !narratorRefText &&
     !narratorCloudEngineId &&
     !narratorCloudVoiceId &&
+    !narratorStyleInstruction &&
     !hasBy &&
     !hasRefBy &&
     !hasCloudBy &&
-    !hasCloudVoiceBy
+    !hasCloudVoiceBy &&
+    !hasStyleBy
   ) {
     return '';
   }
@@ -132,10 +143,12 @@ function serializeAudiobookOutlineVoiceSamples(v: AudiobookOutlineVoiceSamples |
     narratorRefText: narratorRefText || undefined,
     narratorCloudEngineId: narratorCloudEngineId || undefined,
     narratorCloudVoiceId: narratorCloudVoiceId || undefined,
+    narratorStyleInstruction: narratorStyleInstruction || undefined,
     byCharacterId: hasBy ? byCharacterId : undefined,
     byCharacterRefText: hasRefBy ? byCharacterRefText : undefined,
     byCharacterCloudEngineId: hasCloudBy ? byCharacterCloudEngineId : undefined,
     byCharacterCloudVoiceId: hasCloudVoiceBy ? byCharacterCloudVoiceId : undefined,
+    byCharacterStyleInstruction: hasStyleBy ? byCharacterStyleInstruction : undefined,
   });
 }
 
@@ -190,15 +203,31 @@ function parseAudiobookOutlineVoiceJson(raw: string | null | undefined): Audiobo
       }
       if (Object.keys(byCharacterCloudVoiceId).length === 0) byCharacterCloudVoiceId = undefined;
     }
+    const narratorStyleInstruction =
+      typeof o.narratorStyleInstruction === 'string' ? o.narratorStyleInstruction.trim() : undefined;
+    let byCharacterStyleInstruction: Record<string, string> | undefined;
+    if (
+      o.byCharacterStyleInstruction &&
+      typeof o.byCharacterStyleInstruction === 'object' &&
+      !Array.isArray(o.byCharacterStyleInstruction)
+    ) {
+      byCharacterStyleInstruction = {};
+      for (const [k, val] of Object.entries(o.byCharacterStyleInstruction as Record<string, unknown>)) {
+        if (typeof val === 'string' && val.trim()) byCharacterStyleInstruction[k] = val.trim();
+      }
+      if (Object.keys(byCharacterStyleInstruction).length === 0) byCharacterStyleInstruction = undefined;
+    }
     if (
       !narratorRelPath &&
       !narratorRefText &&
       !narratorCloudEngineId &&
       !narratorCloudVoiceId &&
+      !narratorStyleInstruction &&
       !byCharacterId &&
       !byCharacterRefText &&
       !byCharacterCloudEngineId &&
-      !byCharacterCloudVoiceId
+      !byCharacterCloudVoiceId &&
+      !byCharacterStyleInstruction
     ) {
       return undefined;
     }
@@ -207,10 +236,12 @@ function parseAudiobookOutlineVoiceJson(raw: string | null | undefined): Audiobo
       narratorRefText: narratorRefText || undefined,
       narratorCloudEngineId: narratorCloudEngineId || undefined,
       narratorCloudVoiceId: narratorCloudVoiceId || undefined,
+      narratorStyleInstruction: narratorStyleInstruction || undefined,
       byCharacterId,
       byCharacterRefText,
       byCharacterCloudEngineId,
       byCharacterCloudVoiceId,
+      byCharacterStyleInstruction,
     };
   } catch {
     return undefined;
@@ -239,19 +270,38 @@ function api() {
   return window.yiman?.novel;
 }
 
+/** 正文集已初始化 episodeAudiobook（含空片段列表）即视为已开通有声书 */
+export function novelSnapshotHasAudiobookWorkspace(snapshot: NovelWorkspaceSnapshot): boolean {
+  return snapshot.episodes.some(
+    (e) => e.id !== NOVEL_OUTLINE_EPISODE_ID && e.episodeAudiobook != null,
+  );
+}
+
+function resolveAudiobookEnabledForListSync(
+  snapshot: NovelWorkspaceSnapshot,
+  listItem: ReturnType<typeof loadNovelList>[number] | undefined,
+): boolean {
+  if (listItem?.audiobookEnabled === true) return true;
+  return novelSnapshotHasAudiobookWorkspace(snapshot);
+}
+
 /** 先写入 novels 表，满足 novel_workspace_meta / novel_episodes 对 novel_id 的外键 */
 async function ensureNovelParentRowInDb(s: NovelWorkspaceSnapshot): Promise<void> {
   const a = api();
   if (!a?.upsert) return;
   const listItem = loadNovelList().find((x) => x.id === s.novelId);
   const title = (listItem?.title ?? s.title ?? '未命名小说').trim() || '未命名小说';
+  const audiobookEnabled = resolveAudiobookEnabledForListSync(s, listItem);
+  if (listItem && listItem.audiobookEnabled !== audiobookEnabled) {
+    upsertNovel({ ...listItem, audiobookEnabled, updatedAt: s.updatedAt });
+  }
   await a.upsert({
     id: s.novelId,
     title,
     genres: listItem?.genres ?? [],
     coverDataUrl: listItem?.coverDataUrl ?? null,
     electronProjectId: s.electronProjectId ?? null,
-    audiobookEnabled: listItem?.audiobookEnabled ?? false,
+    audiobookEnabled,
     createdAt: listItem?.createdAt,
     updatedAt: listItem?.updatedAt ?? s.updatedAt,
   });
@@ -283,6 +333,7 @@ function syncSnapshotToDb(s: NovelWorkspaceSnapshot): void {
         updatedAt: s.updatedAt,
         novelScriptJson: serializeNovelScript(s.novelScript),
         audiobookOutlineVoiceJson: serializeAudiobookOutlineVoiceSamples(s.audiobookOutlineVoiceSamples),
+        useLocalSfxForInnerVoice: s.useLocalSfxForInnerVoice,
         innerMonologueEnabled: s.innerMonologueEnabled,
         spaceEchoEnabled: s.spaceEchoEnabled,
         telephoneEnabled: s.telephoneEnabled,
@@ -516,6 +567,7 @@ type DbWorkspaceMeta = {
   remountVersions: Record<string, number>;
   novelScriptJson?: string;
   audiobookOutlineVoiceJson?: string;
+  useLocalSfxForInnerVoice?: boolean;
   innerMonologueEnabled?: boolean;
   spaceEchoEnabled?: boolean;
   telephoneEnabled?: boolean;
@@ -546,6 +598,7 @@ function snapshotFromDbRows(
     novelScript: parseNovelScriptJson(meta.novelScriptJson),
     audiobookOutlineVoiceSamples:
       parseAudiobookOutlineVoiceJson(meta.audiobookOutlineVoiceJson) ?? undefined,
+    useLocalSfxForInnerVoice: meta.useLocalSfxForInnerVoice === true,
     innerMonologueEnabled: meta.innerMonologueEnabled === true,
     spaceEchoEnabled: meta.spaceEchoEnabled === true,
     telephoneEnabled: meta.telephoneEnabled === true,
@@ -821,28 +874,47 @@ export function updateAudiobookOutlineVoiceSamples(
       else delete byCloudVoice[k];
     }
   }
+  let narratorStyleInstruction: string | undefined;
+  if (patch.narratorStyleInstruction !== undefined) {
+    narratorStyleInstruction = patch.narratorStyleInstruction.trim() || undefined;
+  } else {
+    narratorStyleInstruction = prev.narratorStyleInstruction?.trim() || undefined;
+  }
+  const byStyle: Record<string, string> = { ...(prev.byCharacterStyleInstruction ?? {}) };
+  if (patch.byCharacterStyleInstruction) {
+    for (const [k, v] of Object.entries(patch.byCharacterStyleInstruction)) {
+      const x = v?.trim();
+      if (x) byStyle[k] = x;
+      else delete byStyle[k];
+    }
+  }
   const hasBy = Object.keys(by).length > 0;
   const hasRefBy = Object.keys(byRef).length > 0;
   const hasCloudBy = Object.keys(byCloudEngine).length > 0;
   const hasCloudVoiceBy = Object.keys(byCloudVoice).length > 0;
+  const hasStyleBy = Object.keys(byStyle).length > 0;
   const audiobookOutlineVoiceSamples =
     narrator ||
     narratorRefText ||
     narratorCloudEngineId ||
     narratorCloudVoiceId ||
+    narratorStyleInstruction ||
     hasBy ||
     hasRefBy ||
     hasCloudBy ||
-    hasCloudVoiceBy ?
+    hasCloudVoiceBy ||
+    hasStyleBy ?
       {
         narratorRelPath: narrator || undefined,
         narratorRefText: narratorRefText || undefined,
         narratorCloudEngineId: narratorCloudEngineId || undefined,
         narratorCloudVoiceId: narratorCloudVoiceId || undefined,
+        narratorStyleInstruction: narratorStyleInstruction || undefined,
         byCharacterId: hasBy ? by : undefined,
         byCharacterRefText: hasRefBy ? byRef : undefined,
         byCharacterCloudEngineId: hasCloudBy ? byCloudEngine : undefined,
         byCharacterCloudVoiceId: hasCloudVoiceBy ? byCloudVoice : undefined,
+        byCharacterStyleInstruction: hasStyleBy ? byStyle : undefined,
       }
     : undefined;
   return saveAndReturn({ ...snapshot, audiobookOutlineVoiceSamples, updatedAt: t });
@@ -856,12 +928,20 @@ export function enableAudiobookForNovel(snapshot: NovelWorkspaceSnapshot): Novel
     const episodeAudiobook = e.episodeAudiobook ?? createEmptyEpisodeAudiobook(e);
     return { ...e, episodeAudiobook, updatedAt: t };
   });
-  const next = saveAndReturn({ ...snapshot, episodes, updatedAt: t });
   const listItem = loadNovelList().find((x) => x.id === snapshot.novelId);
-  if (listItem) {
-    upsertNovel({ ...listItem, audiobookEnabled: true, updatedAt: t });
-  }
-  return next;
+  upsertNovel(
+    listItem ?
+      { ...listItem, audiobookEnabled: true, updatedAt: t }
+    : {
+        id: snapshot.novelId,
+        title: snapshot.title.trim() || '未命名小说',
+        genres: [],
+        audiobookEnabled: true,
+        updatedAt: t,
+        createdAt: t,
+      },
+  );
+  return saveAndReturn({ ...snapshot, episodes, updatedAt: t });
 }
 
 export function setNovelScript(snapshot: NovelWorkspaceSnapshot, novelScript: Script): NovelWorkspaceSnapshot {

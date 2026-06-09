@@ -23,8 +23,8 @@ function emptyProfiles(): Record<string, LocalTtsModelProfile> {
   const o: Record<string, LocalTtsModelProfile> = {};
   for (const m of LOCAL_TTS_MODEL_OPTIONS) {
     o[m.key] = profileHasMossTokenizer(m.key)
-      ? { modelPath: '', idleTimeoutMinutes: 3, mossAudioTokenizerPath: '' }
-      : { modelPath: '', idleTimeoutMinutes: 3 };
+      ? { modelPath: '', idleTimeoutMinutes: 3, mossAudioTokenizerPath: '', enabled: false }
+      : { modelPath: '', idleTimeoutMinutes: 3, enabled: false };
   }
   return o;
 }
@@ -60,7 +60,6 @@ export interface LocalTtsSettingsPanelProps {
 export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanelProps) {
   const { message } = App.useApp();
   const [form] = Form.useForm<{
-    enabled: boolean;
     modelKey: string;
     profiles: Record<string, LocalTtsModelProfile>;
   }>();
@@ -72,7 +71,6 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
   useEffect(() => {
     if (!config) return;
     const base = migrateLocalTtsConfig(config.localTts) ?? {
-      enabled: false,
       modelKey: 'longcat_audio_dit',
       profiles: {},
     };
@@ -82,13 +80,13 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
       profiles[k] = {
         modelPath: p.modelPath ?? '',
         idleTimeoutMinutes: p.idleTimeoutMinutes ?? 3,
+        enabled: p.enabled === true,
         ...(profileHasMossTokenizer(k) || k === 'moss_tts_local_mlx'
           ? { mossAudioTokenizerPath: p.mossAudioTokenizerPath ?? '' }
           : {}),
       };
     }
     form.setFieldsValue({
-      enabled: base.enabled,
       modelKey: base.modelKey,
       profiles,
     });
@@ -155,13 +153,12 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
         form={form}
         layout="vertical"
         initialValues={{
-          enabled: false,
           modelKey: 'longcat_audio_dit',
           profiles: emptyProfiles(),
         }}
         onFinish={async (v) => {
           const localTts: LocalTtsConfig = {
-            enabled: v.enabled === true,
+            enabled: true,
             modelKey: v.modelKey ?? 'longcat_audio_dit',
             profiles: {},
           };
@@ -171,6 +168,7 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
             const base: LocalTtsModelProfile = {
               modelPath: (p.modelPath ?? '').trim(),
               idleTimeoutMinutes: Number(p.idleTimeoutMinutes ?? 3),
+              enabled: p.enabled === true,
             };
             if (profileHasMossTokenizer(m.key)) {
               const tx = (p.mossAudioTokenizerPath ?? '').trim();
@@ -197,16 +195,17 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
           </Space>
         </Form.Item>
 
-        <Form.Item
-          name="enabled"
-          label="启用本地 TTS"
-          valuePropName="checked"
-          extra="开启后，剧本 TTS 引擎列表将包含本地模型选项。"
-        >
-          <Switch checkedChildren="启用" unCheckedChildren="关闭" />
-        </Form.Item>
+
 
         <div style={{ display: modelKey === 'longcat_audio_dit' ? 'block' : 'none' }}>
+          <Form.Item
+            name={['profiles', 'longcat_audio_dit', 'enabled']}
+            label="允许启用该模型"
+            valuePropName="checked"
+            extra="启用后该模型会出现在有声书 TTS 模型下拉中。"
+          >
+            <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+          </Form.Item>
           <Form.Item
             name={['profiles', 'longcat_audio_dit', 'modelPath']}
             label="模型目录"
@@ -227,6 +226,14 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
         </div>
 
         <div style={{ display: modelKey === 'moss_tts' ? 'block' : 'none' }}>
+          <Form.Item
+            name={['profiles', 'moss_tts', 'enabled']}
+            label="允许启用该模型"
+            valuePropName="checked"
+            extra="启用后该模型会出现在有声书 TTS 模型下拉中。"
+          >
+            <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+          </Form.Item>
           <Form.Item
             name={['profiles', 'moss_tts', 'modelPath']}
             label="MOSS 模型目录"
@@ -254,6 +261,14 @@ export function LocalTtsSettingsPanel({ config, onApply }: LocalTtsSettingsPanel
         </div>
 
         <div style={{ display: modelKey === 'moss_tts_nano' ? 'block' : 'none' }}>
+          <Form.Item
+            name={['profiles', 'moss_tts_nano', 'enabled']}
+            label="允许启用该模型"
+            valuePropName="checked"
+            extra="启用后该模型会出现在有声书 TTS 模型下拉中。"
+          >
+            <Switch checkedChildren="启用" unCheckedChildren="关闭" />
+          </Form.Item>
           <Form.Item
             name={['profiles', 'moss_tts_nano', 'modelPath']}
             label="MOSS-TTS-Nano 模型目录"

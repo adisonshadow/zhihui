@@ -53,6 +53,8 @@ export interface VoiceDesignGenerateModalProps {
   customVoiceSamplesRootDir: string;
   models: AIModelConfig[];
   target: VoiceDesignBindTarget | null;
+  /** 大纲「风格指令」，打开时预填音色描述 */
+  defaultStyleInstruction?: string;
   setWorkspace: Dispatch<SetStateAction<NovelWorkspaceSnapshot | null>>;
   onCancel: () => void;
 }
@@ -62,6 +64,7 @@ export function VoiceDesignGenerateModal({
   customVoiceSamplesRootDir,
   models,
   target,
+  defaultStyleInstruction,
   setWorkspace,
   onCancel,
 }: VoiceDesignGenerateModalProps) {
@@ -103,7 +106,7 @@ export function VoiceDesignGenerateModal({
   useEffect(() => {
     if (!open) return;
     setEngineId(designEngines[0]?.engineId ?? '');
-    setVoiceDesc('');
+    setVoiceDesc(defaultStyleInstruction?.trim() ?? '');
     setVoicePrefix('yiman');
     setSnippetKey(MIMO_VOICE_DESIGN_PREVIEW_SNIPPETS[0]?.key);
     setPreviewText(MIMO_VOICE_DESIGN_PREVIEW_SNIPPETS[0]?.text ?? '');
@@ -117,7 +120,7 @@ export function VoiceDesignGenerateModal({
     }
     setLastAudioUrl(null);
     setSaveNameOpen(false);
-  }, [open]);
+  }, [open, defaultStyleInstruction]);
 
   useEffect(() => {
     if (!open || !designEngines.length) return;

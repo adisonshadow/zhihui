@@ -47,3 +47,21 @@
 .audiobook-segment-container:hover .audiobook-segment-audio-add-button{
   opacity: 1;
 }
+
+/** 未绑 wav 且有大纲风格指令：Tag 右上角蓝点 */
+.audiobook-outline-style-tag-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.audiobook-outline-style-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #1677ff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}

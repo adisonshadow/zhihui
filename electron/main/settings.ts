@@ -41,6 +41,7 @@ export interface LocalTtsModelProfile {
   idleTimeoutMinutes?: number;
   /** 仅 MOSS：MOSS-Audio-Tokenizer 目录 */
   mossAudioTokenizerPath?: string;
+  enabled?: boolean;
 }
 
 /** 本地 TTS 配置 */
@@ -102,6 +103,7 @@ function migrateLocalTtsFromDisk(raw: Record<string, unknown> | undefined): Loca
       const row: LocalTtsModelProfile = {
         modelPath: typeof p.modelPath === 'string' ? p.modelPath : '',
         idleTimeoutMinutes: typeof p.idleTimeoutMinutes === 'number' ? p.idleTimeoutMinutes : 3,
+        enabled: p.enabled === true,
       };
       if (
         (k === 'moss_tts' || k === 'moss_tts_local_mlx' || k === 'moss_tts_nano') &&
@@ -118,6 +120,7 @@ function migrateLocalTtsFromDisk(raw: Record<string, unknown> | undefined): Loca
     profiles[modelKey] = {
       modelPath: legacyPath,
       idleTimeoutMinutes: typeof raw.idleTimeoutMinutes === 'number' ? raw.idleTimeoutMinutes : 3,
+      enabled: true,
     };
   }
   if (profiles.moss_tts_local_mlx && !profiles.moss_tts) {

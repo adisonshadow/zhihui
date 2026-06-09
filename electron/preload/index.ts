@@ -361,7 +361,8 @@ const api = {
     getWorkspaceMeta: (novelId: string) => ipcRenderer.invoke('app:novel:getWorkspaceMeta', novelId) as Promise<{
       novelId: string; title: string; activeEpisodeId: string;
       remountVersions: Record<string, number>; novelScriptJson?: string;
-      audiobookOutlineVoiceJson?: string; updatedAt: string;
+      audiobookOutlineVoiceJson?: string; innerMonologueEnabled?: boolean;
+      useLocalSfxForInnerVoice?: boolean; updatedAt: string;
     } | null>,
     upsertEpisode: (ep: {
       id: string; novelId: string; title: string; episode?: number | null;
@@ -374,6 +375,7 @@ const api = {
       novelId: string; title?: string; activeEpisodeId: string;
       remountVersions: Record<string, number>; novelScriptJson?: string;
       audiobookOutlineVoiceJson?: string; innerMonologueEnabled?: boolean;
+      useLocalSfxForInnerVoice?: boolean;
       spaceEchoEnabled?: boolean; telephoneEnabled?: boolean; mufflerEnabled?: boolean;
       updatedAt: string;
     }) => ipcRenderer.invoke('app:novel:saveWorkspaceMeta', meta),
@@ -523,6 +525,13 @@ const api = {
       ipcRenderer.invoke('app:audioRecorder:demucsCheck') as Promise<
         { installed: boolean; message?: string }
       >,
+  },
+  /** MiMo 音色克隆 data URL 缓存 */
+  mimoVoiceClone: {
+    get: (filePath: string) =>
+      ipcRenderer.invoke('app:mimoVoiceClone:get', filePath) as Promise<string | null>,
+    set: (filePath: string, dataUrl: string) =>
+      ipcRenderer.invoke('app:mimoVoiceClone:set', filePath, dataUrl) as Promise<void>,
   },
   /** 内心独白音效 */
   innerMonologue: {

@@ -129,6 +129,8 @@ export interface LocalTtsModelProfile {
    * 保存后分别注入 YIMAN_MOSS_CODEC_DIR / YIMAN_MOSS_NANO_CODEC_DIR。
    */
   mossAudioTokenizerPath?: string;
+  /** 是否启用该模型（默认 false）；仅在启用且配置了路径后才出现在 TTS 下拉中 */
+  enabled?: boolean;
 }
 
 /** REST 路径段（与 ai-model-service 路由一致） */
@@ -252,6 +254,7 @@ export function migrateLocalTtsConfig(
       const row: LocalTtsModelProfile = {
         modelPath: (p.modelPath ?? '').trim(),
         idleTimeoutMinutes: p.idleTimeoutMinutes ?? 3,
+        enabled: p.enabled === true,
       };
       if (k === 'moss_tts' || k === 'moss_tts_local_mlx' || k === 'moss_tts_nano') {
         const tx = p.mossAudioTokenizerPath?.trim();
@@ -265,6 +268,7 @@ export function migrateLocalTtsConfig(
     profiles[modelKey] = {
       modelPath: legacyPath,
       idleTimeoutMinutes: raw.idleTimeoutMinutes ?? 3,
+      enabled: true,
     };
   }
   if (profiles.moss_tts_local_mlx && !profiles.moss_tts) {

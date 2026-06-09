@@ -4,6 +4,7 @@ import {
   parseEmbeddedPresetVoiceIdFromPath,
   embeddedVoiceMatchesModel,
   formatVoiceSampleDisplayName,
+  resolveEmbeddedMimoPresetFromPath,
 } from '@/audiobook/utils/embeddedPresetVoiceId';
 import type { AIModelConfig } from '@/types/settings';
 
@@ -53,6 +54,28 @@ describe('embeddedPresetVoiceId', () => {
       model: 'speech-2.8-hd',
       capabilityKeys: ['voice_over'],
       minimaxGroupId: 'g',
+    };
+    expect(embeddedVoiceMatchesModel(embedded, model)).toBe(true);
+  });
+
+  it('parses xiaomi embedded preset and resolves MiMo preset voice', () => {
+    const r = parseEmbeddedPresetVoiceIdFromFileName('男-少年-苏打[xiaomi---苏打].wav');
+    expect(r).toEqual({ provider: 'xiaomi', voiceId: '苏打' });
+    expect(resolveEmbeddedMimoPresetFromPath('PresetVoice/男-少年-苏打[xiaomi---苏打].wav')).toBe('苏打');
+    expect(
+      formatVoiceSampleDisplayName('男-少年-苏打[xiaomi---苏打].wav'),
+    ).toBe('男-少年-苏打(Xiaomi)');
+  });
+
+  it('matches MiMo model for xiaomi or mimo provider token', () => {
+    const embedded = parseEmbeddedPresetVoiceIdFromFileName('x[mimo---茉莉].wav')!;
+    const model: AIModelConfig = {
+      id: 'm2',
+      name: 'MiMo TTS',
+      apiUrl: 'https://api.xiaomimimo.com',
+      apiKey: 'k',
+      model: 'mimo-v2.5-tts',
+      capabilityKeys: ['voice_over'],
     };
     expect(embeddedVoiceMatchesModel(embedded, model)).toBe(true);
   });

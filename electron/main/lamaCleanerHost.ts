@@ -21,41 +21,67 @@ function ensureWritableDir(dir: string): boolean {
   }
 }
 
+const LAMA_VENV_DIR_NAME = 'venv-lama-cleaner';
+
+function lamaVenvPythonPath(venvRoot: string): string {
+  if (process.platform === 'win32') {
+    return path.join(venvRoot, 'Scripts', 'python.exe');
+  }
+  const p3 = path.join(venvRoot, 'bin', 'python3');
+  const p = path.join(venvRoot, 'bin', 'python');
+  if (fs.existsSync(p3)) return p3;
+  return p;
+}
+
+function lamaVenvExists(baseDir: string): boolean {
+  return fs.existsSync(lamaVenvPythonPath(path.join(baseDir, LAMA_VENV_DIR_NAME)));
+}
+
 /**
- * 优先 userData/yiman；若异常落到 /var/root 或不可写，则回退到 ~/.yiman
- * 这样可避免偶发权限问题（例如终端脚本无法在 /var/root 下创建目录）
+ * 优先 userData/yiman；若异常落到 /var/root 或不可写，则回退到 ~/.yiman。
+ * 若 venv 仅存在于备用目录（历史安装曾走 fallback），继续沿用该目录，避免误判「需重装」。
  */
 function resolveLamaBaseDir(): string {
   const userDataYiman = path.join(app.getPath('userData'), 'yiman');
-  if (!userDataYiman.startsWith('/var/root') && ensureWritableDir(userDataYiman)) {
+  const homeFallback = path.join(os.homedir(), '.yiman');
+
+  const userDataOk = !userDataYiman.startsWith('/var/root') && ensureWritableDir(userDataYiman);
+  const fallbackOk = ensureWritableDir(homeFallback);
+
+  if (fallbackOk && lamaVenvExists(homeFallback) && !lamaVenvExists(userDataYiman)) {
+    return homeFallback;
+  }
+  if (userDataOk && lamaVenvExists(userDataYiman)) {
     return userDataYiman;
   }
-  const homeFallback = path.join(os.homedir(), '.yiman');
-  if (ensureWritableDir(homeFallback)) return homeFallback;
-  // 兜底：即使不可写也返回原路径，便于错误提示直观
+  if (userDataOk) {
+    return userDataYiman;
+  }
+  if (fallbackOk) return homeFallback;
   return userDataYiman;
 }
 
 /** venv 根目录 */
 export function getLamaVenvRoot(): string {
-  return path.join(resolveLamaBaseDir(), 'venv-lama-cleaner');
+  return path.join(resolveLamaBaseDir(), LAMA_VENV_DIR_NAME);
 }
 
 /** PyTorch 缓存目录（与安装脚本一致，避免 ~/.cache/torch 权限异常导致安装/运行失败） */
 function getIopaintTorchHome(): string {
-  return path.join(resolveLamaBaseDir(), 'torch-cache');
+  const candidates = [
+    path.join(resolveLamaBaseDir(), 'torch-cache'),
+    path.join(app.getPath('userData'), 'yiman', 'torch-cache'),
+    path.join(os.tmpdir(), 'yiman-torch-cache'),
+  ];
+  for (const dir of candidates) {
+    if (ensureWritableDir(dir)) return dir;
+  }
+  return candidates[0]!;
 }
 
 /** venv 内 Python 可执行文件（Windows Scripts，Unix bin） */
 export function getLamaVenvPythonExecutable(): string {
-  const root = getLamaVenvRoot();
-  if (process.platform === 'win32') {
-    return path.join(root, 'Scripts', 'python.exe');
-  }
-  const p3 = path.join(root, 'bin', 'python3');
-  const p = path.join(root, 'bin', 'python');
-  if (fs.existsSync(p3)) return p3;
-  return p;
+  return lamaVenvPythonPath(getLamaVenvRoot());
 }
 
 export function lamaCleanerBaseUrl(): string {

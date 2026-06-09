@@ -40,6 +40,7 @@ import { buildNovelScriptFunctionCalls } from '@/novelDesign/AITools/novelScript
 import {
   buildAudiobookOutlineAddCharacterEmit,
   buildAudiobookOutlineFillMainCharactersEmit,
+  buildAudiobookOutlineUseLocalSfxEmit,
   type AudiobookOutlineVoiceAiEmitParts,
 } from '@/audiobook/prompts/audiobookOutlineVoiceAiPrompt';
 import { buildNovelAudiobookProjectPromptParts } from '@/audiobook/prompts/novelAudiobookProjectPrompt';
@@ -829,6 +830,28 @@ export default function AudiobookNovelDetailPage() {
     setOutlineVoiceAiTrigger((n) => n + 1);
   }, []);
 
+  const outlineVoiceAiOptions = useMemo(
+    () => ({ useLocalSfxForInnerVoice: workspace?.useLocalSfxForInnerVoice === true }),
+    [workspace?.useLocalSfxForInnerVoice],
+  );
+
+  const onUseLocalSfxForInnerVoiceChange = useCallback(
+    (enabled: boolean) => {
+      if (!workspace) return;
+      updateWorkspace((prev) =>
+        prev ?
+          {
+            ...prev,
+            useLocalSfxForInnerVoice: enabled,
+            updatedAt: new Date().toISOString(),
+          }
+        : prev,
+      );
+      enqueueOutlineVoiceAi(buildAudiobookOutlineUseLocalSfxEmit(workspace.title, enabled));
+    },
+    [workspace, updateWorkspace, enqueueOutlineVoiceAi],
+  );
+
   const runSegmentAiPrompt = useCallback(
     (segmentIndex: number, promptKey: string) => {
       const ep = activeEpisode;
@@ -854,11 +877,16 @@ export default function AudiobookNovelDetailPage() {
     if (audiobookGenPending || audiobookGenEpisodeIdRef.current) return;
     if (!workspace || !activeEpisode || activeEpisode.id === NOVEL_OUTLINE_EPISODE_ID) return;
     const nav = formatNovelEpisodeNavLabel(activeEpisode);
+    const useLocalSfx = workspace.useLocalSfxForInnerVoice === true;
+    const innerVoiceRule = useLocalSfx
+      ? `类型约定：叙述/场景描写用 narration（旁白）；说出口用 dialogue；仅角色心里未出口的台词用 innerVoice，且 characterId 须填**对白用角色 id**（与 speakerId 相同，勿用 -画外音），走该角色大纲 wav + 项目本地音效；禁止把旁白叙述标成 innerVoice。`
+      : `类型约定：叙述/场景描写用 narration（旁白）；说出口用 dialogue；仅角色心里未出口的台词用 innerVoice，且 characterId 须指向大纲音色表「{名}画外音（{id}-画外音）」专用行——无则先 novel_script_upsert_character 新建再写 innerVoice；禁止把旁白叙述标成 innerVoice。`;
     const msg = [
       `请根据小说《${workspace.title}》将当前集正文改编为有声书结构化片段（novel_audiobook_* 工具写入，勿改小说正文）。`,
       `目标集：${nav}，episode_id="${activeEpisode.id}"。`,
       `请先 novel_audiobook_set_middle_view({ mode: "audiobook" })，再 novel_audiobook_list_characters，然后按正文顺序 novel_audiobook_add_segment。`,
-      `类型约定：叙述/场景描写用 narration（旁白）；说出口用 dialogue；仅角色心里未出口的台词用 innerVoice，且 characterId 须指向大纲音色表「{名}画外音（{id}-画外音）」专用行——无则先 novel_script_upsert_character 新建再写 innerVoice；禁止把旁白叙述标成 innerVoice。首段 chapterTitle 格式「第{中文序数}集、{本集纯标题}」。`,
+      innerVoiceRule,
+      `首段 chapterTitle 格式「第{中文序数}集、{本集纯标题}」。`,
       AUDIOBOOK_TTS_READABILITY_RULE_ZH,
     ].join('\n');
     pendingAudiobookGenMsgRef.current = msg;
@@ -906,6 +934,7 @@ export default function AudiobookNovelDetailPage() {
         isOutline: e.id === NOVEL_OUTLINE_EPISODE_ID,
       }));
     return buildNovelAudiobookProjectPromptParts(eps, {
+      useLocalSfxForInnerVoice: workspace?.useLocalSfxForInnerVoice === true,
       innerMonologue: workspace?.innerMonologueEnabled,
       spaceEcho: workspace?.spaceEchoEnabled,
       telephone: workspace?.telephoneEnabled,
@@ -935,11 +964,16 @@ export default function AudiobookNovelDetailPage() {
           setWorkspace={setWorkspace}
           outlineVoiceAiPending={outlineVoiceAiPending}
           onFillMainCharactersFromOutlineAi={() =>
-            enqueueOutlineVoiceAi(buildAudiobookOutlineFillMainCharactersEmit(workspace.title))
+            enqueueOutlineVoiceAi(
+              buildAudiobookOutlineFillMainCharactersEmit(workspace.title, outlineVoiceAiOptions),
+            )
           }
           onAddCharacterToVoiceListAi={() =>
-            enqueueOutlineVoiceAi(buildAudiobookOutlineAddCharacterEmit(workspace.title))
+            enqueueOutlineVoiceAi(
+              buildAudiobookOutlineAddCharacterEmit(workspace.title, outlineVoiceAiOptions),
+            )
           }
+          onUseLocalSfxForInnerVoiceChange={onUseLocalSfxForInnerVoiceChange}
         />
       );
     }

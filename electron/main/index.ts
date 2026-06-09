@@ -126,6 +126,7 @@ import {
   checkDemucsInstalled,
 } from './audioRecorderService';
 import { ensureLamaCleanerRunning, openLamaCleanerInstallTerminal } from './lamaCleanerHost';
+import { getMimoVoiceCloneCache, setMimoVoiceCloneCache } from './mimoVoiceCloneCache';
 import { applyInnerMonologueEffect } from './innerMonologueService';
 import { fetchVolcTosImageAsDataUrl } from './volcTosImageFetch';
 import {
@@ -1413,6 +1414,8 @@ ipcMain.handle('app:novel:getWorkspaceMeta', (_e, novelId: string) => {
     remountVersions: safeJsonParse(meta.remount_versions, {}),
     novelScriptJson: meta.novel_script_json ?? '',
     audiobookOutlineVoiceJson: meta.audiobook_outline_voice_json ?? '',
+    innerMonologueEnabled: meta.inner_monologue_enabled === 1,
+    useLocalSfxForInnerVoice: meta.use_local_sfx_for_inner_voice === 1,
     updatedAt: meta.updated_at,
   };
 });
@@ -1447,6 +1450,7 @@ ipcMain.handle('app:novel:saveWorkspaceMeta', (_e, meta: {
   novelId: string; title?: string; activeEpisodeId: string;
   remountVersions: Record<string, number>; novelScriptJson?: string;
   audiobookOutlineVoiceJson?: string; innerMonologueEnabled?: boolean;
+  useLocalSfxForInnerVoice?: boolean;
   spaceEchoEnabled?: boolean; telephoneEnabled?: boolean; mufflerEnabled?: boolean;
   updatedAt: string;
 }) => {
@@ -1751,5 +1755,15 @@ ipcMain.handle('app:audioRecorder:demucsCheck', () => {
 
 ipcMain.handle('app:innerMonologue:apply', async (_e, inputPath: string, force?: boolean) => {
   return applyInnerMonologueEffect(String(inputPath), force === true);
+});
+
+// ===== MiMo 音色克隆缓存 =====
+
+ipcMain.handle('app:mimoVoiceClone:get', (_e, filePath: string): string | null => {
+  return getMimoVoiceCloneCache(String(filePath));
+});
+
+ipcMain.handle('app:mimoVoiceClone:set', (_e, filePath: string, dataUrl: string) => {
+  setMimoVoiceCloneCache(String(filePath), String(dataUrl));
 });
 }

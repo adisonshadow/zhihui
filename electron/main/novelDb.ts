@@ -96,6 +96,7 @@ export function initNovelDb(): void {
   migrateNovelEpisodesTtsModelJsonColumn();
   migrateWorkspaceMetaInnerMonologueColumn();
   migrateWorkspaceMetaVoiceEffectsJsonColumn();
+  migrateWorkspaceMetaUseLocalSfxColumn();
 }
 
 function migrateNovelsAudiobookEnabledColumn(): void {
@@ -117,6 +118,13 @@ function migrateWorkspaceMetaInnerMonologueColumn(): void {
   const cols = database.prepare(`PRAGMA table_info(novel_workspace_meta)`).all() as Array<{ name: string }>;
   if (cols.some((c) => c.name === 'inner_monologue_enabled')) return;
   database.exec(`ALTER TABLE novel_workspace_meta ADD COLUMN inner_monologue_enabled INTEGER NOT NULL DEFAULT 0;`);
+}
+
+function migrateWorkspaceMetaUseLocalSfxColumn(): void {
+  const database = getDb();
+  const cols = database.prepare(`PRAGMA table_info(novel_workspace_meta)`).all() as Array<{ name: string }>;
+  if (cols.some((c) => c.name === 'use_local_sfx_for_inner_voice')) return;
+  database.exec(`ALTER TABLE novel_workspace_meta ADD COLUMN use_local_sfx_for_inner_voice INTEGER NOT NULL DEFAULT 0;`);
 }
 
 function migrateWorkspaceMetaVoiceEffectsJsonColumn(): void {
@@ -256,7 +264,14 @@ export function upsertNovel(item: {
   updatedAt?: string;
 }): NovelRow {
   const now = new Date().toISOString();
-  const existing = getDb().prepare('SELECT id FROM novels WHERE id = ?').get(item.id) as { id: string } | undefined;
+  const existing = getDb().prepare('SELECT id, audiobook_enabled FROM novels WHERE id = ?').get(item.id) as
+    | { id: string; audiobook_enabled: number }
+    | undefined;
+  const audiobookEnabledVal =
+    item.audiobookEnabled === undefined ?
+      (existing ? existing.audiobook_enabled : 0)
+    : item.audiobookEnabled ? 1
+    : 0;
   if (existing) {
     getDb().prepare(`
       UPDATE novels SET title=?, genres=?, cover_data_url=?, electron_project_id=?, audiobook_enabled=?, updated_at=?
@@ -266,7 +281,7 @@ export function upsertNovel(item: {
       JSON.stringify(item.genres ?? []),
       item.coverDataUrl ?? null,
       item.electronProjectId ?? null,
-      item.audiobookEnabled ? 1 : 0,
+      audiobookEnabledVal,
       item.updatedAt ?? now,
       item.id
     );
@@ -280,7 +295,7 @@ export function upsertNovel(item: {
       JSON.stringify(item.genres ?? []),
       item.coverDataUrl ?? null,
       item.electronProjectId ?? null,
-      item.audiobookEnabled ? 1 : 0,
+      audiobookEnabledVal,
       item.createdAt ?? now,
       item.updatedAt ?? now
     );
@@ -317,6 +332,7 @@ export interface WorkspaceMetaRow {
   novel_script_json: string;
   audiobook_outline_voice_json: string;
   inner_monologue_enabled: number;
+  use_local_sfx_for_inner_voice: number;
   voice_effects_json: string;
   updated_at: string;
 }
@@ -392,6 +408,7 @@ export function saveWorkspaceMeta(meta: {
   novelScriptJson?: string;
   audiobookOutlineVoiceJson?: string;
   innerMonologueEnabled?: boolean;
+  useLocalSfxForInnerVoice?: boolean;
   voiceEffectsJson?: string;
   updatedAt: string;
 }): void {
@@ -401,17 +418,18 @@ export function saveWorkspaceMeta(meta: {
   const scriptJson = meta.novelScriptJson ?? '';
   const audiobookVoiceJson = meta.audiobookOutlineVoiceJson ?? '';
   const monologueVal = meta.innerMonologueEnabled === true ? 1 : 0;
+  const localSfxVal = meta.useLocalSfxForInnerVoice === true ? 1 : 0;
   const effectsJson = meta.voiceEffectsJson ?? '';
   if (existing) {
     getDb().prepare(`
-      UPDATE novel_workspace_meta SET title=?, active_episode_id=?, remount_versions=?, novel_script_json=?, audiobook_outline_voice_json=?, inner_monologue_enabled=?, voice_effects_json=?, updated_at=?
+      UPDATE novel_workspace_meta SET title=?, active_episode_id=?, remount_versions=?, novel_script_json=?, audiobook_outline_voice_json=?, inner_monologue_enabled=?, use_local_sfx_for_inner_voice=?, voice_effects_json=?, updated_at=?
       WHERE novel_id=?
-    `).run(meta.title ?? '', meta.activeEpisodeId, remountJson, scriptJson, audiobookVoiceJson, monologueVal, effectsJson, meta.updatedAt, meta.novelId);
+    `).run(meta.title ?? '', meta.activeEpisodeId, remountJson, scriptJson, audiobookVoiceJson, monologueVal, localSfxVal, effectsJson, meta.updatedAt, meta.novelId);
   } else {
     getDb().prepare(`
-      INSERT INTO novel_workspace_meta (novel_id, title, active_episode_id, remount_versions, novel_script_json, audiobook_outline_voice_json, inner_monologue_enabled, voice_effects_json, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(meta.novelId, meta.title ?? '', meta.activeEpisodeId, remountJson, scriptJson, audiobookVoiceJson, monologueVal, effectsJson, meta.updatedAt);
+      INSERT INTO novel_workspace_meta (novel_id, title, active_episode_id, remount_versions, novel_script_json, audiobook_outline_voice_json, inner_monologue_enabled, use_local_sfx_for_inner_voice, voice_effects_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(meta.novelId, meta.title ?? '', meta.activeEpisodeId, remountJson, scriptJson, audiobookVoiceJson, monologueVal, localSfxVal, effectsJson, meta.updatedAt);
   }
 }
 

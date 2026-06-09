@@ -3,6 +3,8 @@ import type { AudioSegment } from '@/constants/Audiobook';
 import { SegmentType } from '@/constants/Audiobook';
 import type { AudiobookOutlineVoiceSamples } from '@/novelDesign/storage/novelWorkspaceStorage';
 import { pickReferenceRelPathForSegment } from '@/audiobook/utils/audiobookSegmentReference';
+import { pickOutlineStyleInstructionForSegment } from '@/audiobook/utils/outlineVoiceStyleInstruction';
+import { resolveEmbeddedMimoPresetFromPath } from '@/audiobook/utils/embeddedPresetVoiceId';
 import {
   inferTextLanguageHint,
   isMimoV25PresetVoice,
@@ -57,11 +59,33 @@ export function resolveMimoRouteForAudiobookSegment(input: {
   const txt = input.playableText ?? ('text' in seg ? seg.text : '') ?? '';
 
   const refRel = pickReferenceRelPathForSegment(seg, input.outline);
-  /** 克隆主路径：故事大纲已为该说话侧绑定 wav */
+
+  // 如果片段显式指定了系统预置音色（voiceId 字段），优先用预置而非克隆
+  const rawVoiceId = 'voice' in seg ? seg.voice.voiceId : undefined;
+  const explicitPreset = rawVoiceId && isMimoV25PresetVoice(rawVoiceId) ? normalizeMimoUserVoicePreset(rawVoiceId) : undefined;
+  if (explicitPreset) {
+    return {
+      effectiveModelId: 'mimo-v2.5-tts',
+      presetVoice: explicitPreset,
+      scriptCharacter: ch,
+      reason: 'preset_from_voice_id',
+    };
+  }
+
+  /** 大纲 wav 内嵌 [xiaomi---预置名] / [mimo---预置名] → 系统内置音色，不走 clone（见 TTS 架构文档 2） */
   if (refRel?.trim()) {
+    const embeddedMimoPreset = resolveEmbeddedMimoPresetFromPath(refRel);
+    if (embeddedMimoPreset) {
+      return {
+        effectiveModelId: 'mimo-v2.5-tts',
+        presetVoice: embeddedMimoPreset,
+        scriptCharacter: ch,
+        reason: 'preset_from_voice_id',
+      };
+    }
+
     const singing = detectSingIntent('voice' in seg ? seg.voice.tone : undefined, 'voice' in seg ? seg.voice.emotion : undefined, txt);
     if (singing && 'voice' in seg) {
-      /** 歌声：强制预置 + 预设 voice（片段或兜底） */
       const presetVoice =
         (isMimoV25PresetVoice(seg.voice.voiceId) ? seg.voice.voiceId?.trim() : undefined) ??
         resolveFallbackPresetVoiceByText(txt);
@@ -81,7 +105,30 @@ export function resolveMimoRouteForAudiobookSegment(input: {
     };
   }
 
-  /** 无样本：用语言描述音色 */
+  /** 无样本：优先大纲「风格指令」，其次剧本 voiceCharacteristic */
+  const outlineStyle = pickOutlineStyleInstructionForSegment(seg, input.outline)?.trim();
+  if (outlineStyle) {
+    const singing = detectSingIntent('voice' in seg ? seg.voice.tone : undefined, 'voice' in seg ? seg.voice.emotion : undefined, txt);
+    if (singing && 'voice' in seg) {
+      const presetVoice =
+        (isMimoV25PresetVoice(seg.voice.voiceId) ? seg.voice.voiceId!.trim() : undefined) ??
+        resolveFallbackPresetVoiceByText(txt);
+      return {
+        effectiveModelId: 'mimo-v2.5-tts',
+        presetVoice,
+        forcedPresetForSinging: true,
+        scriptCharacter: ch,
+        reason: 'preset_from_voice_id',
+      };
+    }
+    return {
+      effectiveModelId: 'mimo-v2.5-tts-voicedesign',
+      voiceDesignPrompt: outlineStyle,
+      scriptCharacter: ch,
+      reason: 'voice_design',
+    };
+  }
+
   const vch = ch?.voiceCharacteristic?.trim();
   if (vch) {
     const singing = detectSingIntent('voice' in seg ? seg.voice.tone : undefined, 'voice' in seg ? seg.voice.emotion : undefined, txt);

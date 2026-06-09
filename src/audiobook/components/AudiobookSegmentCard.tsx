@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { audiobookTtsCacheGetBlob } from '@/audiobook/utils/audiobookSegmentTtsCache';
 import { renderVoiceEffect, getEnabledEffects } from '@/audiobook/utils/voiceEffects';
 import { VOICE_EFFECT_TAGS, VOICE_EFFECT_LABELS, type VoiceEffectKey } from '@/audiobook/utils/voiceEffects/types';
-import { Button, Card, Dropdown, Input, Space, Tag, Typography, theme } from 'antd';
+import { Button, Card, Dropdown, Input, Space, Tag, Typography, Tooltip, theme } from 'antd';
 import type { MenuProps } from 'antd';
 import { CheckOutlined, CaretDownOutlined, LoadingOutlined } from '@ant-design/icons';
 import { SegmentType, type AudioSegment } from '@/constants/Audiobook';
 import type { Script } from '@/constants/Script';
 import { resolveAudiobookSegmentSpeakerDisplayName } from '@/audiobook/utils/audiobookSegmentRefLabel';
 import { shouldShowAudiobookSegmentPersonaTag } from '@/audiobook/utils/audiobookSegmentReference';
+import { outlineStyleInstructionHintForSegment } from '@/audiobook/utils/outlineVoiceStyleInstruction';
 import type { AudiobookOutlineVoiceSamples } from '@/novelDesign/storage/novelWorkspaceStorage';
 import { audiobookSegmentQuickPrompts } from '@/audiobook/prompts/audiobookSegmentAiPrompts';
 import './AudiobookSegmentCard.css';
@@ -89,6 +90,39 @@ function isTextTtsSegment(seg: AudioSegment): boolean {
     seg.type === SegmentType.Dialogue ||
     seg.type === SegmentType.InnerVoice ||
     seg.type === SegmentType.ChapterTitle
+  );
+}
+
+function TagWithOutlineStyleHint({
+  label,
+  color,
+  hint,
+}: {
+  label: string;
+  color?: string;
+  hint?: { show: boolean; text: string };
+}) {
+  const tag = (
+    <Tag
+      color={color}
+      style={{
+        fontSize: 12,
+        fontWeight: 600,
+        lineHeight: '20px',
+        marginInlineEnd: 0,
+      }}
+    >
+      {label}
+    </Tag>
+  );
+  if (!hint?.show || !hint.text) return tag;
+  return (
+    <Tooltip title={hint.text}>
+      <span className="audiobook-outline-style-tag-wrap">
+        {tag}
+        <span className="audiobook-outline-style-dot" aria-label="有大纲风格指令" />
+      </span>
+    </Tooltip>
   );
 }
 
@@ -212,6 +246,15 @@ export function AudiobookSegmentCard({
   const personaTag =
     showPersonaTag && 'voice' in segment ? segment.voice.personaTag?.trim() : undefined;
   const speakerLabel = resolveAudiobookSegmentSpeakerDisplayName(segment, novelScript);
+  const outlineStyleHint = outlineStyleInstructionHintForSegment(segment, outlineVoice);
+  const typeTagHint =
+    segment.type === SegmentType.Narration || segment.type === SegmentType.ChapterTitle ?
+      outlineStyleHint
+    : undefined;
+  const speakerTagHint =
+    speakerLabel && (segment.type === SegmentType.Dialogue || segment.type === SegmentType.InnerVoice) ?
+      outlineStyleHint
+    : undefined;
 
   const actionMenuItems = useMemo((): MenuProps['items'] => {
     const items: MenuProps['items'] = [];
@@ -325,19 +368,13 @@ export function AudiobookSegmentCard({
             {textTts && hasTtsCache ?
               <CheckOutlined style={{ color: '#52c41a', fontSize: 14 }} aria-label="已生成 TTS 缓存" />
             : null}
-            <Tag>{TYPE_LABELS[segment.type]}</Tag>
+            <TagWithOutlineStyleHint label={TYPE_LABELS[segment.type]} hint={typeTagHint} />
             {speakerLabel ?
-              <Tag
+              <TagWithOutlineStyleHint
+                label={speakerLabel}
                 color={SPEAKER_TAG_COLOR[segment.type] ?? 'processing'}
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  lineHeight: '20px',
-                  marginInlineEnd: 0,
-                }}
-              >
-                {speakerLabel}
-              </Tag>
+                hint={speakerTagHint}
+              />
             : null}
             {personaTag ?
               <Tag color="geekblue" style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>

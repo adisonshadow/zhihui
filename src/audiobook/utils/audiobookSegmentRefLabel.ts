@@ -16,6 +16,14 @@ const TYPE_ZH: Record<SegmentType, string> = {
 const INNER_VOICE_ID_SUFFIX = '-画外音';
 const INNER_VOICE_NAME_SUFFIX = '画外音';
 
+/** 大纲音色表中的「画外音专用行」（id 后缀或 name 含画外音） */
+export function isOutlineInnerVoiceCharacterEntry(character: { id: string; name?: string }): boolean {
+  const id = character.id.trim();
+  if (id.endsWith(INNER_VOICE_ID_SUFFIX)) return true;
+  const name = character.name?.trim() ?? '';
+  return name.endsWith(INNER_VOICE_NAME_SUFFIX);
+}
+
 function findScriptCharacter(script: Script | null | undefined, id: string) {
   const t = id.trim();
   if (!t || !script) return null;

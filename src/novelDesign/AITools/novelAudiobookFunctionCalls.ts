@@ -8,6 +8,7 @@ import { SegmentType } from '@/constants/Audiobook';
 import type { FunctionCallDef } from '@/components/AIChat/utils/functionRegistry';
 import {
   NOVEL_OUTLINE_EPISODE_ID,
+  updateAudiobookOutlineVoiceSamples,
   updateEpisodeAudiobook,
   type NovelWorkspaceSnapshot,
 } from '@/novelDesign/storage/novelWorkspaceStorage';
@@ -162,7 +163,7 @@ export function buildNovelAudiobookFunctionCalls(deps: NovelAudiobookFunctionCal
     name: 'novel_audiobook_list_characters',
     senderLabel: '角色列表',
     description:
-      '列出全书剧本角色及有声书大纲 wav 绑定；未绑定的次要配角由改编时在 voice.personaTag 填写人设腔调。返回：characters（含 audiobook_outline_sample_bound、voice_characteristic）、audiobook_outline.narrator_sample_bound。**画外音**：innerVoice 须用 name 为「{名}画外音」、id 如「{原id}-画外音」的独立角色行绑 wav，与对白行、旁白行分开。',
+      '列出全书剧本角色及有声书大纲 wav 绑定；未绑定的次要配角由改编时在 voice.personaTag 填写人设腔调。返回：characters（含 audiobook_outline_sample_bound、voice_characteristic、outline_style_instruction）、audiobook_outline（narrator_sample_bound、narrator_style_instruction）。**画外音**：innerVoice 须用 name 为「{名}画外音」、id 如「{原id}-画外音」的独立角色行绑 wav，与对白行、旁白行分开。',
     parameters: { type: 'object', properties: {} },
     handler: async () => {
       const ws = deps.getSnapshot();
@@ -172,7 +173,10 @@ export function buildNovelAudiobookFunctionCalls(deps: NovelAudiobookFunctionCal
       if (!ws?.novelScript) {
         return ok({
           characters: [],
-          audiobook_outline: { narrator_sample_bound: narratorBound },
+          audiobook_outline: {
+            narrator_sample_bound: narratorBound,
+            narrator_style_instruction: binding.narratorStyleInstruction?.trim() || undefined,
+          },
           notice:
             narratorBound ?
               '尚未初始化剧本角色，可用角色名作为 id；对白写 speakerId/voice.characterId；若无法在工具中判断是否已绑大纲 wav，旁白/说话人 voice.tone 写整体风格指令，句内演法写 text 的 […]。'
@@ -190,18 +194,64 @@ export function buildNovelAudiobookFunctionCalls(deps: NovelAudiobookFunctionCal
           : undefined,
         /** 有声书故事中该角色大纲是否选了 wav「当前样本」 */
         audiobook_outline_sample_bound: Boolean(binding.byCharacterId?.[c.id]?.trim()),
+        outline_style_instruction: binding.byCharacterStyleInstruction?.[c.id]?.trim() || undefined,
       }));
 
       const anyCharUnbound = characters.some((c) => !c.audiobook_outline_sample_bound);
       return ok({
         audiobook_outline: {
           narrator_sample_bound: narratorBound,
+          narrator_style_instruction: binding.narratorStyleInstruction?.trim() || undefined,
         },
         characters,
         notice:
           !narratorBound || anyCharUnbound ?
-            '若 audiobook_outline_sample_bound=false 或 narrator_sample_bound=false：为主要角色可督促用户在大纲绑 wav；**次要角色无绑定是常态**，须在 voice 写 personaTag + tone（风格指令），句内演法写 text 的 […]。'
+            '若 audiobook_outline_sample_bound=false 或 narrator_sample_bound=false：为主要角色可督促用户在大纲绑 wav，并可用 novel_audiobook_set_outline_style_instruction 写入 outline 风格指令；**次要角色无绑定是常态**，须在 voice 写 personaTag + tone，句内演法写 text 的 […]。'
           : undefined,
+      });
+    },
+  });
+
+  push({
+    name: 'novel_audiobook_set_outline_style_instruction',
+    senderLabel: '大纲风格指令',
+    description:
+      '为故事大纲「音色样本」表的旁白或角色写入/更新「风格指令」（纯文字人声描述，如「温柔知性的女性，30 岁左右…」）。无 wav 绑定时用于音色设计与 TTS 兜底。旁白用 target=narrator；角色填 character_id。',
+    parameters: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', enum: ['narrator', 'character'], description: 'narrator=旁白行；character=剧本角色 id' },
+        character_id: { type: 'string', description: 'target=character 时必填' },
+        style_instruction: { type: 'string', description: '纯文字风格指令，1～120 字为宜' },
+      },
+      required: ['target', 'style_instruction'],
+    },
+    handler: async (args) => {
+      const target = String((args as { target?: string }).target ?? '').trim();
+      const styleInstruction = String((args as { style_instruction?: string }).style_instruction ?? '').trim();
+      const characterId = String((args as { character_id?: string }).character_id ?? '').trim();
+      if (!styleInstruction) return err('style_instruction 不能为空');
+      if (target !== 'narrator' && target !== 'character') return err('target 须为 narrator 或 character');
+      if (target === 'character' && !characterId) return err('target=character 时须填 character_id');
+
+      const ws = deps.getSnapshot();
+      if (!ws) return err('工作区未就绪');
+
+      const patch =
+        target === 'narrator' ?
+          { narratorStyleInstruction: styleInstruction }
+        : { byCharacterStyleInstruction: { [characterId]: styleInstruction } };
+
+      const next = updateAudiobookOutlineVoiceSamples(ws, patch);
+      deps.setSnapshot(next);
+      return ok({
+        target,
+        character_id: target === 'character' ? characterId : undefined,
+        style_instruction: styleInstruction,
+        summary:
+          target === 'narrator' ?
+            '已更新旁白大纲风格指令'
+          : `已更新角色「${characterId}」大纲风格指令`,
       });
     },
   });

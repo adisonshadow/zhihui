@@ -100,6 +100,18 @@ export function isMinimaxVoiceDesignEngine(engine: TtsEngineOption): boolean {
   return hasVoiceDesignCapability(engine.modelConfig);
 }
 
+/** Qwen3-TTS Instruct 合成：可通过 instructions 传入风格指令（qwen3-tts-flash 不支持） */
+export function isQwen3TtsInstructModel(model: AIModelConfig): boolean {
+  const slug = modelSlug(model);
+  return slug.includes('tts') && slug.includes('instruct');
+}
+
+export function isQwen3TtsInstructEngine(engine: TtsEngineOption): boolean {
+  if (!engine.modelConfig) return false;
+  if (engine.adapterKind !== 'qwen3_tts_dashscope') return false;
+  return isQwen3TtsInstructModel(engine.modelConfig);
+}
+
 /** 音色设计：MiMo / Qwen / MiniMax（CosyVoice 已停用） */
 export function findVoiceDesignEngines(models: AIModelConfig[] | undefined): TtsEngineOption[] {
   const out: TtsEngineOption[] = [];

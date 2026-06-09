@@ -16,7 +16,7 @@ import {
 import type { RadioChangeEvent } from 'antd/es/radio';
 import { AppstoreOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import { Radio } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import type { NovelWorkspaceItem } from '@/novelDesign/types/novelWorkspace';
 import { loadNovelList } from '@/novelDesign/storage/novelListStorage';
 import { NovelListCardMoreActions } from '@/novelDesign/components/NovelListCardMoreActions';
@@ -31,6 +31,7 @@ type SortBy = 'updated_at' | 'created_at' | 'title';
 
 export default function AudiobookListPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const config = useConfigSubscribe();
   const bgVideo = config?.audiobookBgVideo ?? config?.novelBgVideo;
   const [novels, setNovels] = useState<NovelWorkspaceItem[]>([]);
@@ -43,7 +44,7 @@ export default function AudiobookListPage() {
 
   useEffect(() => {
     refreshList();
-  }, []);
+  }, [location.key]);
 
   useEffect(() => {
     let cancelled = false;

@@ -3,6 +3,7 @@ import type { AISettings, AudiobookSettings } from '@/types/settings';
 import type { Script } from '@/constants/Script';
 import { restSegmentForLocalTtsModelKey } from '@/types/settings';
 import { fetchRemoteTtsAudio, getEngineById } from '@/components/tts/ttsModelAdapters';
+import { isQwen3TtsInstructEngine } from '@/components/tts/voiceCapabilityInference';
 import { postLocalTtsSynthesis } from '@/audiobook/utils/audiobookTtsRequest';
 import {
   audiobookTtsParamsForSegment,
@@ -19,6 +20,7 @@ import {
   pickReferenceRelPathForSegment,
   resolveVoiceSampleAbsolutePath,
 } from '@/audiobook/utils/audiobookSegmentReference';
+import { pickOutlineStyleInstructionForSegment } from '@/audiobook/utils/outlineVoiceStyleInstruction';
 import { resolveEmbeddedPresetVoiceForEngine } from '@/audiobook/utils/embeddedPresetVoiceId';
 import { pickOutlineCloudVoiceForSegment } from '@/audiobook/utils/outlineVoiceBindingDisplay';
 import type { TtsEngineOption } from '@/components/tts/ttsModelAdapters';
@@ -30,14 +32,22 @@ async function loadVoiceCloneDataUrlFromOutline(
   audiobookSettings: AudiobookSettings | undefined,
   relPath: string,
 ): Promise<string> {
-  /**
-   * MiMo 专用：接口无 voice id，每次请求内联 data:audio/...;base64。
-   * 不适用 remoteVoiceIdCache；见 ensureRemoteVoiceId / 云端三家复刻链路。
-   */
   const abs = await resolveVoiceSampleAbsolutePath(audiobookSettings, relPath.trim());
   if (!abs?.trim()) {
     throw new Error('无法在本地解析大纲绑定的音色样本路径，请确认预制/自定义音色目录与相对路径是否正确。');
   }
+
+  // 查 MiMo 音色克隆磁盘缓存
+  const cacheApi = window.yiman?.mimoVoiceClone;
+  if (cacheApi?.get) {
+    try {
+      const cached = await cacheApi.get(abs.trim());
+      if (cached) {
+        return cached;
+      }
+    } catch { /* 缓存读取失败走正常流程 */ }
+  }
+
   const read = window.yiman?.fs?.readFileAsDataUrl;
   if (!read) throw new Error('当前环境不支持读取音色样本文件（请在桌面客户端使用音色克隆）。');
   const du = await read(abs.trim());
@@ -47,6 +57,14 @@ async function loadVoiceCloneDataUrlFromOutline(
   if (du.length > MIMO_VOICECLONE_PAYLOAD_WARN) {
     throw new Error('参考音频过大（克隆 payload 须在约 10MB 以内）；请换用较短样本或压缩为 mp3/wav。');
   }
+
+  // 写入缓存（异步，不阻塞主流程）
+  if (cacheApi?.set) {
+    try {
+      await cacheApi.set(abs.trim(), du);
+    } catch { /* 缓存写入失败忽略 */ }
+  }
+
   return du;
 }
 
@@ -234,6 +252,19 @@ export async function synthesizeAudiobookSegmentAudio(params: {
     audiobookSettings: params.audiobookSettings,
     outlineRelPath,
   });
+
+  if (
+    isQwen3TtsInstructEngine(engine) &&
+    !outlineRelPath?.trim() &&
+    ttsParams.ttsVoiceSource !== 'cloned_id' &&
+    ttsParams.ttsVoiceSource !== 'clone_from_file'
+  ) {
+    const styleInstruction = pickOutlineStyleInstructionForSegment(segment, params.outline);
+    if (styleInstruction) {
+      ttsParams.qwenInstructions = styleInstruction;
+    }
+  }
+
   const remote = await fetchRemoteTtsAudio(engine, finalText, ttsParams);
   if (!remote.ok) throw new Error(remote.error);
   return new Blob([remote.arrayBuffer], { type: blobMimeFromExt(remote.ext) });

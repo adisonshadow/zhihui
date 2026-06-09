@@ -4,9 +4,47 @@
 import type { NovelWorkspaceItem } from '../types/novelWorkspace';
 
 const STORAGE_KEY = 'yiman:novel-design:novels-v1';
+const WORKSPACE_STORAGE_KEY = 'yiman:novel-design:workspace-v2';
+const OUTLINE_EPISODE_ID = '__story_outline__';
 
 function api() {
   return window.yiman?.novel;
+}
+
+/** 工作区已有有声书数据结构（与 enableAudiobookForNovel 一致） */
+function workspaceLocalHasAudiobook(novelId: string): boolean {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (!raw) return false;
+    const map = JSON.parse(raw) as Record<
+      string,
+      { episodes?: Array<{ id: string; episodeAudiobook?: unknown | null }> }
+    >;
+    const ws = map[novelId];
+    if (!ws?.episodes?.length) return false;
+    return ws.episodes.some((e) => e.id !== OUTLINE_EPISODE_ID && e.episodeAudiobook != null);
+  } catch {
+    return false;
+  }
+}
+
+/** 列表 flag 与工作区有声书数据不一致时，以工作区为准补全 audiobookEnabled */
+function repairAudiobookEnabledFlags(list: NovelWorkspaceItem[]): NovelWorkspaceItem[] {
+  let changed = false;
+  const next = list.map((item) => {
+    if (item.audiobookEnabled) return item;
+    if (!workspaceLocalHasAudiobook(item.id)) return item;
+    changed = true;
+    return { ...item, audiobookEnabled: true, updatedAt: new Date().toISOString() };
+  });
+  if (!changed) return list;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore quota */
+  }
+  syncToDb(next);
+  return next;
 }
 
 function safeParse(raw: string | null): NovelWorkspaceItem[] {
@@ -32,7 +70,7 @@ let restoreAttempted = false;
 
 export function loadNovelList(): NovelWorkspaceItem[] {
   try {
-    const list = safeParse(localStorage.getItem(STORAGE_KEY));
+    const list = repairAudiobookEnabledFlags(safeParse(localStorage.getItem(STORAGE_KEY)));
     // 如果 localStorage 为空，尝试从 SQLite 恢复
     if (list.length === 0 && !restoreAttempted) {
       restoreAttempted = true;

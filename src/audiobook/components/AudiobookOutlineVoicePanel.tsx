@@ -3,7 +3,7 @@
  */
 import { useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
-import { Button, Empty, Flex, Space, Table, Typography } from 'antd';
+import { Button, Empty, Flex, Space, Table, Typography, Switch, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlayCircleOutlined, PauseCircleOutlined, ThunderboltOutlined, UserAddOutlined, RocketOutlined } from '@ant-design/icons';
 import { useConfigSubscribe, useConfigModal } from '@/contexts/ConfigContext';
@@ -22,11 +22,16 @@ import {
   parseEmbeddedPresetVoiceIdFromPath,
   embeddedVoiceMatchesEngine,
 } from '@/audiobook/utils/embeddedPresetVoiceId';
+import { isOutlineInnerVoiceCharacterEntry } from '@/audiobook/utils/audiobookSegmentRefLabel';
+import { pickOutlineStyleInstructionForTarget } from '@/audiobook/utils/outlineVoiceStyleInstruction';
 import { findVoiceEnrollmentEngines } from '@/components/tts/voiceCapabilityInference';
 import { useAudiobookVoiceSampleRoots } from '@/audiobook/hooks/useAudiobookVoiceSampleRoots';
 import { useVoiceSamplePreview } from '@/audiobook/hooks/useVoiceSamplePreview';
 
 const { Text, Paragraph } = Typography;
+
+const USE_LOCAL_SFX_TOOLTIP =
+  '本地音效指通过本地算法为 TTS 声音添加音效，使用本地音效后将不再配置画外音音色';
 
 export type OutlineVoiceLookupTarget = { kind: 'narrator' } | { kind: 'character'; characterId: string; label: string };
 
@@ -39,6 +44,8 @@ export interface AudiobookOutlineVoicePanelProps {
   onFillMainCharactersFromOutlineAi?: () => void;
   /** 增加角色到音色列表（由 AI 引导并调工具） */
   onAddCharacterToVoiceListAi?: () => void;
+  /** 切换「使用本地音效」：持久化并通知 AI */
+  onUseLocalSfxForInnerVoiceChange?: (enabled: boolean) => void;
 }
 
 export function AudiobookOutlineVoicePanel({
@@ -47,6 +54,7 @@ export function AudiobookOutlineVoicePanel({
   outlineVoiceAiPending,
   onFillMainCharactersFromOutlineAi,
   onAddCharacterToVoiceListAi,
+  onUseLocalSfxForInnerVoiceChange,
 }: AudiobookOutlineVoicePanelProps) {
   const config = useConfigSubscribe();
   const { openConfigModal } = useConfigModal();
@@ -60,6 +68,7 @@ export function AudiobookOutlineVoicePanel({
 
   const binding = workspace.audiobookOutlineVoiceSamples ?? {};
   const characters = workspace.novelScript?.characters ?? [];
+  const useLocalSfx = workspace.useLocalSfxForInnerVoice === true;
   const enrollmentEngines = useMemo(
     () => findVoiceEnrollmentEngines(config?.models ?? []),
     [config?.models],
@@ -83,6 +92,7 @@ export function AudiobookOutlineVoicePanel({
       },
     ];
     for (const c of characters) {
+      if (useLocalSfx && isOutlineInnerVoiceCharacterEntry(c)) continue;
       list.push({
         key: c.id,
         label: `${c.name}（${c.id}）`,
@@ -91,7 +101,7 @@ export function AudiobookOutlineVoicePanel({
       });
     }
     return list;
-  }, [binding, characters]);
+  }, [binding, characters, useLocalSfx]);
 
   const columns: ColumnsType<(typeof rows)[number]> = [
     { title: '项', dataIndex: 'label', key: 'label', width: 160 },
@@ -107,22 +117,32 @@ export function AudiobookOutlineVoicePanel({
           config?.models ?? [],
         );
         const display = summary || relPath;
-        if (!display) return <Text type="secondary">未选择</Text>;
+        const styleInstruction = pickOutlineStyleInstructionForTarget(binding, row.target);
+        if (!display && !styleInstruction) return <Text type="secondary">未选择</Text>;
         return (
-          <Flex align="center" gap={4} style={{ minWidth: 0, maxWidth: 360 }}>
-            {relPath ?
-              <Button
-                type="text"
-                size="small"
-                style={{ flexShrink: 0 }}
-                icon={isPlaying(relPath) ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                aria-label={isPlaying(relPath) ? '停止试听' : '试听'}
-                onClick={() => void toggleVoicePreview(relPath)}
-              />
+          <Flex vertical gap={2} style={{ minWidth: 0, maxWidth: 360 }}>
+            {display ?
+              <Flex align="center" gap={4} style={{ minWidth: 0 }}>
+                {relPath ?
+                  <Button
+                    type="text"
+                    size="small"
+                    style={{ flexShrink: 0 }}
+                    icon={isPlaying(relPath) ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                    aria-label={isPlaying(relPath) ? '停止试听' : '试听'}
+                    onClick={() => void toggleVoicePreview(relPath)}
+                  />
+                : null}
+                <Text ellipsis style={{ flex: 1, minWidth: 0 }} title={display}>
+                  {display}
+                </Text>
+              </Flex>
+            : <Text type="secondary">未选择样本</Text>}
+            {styleInstruction ?
+              <Text type="secondary" style={{ fontSize: 11, lineHeight: 1.45 }} title={styleInstruction}>
+                {styleInstruction}
+              </Text>
             : null}
-            <Text ellipsis style={{ flex: 1, minWidth: 0 }} title={display}>
-              {display}
-            </Text>
           </Flex>
         );
       },
@@ -134,10 +154,10 @@ export function AudiobookOutlineVoicePanel({
       render: (_, r) => (
         <Space size={4} wrap>
           <Button type="link" size="small" icon={<i className='iconfont'>&#xe85c;</i>} onClick={() => setVoiceDesign(r.target)}>
-            音色设计
+            设计
           </Button>
           <Button type="link" size="small" icon={<RocketOutlined />} onClick={() => setVoiceEnrollment(r.target)}>
-            音色复制
+            复制
           </Button>
           <Button type="link" size="small" icon={<i className='iconfont'>&#xe670;</i>} onClick={() => setLookup(r.target)}>
             选择
@@ -155,13 +175,13 @@ export function AudiobookOutlineVoicePanel({
       <Paragraph style={{ marginBottom: 12 }}>
         <Text strong>大纲音色样本</Text>
         <div style={{ marginTop: 6 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
+          {/* <Text type="secondary" style={{ fontSize: 12 }}>
             此处绑定的 wav 将同时用于本地 LongCat 克隆与云端 MiMo V2.5 音色克隆（voiceclone）；建议在「正文集」前先完成旁白与各角色绑定。LongCat 需在样本同目录自备与 wav 同名的 UTF-8 文稿（
             <Text code>.txt</Text>）。
-          </Text>
+          </Text> */}
         </div>
         {onFillMainCharactersFromOutlineAi && onAddCharacterToVoiceListAi ?
-          <Space wrap style={{ marginTop: 10 }}>
+          <Space wrap style={{ marginTop: 10 }} align="center">
             <Button
               size="small"
               type="primary"
@@ -169,7 +189,7 @@ export function AudiobookOutlineVoicePanel({
               loading={outlineVoiceAiPending}
               onClick={() => onFillMainCharactersFromOutlineAi()}
             >
-              根据故事大纲自动补齐主要角色音色列表
+              根据故事大纲生成主要角色音色
             </Button>
             <Button
               size="small"
@@ -177,8 +197,21 @@ export function AudiobookOutlineVoicePanel({
               loading={outlineVoiceAiPending}
               onClick={() => onAddCharacterToVoiceListAi()}
             >
-              增加角色到音色列表
+              补齐更多音色
             </Button>
+            {onUseLocalSfxForInnerVoiceChange ?
+              <Tooltip title={USE_LOCAL_SFX_TOOLTIP}>
+                <Space size={6} align="center">
+                  <Switch
+                    checked={useLocalSfx}
+                    loading={outlineVoiceAiPending}
+                    checkedChildren="使用本地音效"
+                    unCheckedChildren="不使用本地音效"
+                    onChange={(checked) => onUseLocalSfxForInnerVoiceChange(checked)}
+                  />
+                </Space>
+              </Tooltip>
+            : null}
           </Space>
         : null}
       </Paragraph>
@@ -240,6 +273,16 @@ export function AudiobookOutlineVoicePanel({
         customVoiceSamplesRootDir={voiceRoots.custom}
         models={config?.models ?? []}
         target={voiceDesign}
+        defaultStyleInstruction={
+          voiceDesign ?
+            pickOutlineStyleInstructionForTarget(
+              binding,
+              voiceDesign.kind === 'narrator' ?
+                { kind: 'narrator' }
+              : { kind: 'character', characterId: voiceDesign.characterId },
+            )
+          : undefined
+        }
         setWorkspace={setWorkspace}
         onCancel={() => setVoiceDesign(null)}
       />
